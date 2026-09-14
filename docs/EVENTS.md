@@ -17,19 +17,31 @@ is `ruleWeight` (done) and the wasm boundary (partially verified) — see
 
 Predicates currently in `Historian.Types`: `Founded`, `LeaderOf`, `SplitFrom`,
 `Grievance`, `Slain`, `BattledAt`, `Disputes`, `Reconciled`, `Sanctified`,
-`Venerates`, `Heretic`, `MergedInto`, `Dissolved`, `Revives`, `Prophesied`.
-No new predicate was needed for defilement/purification, miracle, or
-merger's allegiance/grievance transfer — all reuse
+`Venerates`, `Shuns`, `Disavows`, `Heretic`, `MergedInto`, `Terminated`,
+`Revives`, `Prophesied`, `Fulfilled`, `Embodies`. `Terminated` used to be
+two predicates, `Dissolved` and `Destroyed` — unified once both existed,
+since the only real difference between them was the attestor (see the
+work queue and `docs/DESIGN.md`). No new predicate was needed for defilement/purification
+or merger's allegiance/grievance transfer — both reuse
 `Sanctified`/`Grievance`/`Venerates`/`LeaderOf`. `Venerates` in particular
 was never restricted to sites; miracle is what actually exercises it with a
-person object (a sainted martyr), and assassination reuses that same
-reading for the victim's own side. `Heretic`, `MergedInto`, `Dissolved`,
-`Revives`, and `Prophesied` are the five predicates that were genuinely
-new: `Heretic` because `Grievance` looked reusable but wasn't (see below),
-`MergedInto`/`Dissolved` because dissolution and absorption aren't shaped
-like anything else in the model, `Revives` because it's a claim about a
-*relationship to a name*, and `Prophesied` because it's a claim about the
-future, which nothing else in the model represents.
+person (and, since the Ward regard rework, an item) object, and
+assassination reuses that same reading for the victim's own side. `Heretic`,
+`MergedInto`, `Dissolved`, `Revives`, and `Prophesied` are five predicates
+that were genuinely new: `Heretic` because `Grievance` looked reusable but
+wasn't (see below), `MergedInto`/`Dissolved` because dissolution and
+absorption aren't shaped like anything else in the model, `Revives` because
+it's a claim about a *relationship to a name*, and `Prophesied` because
+it's a claim about the future, which nothing else in the model represents.
+`Shuns` and `Disavows` are two more: opposite polarity and retraction,
+respectively, for the same "current regard" a cult can hold toward a
+**Ward** — any `Person`, `Item`, or `Site` — mirroring how
+`Grievance`/`Reconciled` are two predicates for one directional
+relationship's two states. See Miracle, below, and `docs/DESIGN.md`.
+`Fulfilled` is the most recent: the same shape `Disputes` already is (an
+`REvent` object), marking an open `Prophesied` fact resolved. It needed
+`Referent`'s third case, `ROmen`, rather than a new predicate of its own —
+see Prophecy, below.
 
 ---
 
@@ -59,6 +71,11 @@ future, which nothing else in the model represents.
   is currently emitted; see Fact retraction.
 - **Feeds:** further battles, and martyr/heretic status once assassination
   exists.
+- **Dying words**, when there's a casualty: the same `fireDyingWords`
+  assassination uses (see Assassination, below), but vaticination only —
+  battle offers no curse option, at the user's own request; final words
+  and a more general prophecy fit an impersonal battle death, a targeted
+  curse fits a deliberate killing.
 
 ### Fact retraction
 
@@ -79,31 +96,52 @@ the one new predicate that makes the correction meaningful.
   a rivalry that keeps trading losses never goes fully quiet under this rule
   set, since the loser's side is renewed every time.
 
-### Reinterpretation
+### Dispute (formerly its own rule, "Reinterpretation")
 
-- **Requires:** an existing *primary* event (not itself a reinterpretation),
-  and a society that has not yet gone on record about it — see `attestorsOf`
-  in `Historian.World`.
-- **Binds:** the disputing society, from every society not yet in
-  `attestorsOf` for that event. No free variable is minted; the rule only
-  ever picks among existing societies.
-- **Emits:** one `Disputes` fact (disputing society → the disputed event),
-  attested by that same society, with a contrary framing drawn from
+**No longer a top-level `Rule` with its own candidate list** — at the
+user's own request, removed and replaced with `Historian.Rules.fireDispute`\/
+`maybeDispute`, an optional side effect any other rule's own effect can roll,
+the same shape `optionalRelicFor`\/`fireDyingWords` already established
+("resolved entirely here, inside the effect, never as a new bound variable
+in a rule's precondition list"). See `docs/DESIGN.md`'s Decision 23
+follow-up-to-the-follow-up for the full account of why. What follows
+describes the mechanism as it exists now, not the original standalone rule.
+
+- **Requires:** an existing *primary* event (not itself a dispute), and a
+  society — the officiant of whatever rule just fired, already active by
+  construction — that has not yet gone on record about it, per
+  `attestorsOf` in `Historian.World`.
+- **Rolled, not enumerated:** `fireDispute` flips a flat 25% chance first;
+  only if it hits does it `pick` among eligible past events at all. This is
+  the whole fix for the original rule's growth problem — disputing no
+  longer has a candidate-list share of its own to dominate with as history
+  accretes, since there's no longer a candidate list for it at all.
+- **Emits:** its own, independent `Event` (kind `"reinterpretation"`, for
+  continuity with every existing consumer that already keys off that
+  string) carrying one `Disputes` fact (disputing society → the disputed
+  event), attested by that same society, with a contrary framing drawn from
   `Historian.Corpus.disputedFramings` keyed by the disputed event's kind. No
-  new entities.
-- **Feeds:** itself, for every *other* society still not on record about that
-  event — and nothing else yet, since defilement/assassination (below) are
-  the rules meant to exploit a disputed fact once they exist.
-- **Resolved during implementation:** the object slot needed to point at an
-  `EventId`, not just an `EntityId`. Went with a `Referent = ROf EntityId |
-  REvent EventId` sum on `Fact`'s existing object field, rather than a
-  parallel `Dispute` record — see `docs/DESIGN.md` Decision 9 for why.
-- **Guardrail found empirically:** a reinterpretation may only target a
-  primary event, never another reinterpretation. Without that restriction the
-  rule targets its own output, and once a handful of societies exist, chains
-  of "no, we're right" reinterpreting each other's reinterpretations
-  outnumber every other candidate and crowd genesis/schism/battle out of
-  `step` almost entirely — see `CLAUDE.md` Status.
+  new entities minted.
+- **Feeds:** every rule below except `ruleDissolve` calls `maybeDispute`
+  with its own officiating society right after its own primary `record` —
+  see `Historian.Rules` for the exact list. `ruleDissolve` is the one
+  deliberate exception: its only party is the society that just lost its
+  last living member, no voice to lend an opinion to. `genesis` doesn't
+  call it either, though harmlessly rather than deliberately — the founding
+  society is always the sole attestor of the one event that exists at that
+  point, so there is never anything eligible to dispute yet.
+- **Resolved during the original implementation:** the object slot needed
+  to point at an `EventId`, not just an `EntityId`. Went with a `Referent =
+  ROf EntityId | REvent EventId` sum on `Fact`'s existing object field,
+  rather than a parallel `Dispute` record — see `docs/DESIGN.md` Decision 9
+  for why. Still true after this rework — nothing about the fact shape
+  changed, only how the effect gets triggered.
+- **Guardrail carried over unchanged:** a dispute may only target a primary
+  event, never another dispute. The original reasoning (an infinite,
+  content-free "no, we're right" chain) still holds even though the
+  *mechanism* that reasoning was protecting — pool-share dominance — no
+  longer exists to protect; arguing about an argument has nothing left to
+  say regardless of how it gets triggered.
 
 ### Sanctification (founding of a religious place)
 
@@ -153,29 +191,57 @@ the one new predicate that makes the correction meaningful.
 
 ### Miracle
 
-- **Requires:** a society that `venerates` a site — deliberately `venerates`,
-  not `sanctifiedBy`: a *deposed* former holder who still reveres the place
-  can have a miracle occur there too, reclaiming it through faith rather than
-  the grievance-driven force defilement needs. No hostility precondition at
-  all, unlike defilement — that's the actual difference between the two
-  rules, not just the flavor text.
-- **Binds:** the saint — a living member, a previously `Slain` one elevated
-  as a martyr (`deadMembers`, the mirror-image of `livingMembers`), or (like
-  a heresiarch) a fresh figure the rule mints, per the brief's own three
-  readings.
-- **Emits:** another `Sanctified` fact naming the venerator (latest-fact-wins
-  picks it up as current, same mechanism as defilement — a miracle can
-  reclaim a site as surely as a purification can seize one), and a
-  `Venerates` fact naming the saint. No new predicates: this is what actually
-  exercises `Venerates` with a person object rather than a site.
+- **Requires (all three productions):** a society that `venerates` a site —
+  deliberately `venerates`, not `sanctifiedBy`: a *deposed* former holder
+  who still reveres the place can have a miracle occur there too, reclaiming
+  it through faith rather than the grievance-driven force defilement needs.
+  No hostility precondition at all, unlike defilement — that's the actual
+  difference between the two rules, not just the flavor text.
+- **Three productions**, all in `ruleMiracle`/`Historian.Rules`:
+  - `fireMiracleSaint` — a lone person Ward at the site: a living member, a
+    previously `Slain` one elevated as a martyr (`deadMembers`, the
+    mirror-image of `livingMembers`), or a fresh figure the rule mints. This
+    is the original rule, unchanged in shape.
+  - `fireMiracleRelic` — the same shape with an `Item` instead: an existing
+    item, or one the rule mints fresh. This is what actually closes the
+    "scoped out: relics" gap below — it needed `Item` to exist as a `Kind`
+    before it could be written at all.
+  - `fireMiracleOn` — a living or dead member of the officiating society
+    performs the miracle *on* a second, already-recorded Ward (another
+    person or an item), rather than merely being named alongside one. Both
+    participants must already exist here — no fresh minting — which is what
+    keeps this production distinct from the two simple ones above (the
+    "name someone/something new" reading).
+- **Emits (every production):** another `Sanctified` fact naming the
+  venerator (latest-fact-wins picks it up as current, same mechanism as
+  defilement — a miracle can reclaim a site as surely as a purification can
+  seize one), and `Venerates` fact(s) naming the Ward(s) involved.
+- **Emits (new, every production): the regard reaction.** After the core
+  facts, every cult with a stake in the miracle independently rolls a new
+  stance toward one of its Wards (the site, and whichever person/item
+  participants this production names) — see `regardReactions` in
+  `Historian.Rules` and `Historian.World.regardOf`/`currentRegardants`.
+  A **principal** (a cult already holding a current regard on one of the
+  event's Wards) mostly reinforces its existing polarity, sometimes flips
+  it (`Shuns`), goes neutral (`Disavows`), or redirects its regard onto a
+  *different* Ward in the same event. A **spectator** (an active society
+  with no existing stake, sampled up to a small handful via
+  `Historian.World.sampleUpTo`) mostly does nothing and occasionally picks a
+  fresh `Venerates`/`Shuns`. Both lean hostile if the reacting cult already
+  `holdsGrievance` against the officiating society. This is what actually
+  exercises `Shuns`/`Disavows` and what lets veneration spread to (or turn
+  against) a cult that had no prior stake in the site at all.
 - **Feeds:** itself (a prolific venerator keeps having miracles at its
   shrines — confirmed harmless: see `CLAUDE.md` Status, this is the
   self-weighting design working as intended, not the reinterpretation
-  meta-loop's failure mode repeating), and reinterpretation
-  (`disputedFramings "miracle"`).
-- **Scoped out:** relics. "A site or relic" would need a whole new entity
-  kind to earn for a first cut; sites alone are enough for the rule to fire
-  and feed something.
+  meta-loop's failure mode repeating), reinterpretation
+  (`disputedFramings "miracle"`), and now itself in a second way: a
+  spectator's fresh `Venerates`/`Shuns` from the regard reaction makes that
+  cult eligible for `ruleMiracle`'s own precondition at a site it had never
+  previously touched.
+- **Scoped out:** opening the regard reaction beyond one independent roll
+  per involved cult — no multi-cult chains, no cult reacting to another
+  cult's reaction in the same event. Revisit only if asked for.
 
 ### Assassination
 
@@ -207,6 +273,30 @@ the one new predicate that makes the correction meaningful.
   `--inspect` on an assassinated figure shows both the killers' `Heretic`
   claim and the victim's own society's `Venerates` claim, attested by two
   different societies, in the same dossier.
+- **Dying words** (`fireDyingWords`, shared with battle below), at the
+  user's request: the victim optionally speaks a final utterance — a curse
+  or a more general vaticination — aimed at the killing society or the
+  relic present in the same event, if either. Reuses `Prophesied`/`ROmen`
+  exactly like `ruleProphesy`, just with the dying *person* as prophet
+  instead of a society — nothing anywhere assumed prophets had to be
+  societies, so this needed no plumbing changes. A curse always picks from
+  a dedicated `curseFramings` list (not `prophecyFramings`, which is
+  `Kind`-indexed doom imagery; a curse's "may you be shunned" register
+  reads the same against a cult or a relic alike); a vaticination reuses
+  `prophecyFramings` for the target's `Kind`, same as any other prophecy.
+  Assassination offers both curse and vaticination; battle (below) offers
+  only the vaticination half, at the user's own request.
+- **The one real subtlety, found by actually checking whether a curse
+  could ever be fulfilled:** `Shuns` only ever applies to a Ward
+  (Person/Item/Site) — `regardReactions` never asserts it with a *Society*
+  as the object. A curse aimed at the killer's cult therefore has no
+  honest mechanical match and stays purely rhetorical (`Nothing` omen,
+  the same "no strained fit" call already made for half of every other
+  `Kind`'s prophecy lines); only a curse that happens to land on the relic
+  present in the same event carries `Just Shuns`, and can actually be
+  fulfilled. This is also the first thing that makes `omenOf`'s `Shuns`
+  case reachable at all, since the relics work remapped `Item`'s own two
+  lines that used to use it over to `Terminated`.
 
 ### Merger
 
@@ -310,25 +400,26 @@ by request, that lets a society claim a defunct one's legacy.
   `disputedFramings "revival"` entry ("no true heir, but an opportunist
   wearing a dead name for cover").
 
-### Prophecy — cheap version only
+### Prophecy
 
-Also not one of the brief's incident types, and only half-built by design:
-this is the *rhetorical* half of prophecy, added by request. The half that
-would make a prophecy actually matter — see "Left for later" below — is a
-separate, larger decision the user deliberately deferred rather than an
-oversight here.
+Also not one of the brief's incident types. Built in two passes: a cheap,
+purely rhetorical version first (at the user's explicit direction — "do
+the small stuff for now"), then the fuller version below, once asked for.
 
 - **Requires:** an active society (the prophet) and any *other* existing
-  entity — society, person, or site — that this same prophet hasn't
+  entity — society, person, site, or item — that this same prophet hasn't
   already prophesied about (`hasProphesied`; `target /= prophet` rules out
   self-prophecy). No further restriction: a prophet can foretell doom for a
   rival, a stranger, or a place it has no connection to at all.
 - **Emits:** `Prophesied` (prophet → target), attested by the prophet, with
-  flavor text keyed by the target's `Kind` (`Historian.Corpus.prophecyFramings`
-  — a society is doomed to fall or forget its founder, a person is marked
-  for martyrdom or betrayal, a site is doomed to run red or be swallowed).
-  That's all. No new entity, and — deliberately — no mechanism anywhere
-  that checks whether a prophecy comes true.
+  flavor text keyed by the target's `Kind`
+  (`Historian.Corpus.prophecyFramings`). The object is `ROmen target momen`
+  — `Historian.Types.Referent`'s third case, added for exactly this: the
+  target entity, and — when the line drawn from `prophecyFramings` has one
+  — the `Predicate` whose future assertion about that target fulfills it.
+  Roughly half of each `Kind`'s lines have no honest mechanical match
+  ("will be forgotten before it is finished") and stay `Nothing`, purely
+  rhetorical, exactly what every prophecy was before fulfillment existed.
 - **Deliberately allows rival and contradictory prophecies:**
   `hasProphesied` only stops the *same* prophet repeating an identical
   claim, the same shape `hasClaimedRevival` takes for revival. A different
@@ -336,25 +427,207 @@ oversight here.
   the same target is not guarded against — it's the same kind of
   contested-history richness revival's false claimants give for free.
 - **Feeds:** reinterpretation, for free, the same way every other event
-  kind does, via a new `disputedFramings "prophecy"` entry ("no true
-  foresight, but a threat dressed up as a vision"). Feeds nothing else —
-  see below.
-- **Left for later, deliberately:** the version that would make a prophecy
-  actually matter is later rules checking, when they fire, whether their
-  own effect *fulfills* an open `Prophesied` fact about the entity they're
-  acting on — and if so, marking it resolved (a `Fulfilled` fact pointing
-  at the prophecy event, the same shape `Disputes` points at a disputed
-  one). That's a cross-cutting change on the scale of dissolution's
-  `isDefunct` plumbing: every rule that acts on an entity (schism, battle,
-  sanctify, defile, miracle, assassinate, merge, dissolve) would need a
-  check along the lines of "does this fact happen to be what some open
-  prophecy about this entity foretold" — which in turn means
-  `prophecyFramings`' free-text framings would need to become *structured*
-  claims (e.g. "this society dissolves", "this person is slain") that a
-  rule's own effect can actually be compared against, not prose a human
-  reads and judges. Skipped for now at the user's explicit direction — "do
-  the small stuff for now" — but this is the natural next step if prophecy
-  is revisited.
+  kind does, via `disputedFramings "prophecy"` ("no true foresight, but a
+  threat dressed up as a vision").
+- **Fulfillment, the fuller version, now built:** `Historian.Rules.omenOf`
+  maps a claim's predicate to the entity it's "about" — subject for
+  `Dissolved`/`MergedInto`/`Slain`/`Sanctified`, object for
+  `SplitFrom`/`BattledAt`/`Heretic`/`Shuns` (predicates disagree on which
+  slot names the affected party). `Historian.World.openProphecies` finds
+  every unfulfilled `Prophesied` fact about an entity via `ROmen`.
+  `fulfillProphecies` ties them together: for every claim a rule is about
+  to record, if its omen matches an open prophecy about the same entity, a
+  `Fulfilled` fact is added — subject the target, object `REvent` pointing
+  back at the prophecy's own event (the same shape `Disputes` points at a
+  disputed one), attestor whatever the fulfilling claim's own attestor was.
+  Wired into every rule that acts on an entity, exactly the list originally
+  scoped: `fireSchism`, `fireBattle`, `fireSanctify`, `fireDefile`, all
+  three `fireMiracle*` productions, `fireAssassinate`, both branches of
+  `fireMerger`, `fireDissolve`. Deliberately excludes already-ubiquitous
+  predicates (`Grievance`, `Venerates`, `Reconciled`) from ever being
+  offered as omens in the first place — they fire constantly via unrelated
+  rules and would make "fulfilled" nearly meaningless. A reinterpretation
+  of a fulfilling event already covers disputing the fulfillment too, for
+  free — no new `disputedFramings` entry needed, since the `Fulfilled` fact
+  rides on the same event as the underlying dissolution/battle/etc.
+- **Verified, not just written:** a scan across 100 seeds shows all eight
+  omen predicates actually get offered and 56 prophecies get fulfilled,
+  with zero cases of the same prophecy being fulfilled twice (guarded by
+  `nubBy` in `fulfillProphecies`, needed because e.g. `fireBattle` emits
+  two `BattledAt` claims sharing one site object). Seed 3 at 20 steps shows
+  the whole chain through `--json`: event 4 prophesies entity 2 will be
+  `Slain`, and event 12 — the assassination that actually kills them —
+  carries a `Fulfilled` fact pointing back at event 4.
+
+### Concepts and relics
+
+Every `Item` was already implicitly "eligible to become a relic" — this is
+what actually gives that eligibility substance, at the user's request.
+
+- **`Concept`, a new `Kind`:** a shared symbolic idea — an element,
+  mineral, animal, monster, or similar
+  (`Historian.Corpus.elementConcepts`/`mineralConcepts`/`natureConcepts`/
+  `magicalConcepts`/`animalConcepts`/`monsterConcepts`/`mundaneConcepts`,
+  concatenated as `conceptNames`) that a cult can itself `Venerates`\/
+  `Shuns`, same as any other Ward. Unlike every other `Kind`, minted once
+  per name and reused (`Historian.World.conceptNamed`) — there is only ever
+  one "Fire" entity in a world, not a fresh one per relic that embodies it.
+  The only find-or-create entity lifecycle in the codebase.
+- **Every item, from birth:** `newItem` rolls a `-2..+4` modifier
+  (`entModifier`, a placeholder — nothing reads it mechanically yet) and
+  picks a `Concept`, recorded as a new `Embodies` fact (item → concept,
+  unattested — intrinsic, not a matter of anyone's perspective). Nothing
+  is deferred until some later "promotion" moment: **becoming an actual
+  relic**, narratively, is simply the first time any cult asserts
+  `Venerates`\/`Shuns` on the item — a distinction that already existed and
+  needed no new flag.
+- **Concept-biased regard:** `Historian.Rules.polarityWeights` extends the
+  existing grievance-based hostility bias in `regardReactions`: a cult that
+  already regards an item's linked concept leans toward the same polarity
+  for the item too (venerating "Fire" elsewhere makes venerating a
+  Fire-linked relic more likely). Purely an extra weighting input, not a
+  new code path.
+- **Optional item participants:** battle, assassination, and the plain
+  ("saint") miracle production all gained an optional relic via
+  `Historian.Rules.optionalRelicFor` — with some probability, either an
+  existing item one of the event's cults already regards, or a freshly
+  minted one. Resolved entirely inside the effect, never as a new bound
+  variable in a precondition list comprehension, so none of the three
+  rules' candidate counts grow at all from this (the same discipline that
+  kept miracle's spectators out of candidate enumeration — CLAUDE.md bug
+  #3). When present, one clause is added to the event's prose, and it
+  becomes an extra `regardReactions` participant (folded into miracle's
+  existing call; a new standalone call for battle and assassination, which
+  had no reaction step before this).
+- **The enshrine/safeguard wording**, exactly as asked — hallowed relics
+  are enshrined, cursed ones kept safe from rival cults, at any site the
+  reacting cult already venerates (falling back to the event's own site
+  where it has one) — fires specifically for a freshly-minted item's first
+  regard (`relicRecognitionText`), and directly for theft (below), since
+  an already-established relic's ordinary `regardReactions` already had
+  its own recognition moment whenever *it* was first minted.
+- **Theft** (`ruleTheft`/`fireTheft`): any relic currently hallowed by some
+  keeper can be stolen by any other active society — no grievance
+  required, "covetousness alone" mirrors miracle's "faith alone"
+  precedent. No new predicate: reuses `Venerates`\/`Shuns` (concept-biased,
+  same as any reaction) plus `Grievance` for the deposed keeper, the same
+  way `ruleDefile` reuses `Sanctified`\/`Grievance` rather than inventing
+  "stolen" (Decision 11).
+- **Destruction** (`ruleDestroyRelic`/`fireDestroyRelic`): a relic
+  currently cursed to its own keeper can be destroyed by that same keeper
+  — the cult that already considers it cursed is who rids itself of it,
+  the simplest well-motivated reading for a first cut. If some *other*
+  society currently venerates the same item, they get a fresh `Grievance`
+  toward the destroyer — echoes `ruleDefile`'s "grievance from the deposed
+  side." A relic's `Terminated` fact (the predicate is now shared with a
+  dissolved society's — see the work queue and `docs/DESIGN.md`) is a
+  permanent terminal state gating `activeItems` the same way a society's
+  gates `activeSocieties` (invariant 7), attributed to the destroyer rather
+  than left attestor-less. Every candidate site that could draw an item
+  (`ruleMiracle`'s productions, `ruleProphesy`, `ruleTheft`, `ruleGift`,
+  and `optionalRelicFor`'s own pool) draws from `activeItems`.
+- **`prophecyFramings Item`'s two "shattered"\/"melted down" lines** map to
+  `Terminated` — originally `Destroyed` when that was still its own
+  predicate, kept working unchanged by the unification.
+- **Verified, not just written:** a battle-then-destruction chain traced
+  through `--inspect` on one seed shows the whole lifecycle in order — a
+  relic is minted mid-miracle, immediately embodies "Fire" and is venerated
+  by its finder, is borne into a later battle where the losing side reacts
+  by shunning it, and is destroyed by that same shunner one event later —
+  with the deposed original venerator correctly receiving a `Grievance`
+  against the destroyer. A separate seed shows theft's own shape: transfer
+  of regard, a fresh grievance for the dispossessed keeper, and the
+  enshrine wording for the thief's new stance. Destruction needed the same
+  longer-run treatment dissolution and revival already have
+  (`test/Spec.hs`'s `longSteps = 40`) — rare within the short run, since it
+  requires a relic to already be cursed before it can fire at all.
+- **Gift** (`ruleGift`/`fireGift`): theft's peaceful counterpart — any
+  active society already regarding a relic, hallowed or cursed alike, can
+  gift it to any other. No grievance, no hostility precondition, unlike
+  theft. The receiver's new regard is concept-biased the same as every
+  other reaction, but weighted heavily toward matching the giver's own
+  polarity (85/15 rather than theft's flat 75/25) — a gift carries the
+  giver's implicit endorsement. The extension asked for alongside it: if
+  the receiver currently holds a grievance against the giver, the gift has
+  a (not guaranteed) chance to reconcile it, via the same `Reconciled`
+  predicate `fireBattle` already uses for the winning side — no new
+  predicate needed. Verified on a real seed: a gift firing with an
+  existing grievance produces "…and the grievance between them was laid to
+  rest.", composing correctly with the enshrine/safeguard wording when the
+  receiver's new regard also happens to be a relic's first recognition.
+- **Explicitly deferred, raised in conversation but out of scope for
+  now:** enshrinement as its own dedicated event, loss/rediscovery of a
+  relic, and ceremony (a rite using an already-held relic — the user is
+  still thinking this one through themselves).
+
+### Cult renaming and leadership conflict
+
+At the user's request: a society can rename itself, as a consequence of a
+leadership change and the new leader's own stance toward the society's
+identity. See Decision 19 in `docs/DESIGN.md` for the full design
+reasoning, including why this is exactly what `docs/DESIGN.md`'s old
+"Known compromise" note anticipated.
+
+- **A patron `Concept` for every society, from birth** — the same
+  "eligible from birth" treatment relics already have (above), extended to
+  every society, not just item-named ones. `newSociety` returns the society
+  and its concept together; every minting call site (founding, schism,
+  merger's new-society branch) adds an unattested `Embodies` claim plus a
+  self-attested initial `Venerates`.
+- **`Leads`, a new predicate** — the one currently distinguished leader,
+  latest-fact-wins, additive to (not a replacement for) `LeaderOf`, which
+  has always just meant "current member." Set alongside `LeaderOf` at
+  founding and schism; reassigned by all three rules below.
+- **`Named`/`RName`** — a fourth extension of `Referent` (Decision 9): a
+  `Named` fact's object carries the entity's freshly chosen name directly,
+  rather than pointing at another entity. `Historian.World.nameIn` checks
+  for a `Named` fact before falling back to the entity's birth name, so a
+  rename takes effect everywhere at once — chronicle prose, JSON, and
+  dossier headers alike.
+- **`Rivalry`, a new predicate** — person-to-person tension, mirroring
+  `Grievance`'s directional shape but kept separate for the same reason
+  `Heretic` was: reusing `Grievance` between two ordinary members would
+  silently make either of them a battle candidate. Resolves via the
+  existing `Reconciled` predicate, the same way a grievance does.
+- **`ruleCoronation`/`fireCoronation`:** any living member who isn't
+  already `currentLeader` can be crowned. Calls the shared
+  `fireLeadershipChange` (below); afterward, 0–2 other passed-over living
+  members have a chance to become `Rivalry`-holders against the new
+  leader — this is what gives trial by combat and coup something to
+  consume.
+- **`ruleTrialByCombat`/`fireTrialByCombat`:** requires an existing
+  `Rivalry` between two people still co-members of the same active
+  society. A three-way weighted outcome — one dies, the other dies, or
+  both die — always costs at least one life. `fireLeadershipChange` is
+  only called when a living victor remains to crown.
+- **`ruleCoup`/`fireCoup`:** requires a `Rivalry` specifically against the
+  *current* leader (unlike trial by combat, which is symmetric between any
+  two rivals). Bloodless, unlike trial by combat: the deposed leader loses
+  `Leads` and gains a `Grievance` against the usurper, who becomes leader
+  via `fireLeadershipChange`.
+- **`fireLeadershipChange`, shared by all three:** the new leader takes
+  `Leads`. Their own freshly-rolled disposition toward the society's
+  patron concept (biased toward continuity with the society's current
+  regard, not a flat coin) is what mechanically decides whether the
+  society renames — confirmed explicitly with the user as the intended
+  design over a looser probability nudge. A roll that agrees with the
+  society's existing regard changes nothing but who holds `Leads`; a roll
+  that disagrees triggers a freshly generated name (reusing the same
+  `generateSocietyName` grammar a founding uses) alongside the new regard.
+- **Verified against real seeds:** seed 101 at `longSteps` shows a
+  coronation renaming a society, with the very next event correctly
+  referring to it by the new name in stored chronicle prose (not just the
+  fact log) — proof `nameIn`'s fallback chain works end to end. The same
+  seed's JSON/dossier both show the current name, not the birth name. Seed
+  114 shows a trial by combat where both rivals die and the now-leaderless
+  society dissolves shortly after. Coup turned out to be by far the
+  rarest of the three — its precondition needs a `Rivalry` to survive
+  untouched (target still `currentLeader`, holder still a co-member) long
+  enough to be drawn from a candidate pool that keeps competing with
+  reinterpretation's unbounded growth; a direct scan found its first
+  occurrence only at seed 1048 at `longSteps`, which is why
+  `test/Spec.hs` gives it its own even-wider seed pool
+  (`veryWideSeeds`) rather than `wideSeeds`.
 
 ---
 

@@ -31,6 +31,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Historian.Corpus
+    Historian.Engine
     Historian.Json
     Historian.Markov
     Historian.Render
@@ -109,4 +110,6 @@ test-suite historian-test
     , base
     , containers
     , heretical-historian
+    , mtl
+    , random
     , text

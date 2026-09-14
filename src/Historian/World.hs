@@ -8,10 +8,12 @@ module Historian.World where
 
 import Control.Monad (replicateM)
 import Control.Monad.State.Strict
+import Data.Char (toUpper)
 import Data.Function (on)
 import Data.List (nub, nubBy)
+import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Historian.Corpus
@@ -55,8 +57,54 @@ pick xs = do
 pickOr :: a -> [a] -> Chronicle a
 pickOr d xs = fromMaybe d <$> pick xs
 
+-- | 'pickOr' for a list statically known to be non-empty (e.g. a fixed
+-- corpus list) — takes its own head as the fallback rather than asking
+-- the caller to invent one, so a corpus that's genuinely always non-empty
+-- never needs a redundant literal sitting somewhere just to satisfy a
+-- 'pickOr' call that can, in practice, never actually reach it.
+pick1 :: NonEmpty a -> Chronicle a
+pick1 (x :| xs) = pickOr x xs
+
+-- | A coin-flipped 'pick': half the time @Nothing@, half the time one
+-- element — the @Option(x)@ half of 'societyModifier's naming grammar.
+optionalPick :: [a] -> Chronicle (Maybe a)
+optionalPick xs = do
+  include <- coin
+  if include then pick xs else pure Nothing
+
 coin :: Chronicle Bool
 coin = (== (0 :: Int)) <$> roll (0, 1)
+
+-- | Weighted choice among alternatives, each tagged with a positive integer
+-- weight. Sums the weights, rolls once in that range, and walks the
+-- cumulative buckets — the same minimal style as 'coin'\/'pickOr'. The
+-- fallback on an empty or non-positive-weight list is the last alternative
+-- given, so callers should list a safe default last; there is no sensible
+-- 'Maybe' here because every call site already knows its own alternatives.
+weighted :: [(Int, a)] -> Chronicle a
+weighted [] = error "weighted: no alternatives"
+weighted xs = do
+  let total = sum (map fst xs)
+  n <- roll (0, max 0 total - 1)
+  pure (go n xs)
+  where
+    go _ [(_, x)] = x
+    go n ((w, x) : rest)
+      | n < w = x
+      | otherwise = go (n - w) rest
+    go _ [] = error "weighted: exhausted alternatives"
+
+-- | Sample up to @n@ distinct elements from a list, without replacement —
+-- how 'Historian.Rules.regardReactions' draws a handful of spectator cults
+-- into a miracle without sweeping in every active society every time.
+sampleUpTo :: Eq a => Int -> [a] -> Chronicle [a]
+sampleUpTo n _ | n <= 0 = pure []
+sampleUpTo _ [] = pure []
+sampleUpTo n xs = do
+  mx <- pick xs
+  case mx of
+    Nothing -> pure []
+    Just x -> (x :) <$> sampleUpTo (n - 1) (filter (/= x) xs)
 
 -- Calendar ---------------------------------------------------------------
 
@@ -203,6 +251,59 @@ markovWord c = go (6 :: Int)
             then pure t
             else go (n - 1)
 
+-- | A componential "prefix + syllable-chain root + suffix" name, per
+-- 'Historian.Corpus.NameGrammar' — used only for persons and relics (see
+-- 'newPerson'\/'newItem'). Sites and societies keep 'markovWord' unchanged.
+-- Same bounded-retry rejection discipline as 'markovWord', reusing the
+-- exact same check. See Decision 20 in docs/DESIGN.md.
+syllableName :: Culture -> Chronicle Text
+syllableName c = go (6 :: Int)
+  where
+    grammar = nameGrammarFor c
+    go :: Int -> Chronicle Text
+    go 0 = pure "Nameless"
+    go n = do
+      t <- buildName grammar
+      w <- get
+      let used = map entName (M.elems (wEntities w))
+      if T.length t >= 4 && not (any (T.isInfixOf t) used)
+        then pure t
+        else go (n - 1)
+
+buildName :: NameGrammar -> Chronicle Text
+buildName g = do
+  includePrefix <- weighted [(ngPrefixChance g, True), (100 - ngPrefixChance g, False)]
+  includeSuffix <- weighted [(ngSuffixChance g, True), (100 - ngSuffixChance g, False)]
+  numSyllables <- roll (1, max 1 (ngMaxSyllables g))
+  syllables <- replicateM numSyllables (pickOr "an" (ngRoots g))
+  root <- joinSyllables (ngHyphenChance g) syllables
+  mPrefix <- if includePrefix then Just <$> pickOr "" (ngPrefixes g) else pure Nothing
+  mSuffix <- if includeSuffix then Just <$> pickOr "" (ngSuffixes g) else pure Nothing
+  pure (capitalizeName (T.concat (catMaybes [mPrefix] ++ [root] ++ catMaybes [mSuffix])))
+
+-- | Joins a syllable chain, rolling independently at each internal seam
+-- whether it's a direct join or a hyphen — the compound-root shape a high
+-- 'ngHyphenChance' (Hollowtongue) leans into and a low one (Vaurethine)
+-- mostly avoids.
+joinSyllables :: Int -> [Text] -> Chronicle Text
+joinSyllables _ [] = pure ""
+joinSyllables _ [s] = pure s
+joinSyllables hyphenChance (s : rest) = do
+  restJoined <- joinSyllables hyphenChance rest
+  useHyphen <- weighted [(hyphenChance, True), (100 - hyphenChance, False)]
+  pure (T.concat [s, if useHyphen then "-" else "", restJoined])
+
+-- | Capitalizes the first letter of the whole name and, if it's
+-- hyphenated, the first letter of every piece after a hyphen too — a
+-- hyphenated result should read as a proper compound name ("Grendl-Kaddur"),
+-- not a name with a lowercase tail ("Grendl-kaddur").
+capitalizeName :: Text -> Text
+capitalizeName = T.intercalate "-" . map capitalizeWord . T.splitOn "-"
+  where
+    capitalizeWord t = case T.uncons t of
+      Nothing -> t
+      Just (ch, rest) -> T.cons (toUpper ch) rest
+
 -- Minting --------------------------------------------------------------
 
 freshEntityId :: Chronicle EntityId
@@ -211,37 +312,132 @@ freshEntityId = do
   put w {wNextEntity = wNextEntity w + 1}
   pure (EntityId (wNextEntity w))
 
-mint :: Kind -> Culture -> Text -> Chronicle EntityId
-mint k c nm = do
+-- | The last argument is relic data — 'Nothing' for every kind but 'Item'
+-- — rolled here, at creation, rather than filled in later: entities are
+-- never mutated once minted anywhere in this codebase, and relic data is
+-- no exception. See 'newItem'.
+mint :: Kind -> Culture -> Text -> Maybe Int -> Chronicle EntityId
+mint k c nm modifier = do
   i <- freshEntityId
   ep <- gets wEpoch
-  modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep) (wEntities w)}
+  modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep modifier) (wEntities w)}
   pure i
 
-newSociety :: Culture -> Chronicle EntityId
-newSociety c = do
+-- | The modifier phrase before a society's noun, guaranteeing exactly one
+-- of two shapes: a bare 'societyEpithet' ("The Veiled Choir"), or an
+-- item-flavored descriptor — an optional 'societyEpithet', an optional
+-- 'itemEpithet', then a mandatory 'itemNoun' ("The Bleeding Chalice
+-- Choir", "The Chalice Choir", "The Ashen Chalice Choir") — so a cult can
+-- read as named for an abstract quality or for a relic it holds, never
+-- with an empty modifier either way.
+societyModifier :: Chronicle Text
+societyModifier = do
+  bareEpithet <- coin
+  if bareEpithet
+    then pickOr "Veiled" societyEpithets
+    else do
+      mse <- optionalPick societyEpithets
+      mie <- optionalPick itemEpithets
+      itemN <- pickOr "Relic" itemNouns
+      pure (T.unwords (catMaybes [mse, mie] ++ [itemN]))
+
+-- | The name-generation half of 'newSociety', factored out so a rename
+-- (a fresh name for an *existing* society — see
+-- 'Historian.Rules.fireLeadershipChange') can reuse exactly the same
+-- grammar a founding does, rather than a second copy drifting from it.
+generateSocietyName :: Culture -> Chronicle Text
+generateSocietyName c = do
   stem <- markovWord c
-  ep <- pickOr "Veiled" societyEpithets
+  modifier <- societyModifier
   nn <- pickOr "Order" societyNouns
-  mint Society c (T.concat ["The ", ep, " ", nn, " of ", stem])
+  pure (T.concat ["The ", modifier, " ", nn, " of ", stem])
+
+-- | Every society gets an independent patron concept from the moment it
+-- exists, the same "eligible from birth" treatment 'newItem' already
+-- gives relics — not conditional on which naming branch
+-- 'societyModifier' happened to take. Returns the concept alongside the
+-- society so the caller can add the 'Embodies' claim (unattested,
+-- intrinsic) and an initial 'Venerates' (the starting regard a later
+-- leadership change can flip), the same two-claims pattern
+-- 'fireMiracleRelic' already follows for a fresh item.
+newSociety :: Culture -> Chronicle (EntityId, EntityId)
+newSociety c = do
+  name <- generateSocietyName c
+  s <- mint Society c name Nothing
+  conceptName <- pickOr "the Unnamed" conceptNames
+  concept <- conceptNamed c conceptName
+  pure (s, concept)
 
 newPerson :: Culture -> Chronicle EntityId
 newPerson c = do
-  stem <- markovWord c
+  stem <- syllableName c
   bn <- pickOr "the Silent" bynames
   useByname <- coin
-  mint Person c (if useByname then T.concat [stem, " ", bn] else stem)
+  mint Person c (if useByname then T.concat [stem, " ", bn] else stem) Nothing
 
 newSite :: Culture -> Chronicle EntityId
 newSite c = do
   stem <- markovWord c
   nn <- pickOr "Stair" siteNouns
-  mint Site c (T.concat ["The ", nn, " of ", stem])
+  mint Site c (T.concat ["The ", nn, " of ", stem]) Nothing
+
+-- | Every item is "relic-eligible" from the moment it exists: a modifier
+-- (placeholder, no mechanical use yet) and a symbolic 'Concept' link
+-- (returned alongside the item, so the caller can add the 'Embodies'
+-- claim to whatever event is doing the minting — see e.g.
+-- 'Historian.Rules.fireMiracleRelic'\/'optionalRelicFor') are rolled here,
+-- unconditionally, not deferred until some later rule decides to "promote"
+-- it. Becoming an actual relic, narratively, is simply the first time any
+-- cult asserts 'Venerates'\/'Shuns' on it — see
+-- 'Historian.Rules.regardReactions'.
+newItem :: Culture -> Chronicle (EntityId, EntityId)
+newItem c = do
+  stem <- syllableName c
+  nn <- pickOr "Relic" itemNouns
+  modifier <- roll (-2, 4)
+  conceptName <- pickOr "the Unnamed" conceptNames
+  concept <- conceptNamed c conceptName
+  item <- mint Item c (T.concat ["The ", nn, " of ", stem]) (Just modifier)
+  pure (item, concept)
+
+-- | Concepts are the one 'Kind' minted once per name and reused, not
+-- freshly minted every time — there is only ever one "Fire" entity in a
+-- given world, shared by every item that embodies it and every cult that
+-- comes to venerate or shun it. The only find-or-create entity lifecycle
+-- in the codebase; everything else always mints fresh.
+conceptNamed :: Culture -> Text -> Chronicle EntityId
+conceptNamed c name = do
+  w <- get
+  case [i | (i, e) <- M.toList (wEntities w), entKind e == Concept, entName e == name] of
+    (i : _) -> pure i
+    [] -> mint Concept c name Nothing
+
+-- | For an 'Item', the 'Concept' it symbolically embodies, read from its
+-- 'Embodies' fact — 'Nothing' for every other 'Kind'. Deliberately fact-
+-- based rather than an 'Entity' field: unlike 'entModifier', this is a
+-- relationship to another entity, and a field would make the linked
+-- 'Concept' permanently uninspectable (never 'mentions'ed by any fact).
+propertyOf :: World -> EntityId -> Maybe EntityId
+propertyOf w i =
+  case [o | f <- wFacts w, factPred f == Embodies, factSubject f == i, Just (ROf o) <- [factObject f]] of
+    (o : _) -> Just o
+    [] -> Nothing
 
 -- Recording ------------------------------------------------------------
 
+-- | Advances the day count by a uniformly random gap, 1..300 days, rather
+-- than a fixed one day per step — real gaps between recorded events aren't
+-- regular, and 'dateOf' already treats an 'Epoch' as an absolute day count
+-- with no assumption that a single step's gap fits inside one year (it
+-- walks 'yearMonths' year by year regardless of how big the jump is).
+-- Consumes 'Chronicle'\'s own RNG stream, same as any other rule decision
+-- — not the calendar's separate one (invariant 8 in CLAUDE.md is about
+-- 'dateOf' itself never reaching into 'wGen', not about how much time a
+-- step advances).
 advanceEpoch :: Chronicle ()
-advanceEpoch = modify' $ \w -> w {wEpoch = Epoch (unEpoch (wEpoch w) + 1)}
+advanceEpoch = do
+  gap <- roll (1, 300)
+  modify' $ \w -> w {wEpoch = Epoch (unEpoch (wEpoch w) + gap)}
 
 -- | Append one event and its facts. This is the only way facts enter the
 -- world, so every fact has a source event whose prose can be shown.
@@ -264,8 +460,17 @@ nameOf i = gets (`nameIn` i)
 
 -- Pure queries ---------------------------------------------------------
 
+-- | An entity's *current* name — checks for a 'Named' fact (latest-fact-
+-- wins, so a society can be renamed more than once) before falling back
+-- to the immutable 'entName' it was minted with. This is the one place
+-- renaming actually takes effect: every render/JSON path already goes
+-- through 'nameIn', so nothing else needed to change to make a rename
+-- visible everywhere at once.
 nameIn :: World -> EntityId -> Text
-nameIn w i = maybe "someone unrecorded" entName (M.lookup i (wEntities w))
+nameIn w i =
+  case [t | f <- wFacts w, factPred f == Named, factSubject f == i, Just (RName t) <- [factObject f]] of
+    (t : _) -> t
+    [] -> maybe "someone unrecorded" entName (M.lookup i (wEntities w))
 
 cultureOf :: World -> EntityId -> Culture
 cultureOf w i = maybe vaurethine entCulture (M.lookup i (wEntities w))
@@ -313,6 +518,38 @@ venerates :: World -> EntityId -> EntityId -> Bool
 venerates w subject obj =
   any (\f -> factPred f == Venerates && factSubject f == subject && factObject f == Just (ROf obj)) (wFacts w)
 
+-- | A cult's current stance toward a Ward — a Person, Item, or Site (see
+-- 'Kind'). Unlike 'venerates', which is cumulative and never retracted,
+-- this is overridable: the most recent of 'Venerates'\/'Shuns'\/'Disavows'
+-- for this (cult, thing) pair wins, so a cult can reinforce, flip, or
+-- retract to neutral. Deliberately additive, not a replacement for
+-- 'venerates' — 'ruleMiracle'\'s own precondition and 'ruleDefile'\'s
+-- framing keep reading the cumulative history exactly as before. See
+-- docs/DESIGN.md.
+data Regard = Venerated | Shunned
+  deriving stock (Eq, Show)
+
+regardOf :: World -> EntityId -> EntityId -> Maybe Regard
+regardOf w subject thing =
+  case [ f | f <- wFacts w, factSubject f == subject, factObject f == Just (ROf thing), factPred f `elem` [Venerates, Shuns, Disavows] ] of
+    (f : _) -> case factPred f of
+      Venerates -> Just Venerated
+      Shuns -> Just Shunned
+      _ -> Nothing
+    [] -> Nothing
+
+-- | Every cult with a current (latest-wins) regard toward this Ward — a
+-- miracle's "existing claims from a cult, or none" principals. Built from
+-- the distinct subjects who ever asserted a regard-bearing predicate toward
+-- @thing@, each resolved through 'regardOf' so a since-'Disavows'ed cult is
+-- correctly excluded rather than shown as still venerating or shunning.
+currentRegardants :: World -> EntityId -> [(EntityId, Regard)]
+currentRegardants w thing =
+  [ (s, r)
+  | s <- nub [factSubject f | f <- wFacts w, factObject f == Just (ROf thing), factPred f `elem` [Venerates, Shuns, Disavows]]
+  , Just r <- [regardOf w s thing]
+  ]
+
 -- | Who currently holds a site sanctified: the most recent 'Sanctified'
 -- fact's object, latest-fact-wins — a defilement adds another 'Sanctified'
 -- fact for the same site rather than retracting the old one, so a site can
@@ -323,6 +560,16 @@ sanctifiedBy :: World -> EntityId -> Maybe EntityId
 sanctifiedBy w site =
   case [o | f <- wFacts w, factPred f == Sanctified, factSubject f == site, Just (ROf o) <- [factObject f]] of
     (o : _) -> Just o
+    [] -> Nothing
+
+-- | The one currently distinguished leader of a society, latest-fact-wins
+-- — mirrors 'sanctifiedBy' exactly, just keyed the other way round
+-- ('Leads'' subject is the leader, object the society, so this scans for
+-- a matching object rather than subject).
+currentLeader :: World -> EntityId -> Maybe EntityId
+currentLeader w society =
+  case [factSubject f | f <- wFacts w, factPred f == Leads, factObject f == Just (ROf society)] of
+    (leader : _) -> Just leader
     [] -> Nothing
 
 -- | A site consecrates only once — 'ruleSanctify' checks this so it never
@@ -353,10 +600,12 @@ sharesVeneration w a b =
 alreadyMerged :: World -> EntityId -> Bool
 alreadyMerged w s = any (\f -> factPred f == MergedInto && factSubject f == s) (wFacts w)
 
--- | Whether a society has formally dissolved for lack of living members —
--- see 'ruleDissolve'.
-isDissolved :: World -> EntityId -> Bool
-isDissolved w s = any (\f -> factPred f == Dissolved && factSubject f == s) (wFacts w)
+-- | Whether an entity has reached its permanent terminal state — a
+-- society dissolved for lack of living members ('ruleDissolve') or a relic
+-- destroyed ('ruleDestroyRelic'). One query for both, since they're one
+-- predicate ('Terminated') now — see the type's own Haddock for why.
+isTerminated :: World -> EntityId -> Bool
+isTerminated w i = any (\f -> factPred f == Terminated && factSubject f == i) (wFacts w)
 
 -- | A society that can no longer act: dissolved, or already merged away.
 -- Every rule that lets a society *act* — schism, battle, sanctify, defile,
@@ -364,13 +613,20 @@ isDissolved w s = any (\f -> factPred f == Dissolved && factSubject f == s) (wFa
 -- candidates. The dead don't act; their past facts stay exactly as
 -- inspectable as anyone else's.
 isDefunct :: World -> EntityId -> Bool
-isDefunct w s = isDissolved w s || alreadyMerged w s
+isDefunct w s = isTerminated w s || alreadyMerged w s
 
 -- | Societies still capable of acting — what every rule should draw its
 -- "which society does this" candidates from, in place of bare 'entitiesOf
 -- Society'.
 activeSocieties :: World -> [EntityId]
 activeSocieties w = [s | s <- entitiesOf Society w, not (isDefunct w s)]
+
+-- | Items still eligible to be drawn as a candidate anywhere — what every
+-- rule should draw its "which item" candidates from, in place of bare
+-- 'entitiesOf Item', the same relationship 'activeSocieties' has to
+-- 'entitiesOf Society'.
+activeItems :: World -> [EntityId]
+activeItems w = [i | i <- entitiesOf Item w, not (isTerminated w i)]
 
 -- | Whether @reviver@ has already claimed to revive @defunct@ — guards
 -- 'ruleRevive' against the same claimant repeating an identical claim.
@@ -393,7 +649,28 @@ kindOf w i = entKind <$> M.lookup i (wEntities w)
 -- target.
 hasProphesied :: World -> EntityId -> EntityId -> Bool
 hasProphesied w prophet target =
-  any (\f -> factPred f == Prophesied && factSubject f == prophet && factObject f == Just (ROf target)) (wFacts w)
+  any (\f -> factPred f == Prophesied && factSubject f == prophet && omenTarget f == Just target) (wFacts w)
+  where
+    omenTarget f = case factObject f of
+      Just (ROmen t _) -> Just t
+      _ -> Nothing
+
+-- | Every currently-open (unfulfilled) prophecy about @target@ that is
+-- mechanically checkable at all — paired with the predicate whose future
+-- assertion about @target@ would fulfill it, and the prophecy's own event
+-- id (what a 'Historian.Rules.fulfillProphecies' claim needs to point
+-- back at). "Open" means no existing 'Fulfilled' fact already points at
+-- that prophecy's event — mirrors 'sanctifiedBy'\/'holdsGrievance's style
+-- of scanning 'wFacts' with a predicate filter.
+openProphecies :: World -> EntityId -> [(EventId, Predicate)]
+openProphecies w target =
+  [ (factSource f, omen)
+  | f <- wFacts w
+  , factPred f == Prophesied
+  , Just (ROmen t (Just omen)) <- [factObject f]
+  , t == target
+  , not (any (\g -> factPred g == Fulfilled && factObject g == Just (REvent (factSource f))) (wFacts w))
+  ]
 
 -- | Whether @a@ currently holds a grievance against @b@: facts are
 -- newest-first, so the head of the (Grievance-or-Reconciled) facts running
@@ -424,8 +701,39 @@ grievancePairs w =
     , holdsGrievance w a b || holdsGrievance w b a
     ]
 
+-- | Whether @a@ currently holds a rivalry against @b@ — the same
+-- latest-fact-wins shape as 'holdsGrievance', reusing 'Reconciled' rather
+-- than a second new predicate: a rivalry closes the same way a grievance
+-- does, by the same generic "this directional relationship is resolved"
+-- fact. See Decision 19 in docs/DESIGN.md for why 'Rivalry' itself still
+-- needed to be its own predicate even though its resolution didn't.
+hasRivalry :: World -> EntityId -> EntityId -> Bool
+hasRivalry w a b =
+  case [factPred f | f <- wFacts w, factSubject f == a, factObject f == Just (ROf b), factPred f `elem` [Rivalry, Reconciled]] of
+    (Rivalry : _) -> True
+    _ -> False
+
+-- | Unordered pairs with a rivalry live in either direction — mirrors
+-- 'grievancePairs' exactly. What 'Historian.Rules.ruleTrialByCombat'
+-- restricts to two living members of the same active society.
+rivalPairs :: World -> [(EntityId, EntityId)]
+rivalPairs w =
+  nub
+    [ (min a b, max a b)
+    | f <- wFacts w
+    , factPred f `elem` [Rivalry, Reconciled]
+    , let a = factSubject f
+    , Just (ROf b) <- [factObject f]
+    , a /= b
+    , hasRivalry w a b || hasRivalry w b a
+    ]
+
 mentions :: EntityId -> Fact -> Bool
-mentions i f = factSubject f == i || factObject f == Just (ROf i)
+mentions i f =
+  factSubject f == i || case factObject f of
+    Just (ROf o) -> o == i
+    Just (ROmen o _) -> o == i
+    _ -> False
 
 -- | Everything the world holds about one entity, oldest first.
 historyOf :: World -> EntityId -> [Fact]

@@ -19,7 +19,7 @@ import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Historian.Types
-import Historian.World (dateOf)
+import Historian.World (dateOf, nameIn, propertyOf)
 
 encodeWorld :: World -> BSL.ByteString
 encodeWorld w =
@@ -37,10 +37,14 @@ entityJson w e =
   object
     [ "id" .= unEntityId (entId e)
     , "kind" .= kindText (entKind e)
-    , "name" .= entName e
+    , "name" .= nameIn w (entId e)
     , "culture" .= unCulture (entCulture e)
     , "born" .= unEpoch (entBorn e)
     , "bornDate" .= dateOf w (entBorn e)
+    , "modifier" .= entModifier e
+    , -- The concept's name, not a bare id: a relic's nature should be
+      -- readable straight off the wire format, not need a second lookup.
+      "property" .= fmap (nameIn w) (propertyOf w (entId e))
     ]
 
 kindText :: Kind -> Text
@@ -48,6 +52,8 @@ kindText = \case
   Society -> "Society"
   Person -> "Person"
   Site -> "Site"
+  Item -> "Item"
+  Concept -> "Concept"
 
 eventJson :: World -> Event -> Value
 eventJson w ev =
@@ -86,13 +92,22 @@ predicateText = \case
   Reconciled -> "Reconciled"
   Sanctified -> "Sanctified"
   Venerates -> "Venerates"
+  Shuns -> "Shuns"
+  Disavows -> "Disavows"
   Heretic -> "Heretic"
   MergedInto -> "MergedInto"
-  Dissolved -> "Dissolved"
   Revives -> "Revives"
   Prophesied -> "Prophesied"
+  Fulfilled -> "Fulfilled"
+  Embodies -> "Embodies"
+  Named -> "Named"
+  Leads -> "Leads"
+  Rivalry -> "Rivalry"
+  Terminated -> "Terminated"
 
 referentJson :: Referent -> Value
 referentJson = \case
   ROf e -> object ["entity" .= unEntityId e]
   REvent e -> object ["event" .= unEventId e]
+  ROmen e mp -> object ["entity" .= unEntityId e, "omen" .= fmap predicateText mp]
+  RName t -> object ["name" .= t]

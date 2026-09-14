@@ -1,0 +1,256 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | A generic, declarative rule-matching engine — Phase 1 (see
+-- docs/DESIGN.md Decision 23). Sits between 'Historian.World' (store and
+-- queries) and 'Historian.Rules' (which defines the actual 'RuleSpec'
+-- values, since those reference specific @fireX@ functions this module
+-- must not depend on).
+--
+-- Purely additive: nothing here is wired into 'Historian.Rules.generate'
+-- or 'Historian.Rules.step'. Every hand-written 'Historian.Rules.Rule'
+-- keeps working completely unchanged.
+module Historian.Engine where
+
+import Control.Applicative ((<|>))
+import qualified Data.Map.Strict as M
+import Data.Maybe (listToMaybe)
+import Data.Text (Text)
+import Historian.Corpus (vaurethine)
+import Historian.Types
+import Historian.World
+
+-- | One parameter a rule needs filled. 'slotConstraint' takes the
+-- entities already resolved for earlier slots (in declaration order, see
+-- 'RuleSpec') alongside the candidate, so a later slot can depend on an
+-- earlier one (a schism's heresiarch must belong to *this* schism's own
+-- society, not just be alive somewhere) without any dependent-type
+-- machinery — a plain closure over the accumulated bindings suffices.
+data Slot = Slot
+  { slotKind :: Kind
+  , slotConstraint :: World -> [EntityId] -> EntityId -> Bool
+  , slotRequired :: Bool
+  -- ^ 'True': the slot always ends up 'Just' — pick if something
+  -- qualifies, otherwise mint a fresh one via 'resolveSlot'. 'False': the
+  -- slot may end up 'Nothing' if nothing qualifies (never force-generates
+  -- an optional slot just because a required one nearby did).
+  }
+
+-- | A rule's declarative shape — what 'Historian.Rules.ruleSchism' (etc.)
+-- otherwise hand-writes as its own list comprehension. 'rsSlots' only
+-- ever describes *existing-or-generatable* input entities; a rule's own
+-- always-happens creations (a schism's splinter society, complete with
+-- its own patron-concept claims) stay inside 'rsFire' exactly as today —
+-- there's no pick-vs-generate question for something that's simply always
+-- made, so it isn't a slot.
+data RuleSpec = RuleSpec
+  { rsName :: Text
+  , rsSlots :: [Slot]
+  , rsFire :: World -> [Maybe EntityId] -> Chronicle ()
+  -- ^ One element per 'rsSlots', same order. A 'slotRequired' slot's
+  -- element is always 'Just' by the time this runs.
+  }
+
+-- | Every existing entity satisfying one slot, given what's already been
+-- resolved for earlier slots in the same rule.
+candidatesFor :: World -> [EntityId] -> Slot -> [EntityId]
+candidatesFor w resolved slot =
+  [i | i <- entitiesOf (slotKind slot) w, slotConstraint slot w resolved i]
+
+-- | A conservative, cheap runnability check: every required slot has at
+-- least one candidate *considered on its own*, ignoring what a later slot
+-- might additionally require of it. This can occasionally say "runnable"
+-- for a rule that turns out, once resolution actually walks its slots in
+-- order, to need to generate more than a tighter check would predict —
+-- that's fine and intentional: a required slot with zero real candidates
+-- at resolution time just mints one (see 'resolveSlot'), it never fails.
+-- The only genuine failure this engine has is 'AmbiguousRule'.
+runnable :: World -> RuleSpec -> Bool
+runnable w rs = all ok (rsSlots rs)
+  where
+    ok slot = not (slotRequired slot) || not (null (candidatesFor w [] slot))
+
+runnableRuleSpecs :: World -> [RuleSpec] -> [RuleSpec]
+runnableRuleSpecs w = filter (runnable w)
+
+-- | Mint a fresh entity of the given 'Kind', for a required slot with no
+-- existing candidate. Dispatches purely by 'Kind' — every existing
+-- @newX@ constructor in 'Historian.World' already mints by kind, so no
+-- rule-specific generator is needed here.
+--
+-- 'Society' and 'Item' generation is honest but incomplete: 'newSociety'
+-- and 'newItem' also return a patron\/embodied 'Concept' and expect the
+-- caller to record 'Embodies'\/'Venerates' claims alongside whatever
+-- event is doing the minting (see 'Historian.Rules.patronClaims') — this
+-- drops that second half rather than guessing at it, since no rule
+-- migrated in this phase ever generates either 'Kind'. Whichever future
+-- rule migration is the first to need it should settle
+-- 'RuleSpec'\/'resolveSlot's shape for that case in code, not have it
+-- guessed at here.
+generateForKind :: Culture -> Kind -> Chronicle EntityId
+generateForKind cult k = case k of
+  Person -> newPerson cult
+  Site -> newSite cult
+  Society -> fst <$> newSociety cult
+  Item -> fst <$> newItem cult
+  Concept -> conceptNamed cult "the Unnamed"
+
+-- | Resolve one slot: a caller-supplied hint wins outright; otherwise pick
+-- an existing candidate; otherwise, if required, mint a fresh one;
+-- otherwise 'Nothing'. Whether to even *attempt* an optional slot at all
+-- (a probability roll, the way e.g. dying words only sometimes looks for
+-- a curse target) is deliberately left to the caller — passing no hint
+-- here always means "try," keeping 'Slot' itself plain data with no
+-- probability baked in.
+resolveSlot :: World -> Culture -> [EntityId] -> Maybe EntityId -> Slot -> Chronicle (Maybe EntityId)
+resolveSlot w cult resolved hint slot = case hint of
+  Just e -> pure (Just e)
+  Nothing -> do
+    picked <- pick (candidatesFor w resolved slot)
+    case picked of
+      Just e -> pure (Just e)
+      Nothing
+        | slotRequired slot -> Just <$> generateForKind cult (slotKind slot)
+        | otherwise -> pure Nothing
+
+-- | Resolve every slot of a rule in order. Two ways a slot can arrive
+-- pre-bound: an explicit positional hint (from 'StepRule'), or — when a
+-- pool of caller-supplied entities was handed to the whole rule instead
+-- of pinned per slot (from 'StepEntities') — the first entity left in
+-- that pool whose 'Kind' and 'slotConstraint' both match, given what's
+-- resolved so far. Positional hints always take priority. The
+-- generation culture for any slot that ends up minted is inherited from
+-- whichever entity resolved first (mirroring how every existing @fireX@
+-- computes its own @cult = cultureOf w s@ once and reuses it), falling
+-- back to 'vaurethine' only if nothing has resolved yet.
+resolveAll :: World -> [Slot] -> [Maybe EntityId] -> [EntityId] -> Chronicle [Maybe EntityId]
+resolveAll w slots posHints = go [] slots (posHints ++ repeat Nothing)
+  where
+    go _ [] _ _ = pure []
+    go resolved (slot : slots') (posHint : posHints') remainingPool = do
+      let cult = case resolved of
+            (e : _) -> cultureOf w e
+            [] -> vaurethine
+          implicitHint = case posHint of
+            Just _ -> Nothing
+            Nothing -> listToMaybe [e | e <- remainingPool, matchesSlot resolved e]
+          matchesSlot ctx e = case M.lookup e (wEntities w) of
+            Just ent -> entKind ent == slotKind slot && slotConstraint slot w ctx e
+            Nothing -> False
+      m <- resolveSlot w cult resolved (posHint <|> implicitHint) slot
+      let usedImplicit = case (posHint, implicitHint) of
+            (Nothing, Just e) -> Just e
+            _ -> Nothing
+          remainingPool' = maybe remainingPool (\e -> filter (/= e) remainingPool) usedImplicit
+          resolved' = resolved ++ maybe [] pure m
+      (m :) <$> go resolved' slots' posHints' remainingPool'
+    go _ _ _ _ = pure []
+
+-- | Every satisfying assignment for a rule — the Cartesian product across
+-- its slots, an optional slot's own contribution to the product including
+-- 'Nothing'. This is what 'StepAny' pools uniformly across every rule,
+-- the direct 'RuleSpec' analogue of how 'Historian.Rules.step' already
+-- pools every legacy 'Historian.Rules.Rule's candidate list — a rule
+-- self-weights by how many assignments it has, exactly as today.
+allAssignments :: World -> RuleSpec -> [[Maybe EntityId]]
+allAssignments w rs = go [] (rsSlots rs)
+  where
+    go _ [] = [[]]
+    go resolved (slot : rest) =
+      [ opt : restAssignment
+      | opt <-
+          if slotRequired slot
+            then map Just (candidatesFor w resolved slot)
+            else Nothing : map Just (candidatesFor w resolved slot)
+      , restAssignment <- go (resolved ++ maybe [] pure opt) rest
+      ]
+
+-- | What a caller can ask 'intelligentStep' to do.
+data StepRequest
+  = StepAny
+  -- ^ Today's autonomous behavior, unchanged in spirit — every given
+  -- 'RuleSpec's every satisfying assignment ('allAssignments') is pooled
+  -- and one is picked uniformly.
+  | StepRule RuleSpec [Maybe EntityId]
+  -- ^ Run this rule. Each element is a hint for the slot at that
+  -- position (padded\/truncated to the rule's own slot count if it
+  -- doesn't match — never a failure), or 'Nothing' to let the engine
+  -- resolve it.
+  | StepEntities [EntityId]
+  -- ^ No rule specified — pick a runnable\/useful 'RuleSpec' weighted
+  -- toward how many of these entities it can actually use, then resolve
+  -- the rest of its slots from the same pool where types match.
+
+-- | 'StepRequest's own three constructors are all unambiguous by
+-- construction — 'StepRule' only ever names exactly one 'RuleSpec' — so
+-- 'intelligentStep' itself never fails, matching the design brief exactly
+-- ("for everything else it will choose one of: generate/pick/omit").
+-- Ambiguity is a *request-construction* problem, not a resolution one: it
+-- shows up at whatever boundary turns caller-supplied input into a
+-- 'RuleSpec' in the first place — naming a rule by 'Text' from an
+-- external request (a future wasm/JSON caller, say), where nothing stops
+-- the caller from naming more than one. 'chooseRule' is that boundary
+-- check, kept here so it's available before such a caller exists.
+newtype StepError = AmbiguousRule [RuleSpec]
+
+-- | Narrow a caller-named set of candidate rules down to exactly one
+-- before it's safe to build a 'StepRule' request — the one place this
+-- engine's own "the only failure is more than one rule given" promise is
+-- actually enforced.
+chooseRule :: [RuleSpec] -> Either StepError RuleSpec
+chooseRule [rs] = Right rs
+chooseRule rss = Left (AmbiguousRule rss)
+
+intelligentStep :: [RuleSpec] -> World -> StepRequest -> Chronicle ()
+intelligentStep specs w StepAny =
+  case [(rs, assignment) | rs <- specs, assignment <- allAssignments w rs] of
+    [] -> pure ()
+    (p : ps) -> do
+      (rs, assignment) <- pickOr p (p : ps)
+      rsFire rs w assignment
+intelligentStep _ w (StepRule rs hints) = do
+  let hints' = take (length (rsSlots rs)) (hints ++ repeat Nothing)
+  resolved <- resolveAll w (rsSlots rs) hints' []
+  rsFire rs w resolved
+intelligentStep specs w (StepEntities es)
+  | null candidates = pure ()
+  | otherwise = do
+      rs <- weighted [(1 + usefulness rs', rs') | rs' <- candidates]
+      resolved <- resolveAll w (rsSlots rs) (replicate (length (rsSlots rs)) Nothing) es
+      rsFire rs w resolved
+  where
+    candidates = [rs | rs <- specs, runnable w rs || usefulness rs > 0]
+    usefulness rs = length [() | slot <- rsSlots rs, e <- es, matchesKind e slot]
+    matchesKind e slot = maybe False ((== slotKind slot) . entKind) (M.lookup e (wEntities w))
+
+-- | A structured, queryable view of one entity — the "query on any
+-- existing world state indexed by any entity id" half of this feature.
+-- Reuses 'historyOf' directly rather than a parallel inspection path
+-- (CLAUDE.md: "Don't add a separate inspection subsystem").
+data EntityDossier = EntityDossier
+  { edId :: EntityId
+  , edKind :: Kind
+  , edName :: Text
+  , edCulture :: Culture
+  , edBorn :: Epoch
+  , edFacts :: [Fact]
+  , edSatisfiesSlotOf :: [Text]
+  -- ^ 'rsName' of every given 'RuleSpec' this entity could fill at least
+  -- one slot of right now — the same conservative, empty-context check
+  -- 'runnable' makes, for the same reason.
+  }
+
+queryEntity :: World -> [RuleSpec] -> EntityId -> Maybe EntityDossier
+queryEntity w specs eid = do
+  e <- M.lookup eid (wEntities w)
+  pure
+    EntityDossier
+      { edId = eid
+      , edKind = entKind e
+      , edName = nameIn w eid
+      , edCulture = entCulture e
+      , edBorn = entBorn e
+      , edFacts = historyOf w eid
+      , edSatisfiesSlotOf = [rsName rs | rs <- specs, any (satisfies e) (rsSlots rs)]
+      }
+  where
+    satisfies e slot = entKind e == slotKind slot && slotConstraint slot w [] eid
