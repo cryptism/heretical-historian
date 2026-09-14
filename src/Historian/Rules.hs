@@ -87,7 +87,7 @@ genesis = do
   p <- newPerson cult
   w <- get
   let outcome = FoundingOutcome s p
-  record "founding" (renderFounding w outcome) (foundingClaims outcome ++ patronClaims s concept)
+  record "founding" (render w (Founding outcome)) (foundingClaims outcome ++ patronClaims s concept)
 
 foundingClaims :: FoundingOutcome -> [Claim]
 foundingClaims o =
@@ -135,7 +135,7 @@ fireSchism w s mh = do
   w' <- get
   let outcome = SchismOutcome s h fresh c
       claims = schismClaims outcome ++ patronClaims c concept
-  record "schism" (renderSchism w' outcome) (claims ++ fulfillProphecies w claims)
+  record "schism" (render w' (Schism outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 schismClaims :: SchismOutcome -> [Claim]
@@ -208,7 +208,7 @@ fireBattle w a b msite = do
   let outcome = BattleOutcome victor vanquished site victim relicMoment dyingWords
       claims = battleClaims outcome
   w' <- get
-  record "battle" (renderBattle w' outcome) (claims ++ fulfillProphecies w claims)
+  record "battle" (render w' (Battle outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute victor
 
 battleClaims :: BattleOutcome -> [Claim]
@@ -326,7 +326,7 @@ maybeDispute disputant = do
     Nothing -> pure ()
     Just o -> do
       w' <- get
-      record "reinterpretation" (renderDispute w' o) (disputeClaims o)
+      record "reinterpretation" (render w' (Dispute o)) (disputeClaims o)
 
 -- Sanctification ----------------------------------------------------------
 
@@ -352,7 +352,7 @@ fireSanctify w s msite = do
   w' <- get
   let outcome = SanctifyOutcome s site (isNothing msite)
       claims = sanctifyClaims outcome
-  record "sanctification" (renderSanctify w' outcome) (claims ++ fulfillProphecies w claims)
+  record "sanctification" (render w' (Sanctify outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 sanctifyClaims :: SanctifyOutcome -> [Claim]
@@ -419,7 +419,7 @@ fireDefile site s h = do
   w <- get
   let outcome = DefileOutcome site s h
       claims = defileClaims outcome
-  record "purification" (renderDefile w outcome) (claims ++ fulfillProphecies w claims)
+  record "purification" (render w (Defile outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute h
 
 defileClaims :: DefileOutcome -> [Claim]
@@ -511,7 +511,7 @@ fireMiracleSaint w s site msaint = do
       outcome = MiracleSaintOutcome s site saint saintFresh relicMoment extraClaims
       claims = miracleSaintClaims outcome
   w' <- get
-  record "miracle" (renderMiracleSaint w' outcome) (claims ++ fulfillProphecies w claims)
+  record "miracle" (render w' (MiracleSaint outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 miracleSaintClaims :: MiracleSaintOutcome -> [Claim]
@@ -532,7 +532,7 @@ fireMiracleRelic w s site mrelic = do
   let outcome = MiracleRelicOutcome s site relic relicFresh (embodiesClaim ++ reactions)
       claims = miracleRelicClaims outcome
   w' <- get
-  record "miracle" (renderMiracleRelic w' outcome) (claims ++ fulfillProphecies w claims)
+  record "miracle" (render w' (MiracleRelic outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 miracleRelicClaims :: MiracleRelicOutcome -> [Claim]
@@ -547,7 +547,7 @@ fireMiracleOn w s site actor target = do
   reactions <- regardReactions s [site, actor, target]
   let outcome = MiracleOnOutcome s site actor target reactions
       claims = miracleOnClaims outcome
-  record "miracle" (renderMiracleOn w outcome) (claims ++ fulfillProphecies w claims)
+  record "miracle" (render w (MiracleOn outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 miracleOnClaims :: MiracleOnOutcome -> [Claim]
@@ -824,7 +824,7 @@ fireTheft w item k h = do
   newR <- weighted (polarityWeights w h item [(75, Venerated), (25, Shunned)])
   let outcome = TheftOutcome h k item newR
       claims = theftClaims outcome
-  record "theft" (renderTheft w outcome) (claims ++ fulfillProphecies w claims)
+  record "theft" (render w (Theft outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute h
 
 theftClaims :: TheftOutcome -> [Claim]
@@ -890,7 +890,7 @@ fireGift w item g giverRegard r = do
       else pure False
   let outcome = GiftOutcome g r item newR reconciled
       claims = giftClaims outcome
-  record "gift" (renderGift w outcome) (claims ++ fulfillProphecies w claims)
+  record "gift" (render w (Gift outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute g
   where
     matchGiverWeights Venerated = [(85, Venerated), (15, Shunned)]
@@ -952,7 +952,7 @@ fireDestroyRelic item k = do
   let mourners = [v | (v, Venerated) <- currentRegardants w item, v /= k]
       outcome = DestroyRelicOutcome k item mourners
       claims = destroyRelicClaims outcome
-  record "destruction" (renderDestroyRelic w outcome) (claims ++ fulfillProphecies w claims)
+  record "destruction" (render w (DestroyRelic outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute k
 
 destroyRelicClaims :: DestroyRelicOutcome -> [Claim]
@@ -1037,7 +1037,7 @@ fireCoronation w s candidate = do
   let outcome = CoronationOutcome leadership rivals
       claims = lcClaims leadership ++ [Claim r Rivalry (Just (ROf candidate)) (Just r) | r <- rivals]
   w' <- get
-  record "coronation" (renderCoronation w' outcome) (claims ++ fulfillProphecies w claims)
+  record "coronation" (render w' (Coronation outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 -- | 'Historian.Engine' migration. The candidate slot deliberately doesn't
@@ -1090,7 +1090,7 @@ fireTrialByCombat w s a b = do
   let tc = TrialByCombatOutcome s a b slain leadership
       claims = slainClaims ++ resolveClaims ++ maybe [] lcClaims leadership
   w' <- get
-  record "trial-by-combat" (renderTrialByCombat w' tc) (claims ++ fulfillProphecies w claims)
+  record "trial-by-combat" (render w' (TrialByCombat tc)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 data TrialOutcome = ADies | BDies | BothDie
@@ -1146,7 +1146,7 @@ fireCoup w s usurper leader = do
              , Claim usurper Reconciled (Just (ROf leader)) (Just usurper)
              ]
   w' <- get
-  record "coup" (renderCoup w' outcome) (claims ++ fulfillProphecies w claims)
+  record "coup" (render w' (Coup outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute s
 
 -- | 'Historian.Engine' migration. @leader@ is deterministic given @s@
@@ -1214,7 +1214,7 @@ fireAssassinate figure s h = do
   let outcome = AssassinateOutcome figure s h relicMoment dyingWords
       claims = assassinateClaims outcome
   w' <- get
-  record "assassination" (renderAssassinate w' outcome) (claims ++ fulfillProphecies w claims)
+  record "assassination" (render w' (Assassinate outcome)) (claims ++ fulfillProphecies w claims)
   maybeDispute h
 
 assassinateClaims :: AssassinateOutcome -> [Claim]
@@ -1310,14 +1310,14 @@ fireMerger w a b = do
       let outcome = MergerFounding a b new
           claims = mergerClaims w outcome ++ patronClaims new concept
       w' <- get
-      record "merger" (renderMerger w' outcome) (claims ++ fulfillProphecies w claims)
+      record "merger" (render w' (Merger outcome)) (claims ++ fulfillProphecies w claims)
       maybeDispute a
     else do
       survivorIsA <- coin
       let (survivor, absorbed) = if survivorIsA then (a, b) else (b, a)
           outcome = MergerAbsorption absorbed survivor
           claims = mergerClaims w outcome
-      record "merger" (renderMerger w outcome) (claims ++ fulfillProphecies w claims)
+      record "merger" (render w (Merger outcome)) (claims ++ fulfillProphecies w claims)
       maybeDispute survivor
 
 mergerClaims :: World -> MergerOutcome -> [Claim]
@@ -1401,7 +1401,7 @@ fireDissolve s = do
   w <- get
   let outcome = DissolveOutcome s
       claims = dissolveClaims outcome
-  record "dissolution" (renderDissolve w outcome) (claims ++ fulfillProphecies w claims)
+  record "dissolution" (render w (Dissolve outcome)) (claims ++ fulfillProphecies w claims)
 
 dissolveClaims :: DissolveOutcome -> [Claim]
 dissolveClaims o = [Claim (dsSociety o) Terminated Nothing Nothing]
@@ -1466,7 +1466,7 @@ fireRevive :: EntityId -> EntityId -> Chronicle ()
 fireRevive reviver defunct = do
   w <- get
   let outcome = ReviveOutcome reviver defunct
-  record "revival" (renderRevive w outcome) (reviveClaims outcome)
+  record "revival" (render w (Revive outcome)) (reviveClaims outcome)
   maybeDispute reviver
 
 reviveClaims :: ReviveOutcome -> [Claim]
@@ -1523,7 +1523,7 @@ fireProphesy target prophet = do
   let kind = fromMaybe Person (kindOf w target)
   (momen, framing) <- pickOr defaultFraming (prophecyFramings kind)
   let outcome = ProphesyOutcome prophet target framing momen
-  record "prophecy" (renderProphesy w outcome) (prophesyClaims outcome)
+  record "prophecy" (render w (Prophesy outcome)) (prophesyClaims outcome)
   maybeDispute prophet
 
 prophesyClaims :: ProphesyOutcome -> [Claim]
