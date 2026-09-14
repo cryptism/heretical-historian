@@ -1,0 +1,112 @@
+cabal-version:      2.4
+name:               heretical-historian
+version:            0.1.0.0
+synopsis:           Accretive history generator for occult societies
+description:
+  A fact store plus event rules. Each application of a rule appends facts and
+  mints entities, so repeated application deepens an existing history rather
+  than producing an independent sample.
+
+license:            BSD-3-Clause
+build-type:         Simple
+
+common shared
+  default-language:   Haskell2010
+  default-extensions:
+    DerivingStrategies
+    GeneralizedNewtypeDeriving
+    LambdaCase
+    OverloadedStrings
+    StrictData
+
+  ghc-options:
+    -Wall
+    -Wcompat
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wredundant-constraints
+
+library
+  import:          shared
+  hs-source-dirs:  src
+  exposed-modules:
+    Historian.Corpus
+    Historian.Json
+    Historian.Markov
+    Historian.Render
+    Historian.Rules
+    Historian.Types
+    Historian.World
+
+  build-depends:
+    , aeson       >=2.0
+    , base        >=4.16 && <5
+    , bytestring  >=0.11
+    , containers  >=0.6
+    , mtl         >=2.2
+    , random      >=1.2
+    , text        >=1.2
+
+executable historian
+  import:         shared
+  hs-source-dirs: app
+  main-is:        Main.hs
+  build-depends:
+    , base
+    , bytestring
+    , containers
+    , heretical-historian
+    , text
+
+-- | The wasm boundary, per docs/DESIGN.md Decision 7 and CLAUDE.md's work
+-- queue: two functions wide (generate, then encodeWorld), wrapped in a
+-- foreign export. Builds as an ordinary native executable in this flake's
+-- dev shell — actually producing a .wasm file needs a wasm-targeting GHC
+-- (e.g. wasm32-wasi-ghc from ghc-wasm-meta), not wired into flake.nix yet.
+executable historian-wasm
+  import:         shared
+  hs-source-dirs: wasm
+  main-is:        Main.hs
+  build-depends:
+    , base
+    , bytestring
+    , heretical-historian
+
+  -- wasm-ld strips a foreign-exported symbol from the export table unless
+  -- told to keep it — GHC registering the export isn't enough on its own.
+  -- Verified: without this flag, `wasm-tools print` shows no "generateJson"
+  -- export at all; with it, the export appears correctly typed. Guarded to
+  -- wasm32 only: --export isn't a flag the native ELF linker understands,
+  -- and must not reach a native build.
+  --
+  -- `hs_init` is exported directly too, as the RTS's own plain C init
+  -- function — NOT wrapped in a Haskell `foreign export` (a wrapper of
+  -- that shape was tried and definitively ruled out; see wasm/Main.hs and
+  -- docs/DESIGN.md Decision 7: every Haskell-level foreign export runs
+  -- `rts_lock`/`newBoundTask` before its body, which requires the RTS to
+  -- already be running, so a Haskell function can never be the thing that
+  -- starts it). A host must call the exported `hs_init` directly before
+  -- `generateJson` is usable.
+  --
+  -- Known remaining gap, NOT fixed by these flags alone: `_start` also
+  -- needs removing from the module before a host's WASI reactor mode will
+  -- accept it, and `__wasm_call_ctors`/`__wasi_init_tp` need exporting and
+  -- calling before `hs_init` — currently a manual post-link patch, not
+  -- something cabal/ghc-options can express. See CLAUDE.md Status and
+  -- docs/DESIGN.md Decision 7 for the full account.
+  if arch(wasm32)
+    ghc-options:
+      -optl-Wl,--export=generateJson
+      -optl-Wl,--export=hs_init
+
+test-suite historian-test
+  import:         shared
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Spec.hs
+  build-depends:
+    , aeson
+    , base
+    , containers
+    , heretical-historian
+    , text
