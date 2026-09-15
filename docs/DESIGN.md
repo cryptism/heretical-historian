@@ -2768,7 +2768,7 @@ stateful handle is real and independently confirmed," on the same
 footing `generateJson` already had — not just "the Haskell side
 type-checks and the native tests pass."
 
-## Decision 34: an idiosyncrasy layer on top of `VoiceRegister` (branch sketch, not yet on `main`)
+## Decision 34: an idiosyncrasy layer on top of `VoiceRegister`
 
 **Needed for:** a user request to explore, conceptually, whether text
 could be "non-deterministically reworded" cheaply — the answer was
@@ -2882,3 +2882,19 @@ attempted: wiring a custom `Tuning` through `commitOutcomes` itself
 (it still hardcodes `defaultTuning`, matching `pickNarrator`'s own
 existing call one line above it) — a real parameterization, not
 something this sketch needed to settle.
+
+**Follow-up: merged into `main`.** The other session finished its own
+concurrent work (themed relic naming, `newItem`'s new `Maybe EntityId`
+commissioning-cult parameter, a pinned `fourmolu.yaml`, parallel
+`veryWideSeeds` scanning) and committed it directly to `main`; this
+branch merged `main` in afterward (three conflicts — `CLAUDE.md`'s
+Status paragraph, `Tuning`'s record fields since both sides added their
+own independently, and `test/Spec.hs`'s import-list formatting since
+main's newly-pinned `fourmolu` reformatted it — all resolved by keeping
+both sides' substance) rather than the other way around, specifically so
+the RNG-cascade question ("does `newItem`'s new parameter shift
+`richWorld`'s construction enough to need yet another reseed") got
+answered before anything touched `main`: it didn't — `Nothing` at every
+call site `richWorld` exercises costs zero extra RNG draws, confirmed by
+`cabal test` staying at 217/217 straight through the merge. `main` then
+fast-forwarded onto the merge commit cleanly, no further changes needed.

@@ -498,10 +498,12 @@ unbuilt rule.
     exact same fix technique as any other RNG-cascade round, just against
     exact-equality checks instead of wide seed pools. `cabal test` 200 to
     203 checks. Full account: `docs/DESIGN.md` Decision 32.
-20. **Branch sketch, not on `main`: an idiosyncrasy layer on top of
-    `VoiceRegister`.** Lives on `idiosyncratic-voice`, built in an isolated
-    `git worktree` at the user's request (a second session was live-editing
-    `World.hs`/`Rules.hs`/`Engine.hs`/`Spec.hs` on `main` at the time).
+20. ~~An idiosyncrasy layer on top of `VoiceRegister`.~~ Done — built on
+    `idiosyncratic-voice` in an isolated `git worktree` at the user's
+    request (a second session was live-editing
+    `World.hs`/`Rules.hs`/`Engine.hs`/`Spec.hs` on `main` at the time),
+    merged into `main` (fast-forward, `d89d985`) once that session
+    finished and committed its own work (`df5d694`, themed relic naming).
     `Historian.Render.applyIdiosyncrasies` — four independent weighted
     coin flips (shout the reading in full caps, open with a recurring
     hailing word, tack on a meandering aside, or decline to elaborate
@@ -522,12 +524,15 @@ unbuilt rule.
     binary reproducing every `richWorld`-dependent check across 3000
     seeds, rather than the much slower approach of re-running the whole
     `cabal test` suite — including its 6000-seed `veryWideSeeds` scan —
-    per candidate). Full account: `docs/DESIGN.md` Decision 34.
-    **Deliberately not attempted:** per-society idiosyncrasy weight
-    profiles (every society currently shares one global `Tuning`), and
-    parameterizing `commitOutcomes`'s own hardcoded `defaultTuning` — real
-    follow-ups, not needed to answer whether the layer works at all. Not
-    yet reviewed for merge into `main`.
+    per candidate). A handful of pre-existing hlint hints (two
+    tuple-sections, one hoist-not) got cleaned up rather than left flagged
+    yet again, same commit range (`d89d985`) — not specific to this item,
+    just done in passing while the branch was open. Full account:
+    `docs/DESIGN.md` Decision 34. **Deliberately not attempted:**
+    per-society idiosyncrasy
+    weight profiles (every society currently shares one global `Tuning`),
+    and parameterizing `commitOutcomes`'s own hardcoded `defaultTuning` —
+    real follow-ups, not needed to answer whether the layer works at all.
 
 ## Things not to do
 
