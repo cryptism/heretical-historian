@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (193 checks — seeds 1/7/13/42/99 for
+Builds and passes `cabal test` (209 checks — seeds 1/2/3/42/99 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-6000, precomputed once as `veryWideWorlds`) for the two rarest —
@@ -51,10 +51,17 @@ and a generic declarative rule engine, `Historian.Engine` — every rule
 but the old reinterpretation rule now has a `RuleSpec` (work queue item
 15, `docs/DESIGN.md` Decision 23 and its follow-ups); a standalone
 backdated-minting PoC (work queue item 14, `docs/DESIGN.md` Decision 27);
-and, hooked live into ordinary `newPerson`/`newSite`/`newItem`, a
-recursive, weighted free-variable backfill (`weightedResolve`/
+a standalone recursive, weighted free-variable backfill hooked live into
+ordinary `newPerson`/`newSite`/`newItem` (`weightedResolve`/
 `backfillWard` — a freshly-minted Ward's chance to already be venerated
-by a cult, work queue item 19, `docs/DESIGN.md` Decision 28).
+by a cult, work queue item 19, `docs/DESIGN.md` Decision 28), now
+mutually recursive with `newSociety`'s own symmetric `backfillPatron`
+hook (a fresh cult's chance to already venerate a Ward, `docs/DESIGN.md`
+Decision 32); and cult
+voice — three outcome types (`Founding`/`Schism`/`MiracleSaint`) narrated
+in whichever society's own `VoiceRegister` gets picked to tell them, a
+kept, unmodified neutral reading still available for the wasm FFI (work
+queue item 17, `docs/DESIGN.md` Decision 29).
 
 **`docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
@@ -157,8 +164,19 @@ Break any of these and the project stops being what it is:
 2. **Names are minted once, at entity creation, and stored on the `Entity`.**
    Never generated at render time. If a dossier re-rolls a name on every read,
    inspection is worthless.
-3. **Prose is rendered once, when the event fires, and stored in the `Event`.**
-   The chronicle is a record; re-reading must not reword it.
+3. **An `Event` stores its structured `Outcome` (`Maybe`, for the handful
+   of events recorded directly rather than through `commitOutcomes` — see
+   invariant 7's neighbor, work queue item 19) alongside two readings
+   computed once, at commit time, against the world as it stood then, and
+   never recomputed: the narrated default (`evNarratedText`, in whichever
+   society got picked to tell it) and the always-neutral one
+   (`evNeutralText`, the wasm FFI's "generic log"). Re-reading either must
+   never reword it.** An explicitly-requested *different* voice
+   (`render w (Just otherSid) (evOutcome ev)`) can legitimately differ
+   across reads — that's a live query against whatever `World` is current,
+   not part of the permanent record, and is the one place this invariant
+   doesn't apply. See `docs/DESIGN.md` Decision 29 (work queue item 17)
+   for why this changed from the original "one rendered `Text`" shape.
 4. **Every `Fact` carries a `factSource` event and an optional `factAttestedBy`.**
    Attestation is what lets contradictory accounts coexist. Don't collapse it
    into a single authoritative timeline. `factObject :: Maybe Referent` (not
@@ -320,7 +338,7 @@ unbuilt rule.
     Decision 27's follow-up, `docs/plans/14-backdated-minting.md`.
     Depth 2/3 recursive backdating and promoting this to a real `RuleSpec`
     are explicitly deferred, not built.
-15. **In progress: a generic, declarative rule engine.** Every rule but
+15. ~~A generic, declarative rule engine.~~ Done — every rule but
     the old `ruleReinterpret` (removed — see item 2) now has a `RuleSpec`,
     collected in `ruleSpecs :: [RuleSpec]`; `ruleFromSpec`/`rulesFromSpecs`/
     `generateViaEngine` let the engine autonomously drive a whole
@@ -333,52 +351,102 @@ unbuilt rule.
     pathway's relative weighting. `Society`/`Item` slot generation's
     auxiliary-claims shape (their patron `Concept` and its claims) is
     still unsettled but still not blocking anything — no spec has needed
-    it yet. Remaining: wire `intelligentStep`/`queryEntity` into the wasm
-    boundary via a stateful handle (keep `World` resident in the wasm
-    module's own heap behind an opaque handle, marshal only single
-    events/query results across the boundary, not the whole world every
-    call).
+    it yet. **The last remaining piece — wiring `intelligentStep`/
+    `queryEntity` into the wasm boundary via a stateful handle — is done
+    too:** `wasm/Main.hs` gained `historian_new`/`historian_step`/
+    `historian_query`/`historian_free`, a `StablePtr (IORef World)`
+    handle that keeps one `World` resident on the wasm module's own heap
+    across calls instead of re-marshaling the whole thing every time;
+    `Historian.Engine.stepAutonomous` and `Historian.Rules.genesisWorld`
+    are the plain, `Chronicle`-free functions underneath it;
+    `Historian.Json.encodeStepResult`/`encodeQueryResult` marshal only a
+    single step's delta or a single entity's dossier across the boundary,
+    not the whole world. Caught a real bug along the way: `intelligentStep`'s
+    `StepAny`/`StepEntities` branches never called `advanceEpoch` — a
+    latent instance of bug #2 above, never exercised until something
+    actually drove them in a loop, which genuinely autonomous stepping is
+    the first thing to do. Fixed the same way `stepWith` already does it:
+    advance unconditionally at the top of the step, before candidates are
+    gathered. Six new checks (`engineStepChecks`) drive `genesisWorld`
+    through `stepAutonomous` the same "one call per step" way a real wasm
+    host would and round-trip `encodeStepResult` through a real JSON
+    parser against a direct diff of the two `World`s involved; `cabal
+    test` went from 203 to 209 checks. **Not re-verified against a real
+    wasm build this round** — same open caveat item 12 already named:
+    nothing here has run through the actual `wasm32-wasi-ghc` toolchain
+    or a real JS host yet, only compiled and tested natively. Full
+    account: `docs/DESIGN.md` Decision 33.
 16. ~~Remodel the inter-step day gap.~~ Done — `advanceEpoch` rolls
     within `1..maxGap`, `maxGap = max 20 (300 - 5 * activity)`, `activity`
     = active society count plus their total `livingMembers`. Still draws
     from `Chronicle`'s ordinary RNG stream; invariant 8 untouched
     (`docs/DESIGN.md` Decision 26).
-17. **Approved plan, not yet built.** Cult voice — each cult should be
-    able to tell an event in its own words, with an unmodified neutral
-    reading kept available for the wasm FFI. Full plan (four rounds of
-    correction, all settled): `docs/plans/17-cult-voice.md` — read that
-    before starting, it has the concrete function shapes (`Voice`/
-    `VoiceRegister`, the `Outcome`-relocation-into-`Types` mechanics,
-    `pickNarrator`, `render`'s new `Maybe EntityId` signature), not just
-    this summary. Per the user's own explicit instruction: do all RNG/
-    seed-cascade re-verification as one batched pass at the very end, not
-    interleaved with the structural work.
-18. **Abstract probabilistic-weight constants into something tunable.**
-    `Historian.Rules.mintBackdatedSaint`'s pick/generate/omit weights
-    (60/15/25, item 14) are a first cut, not finalized — the user wants to
-    tune them by feel once there's something to tune. Item 17's own
-    `pickNarrator` weights (once built), and item 19's `BackfillConfig`
-    (already explicitly named as "hand-edit code for now, file later" in
-    its own doc comment), are the same status — one shared item covering
-    all three, not three separate ones. Not started.
+17. ~~Cult voice.~~ Done — `Voice`/`VoiceRegister` minted once per
+    `Society` at founding; `Outcome` (and `Regard`/`RelicMoment`/
+    `DyingWords`/`LeadershipChange`) relocated into `Historian.Types` so
+    `Event` can hold one; `render :: World -> Maybe EntityId -> Outcome ->
+    Text` is the one entry point, `pickNarrator` a weighted, almost-never-
+    neutral pick at commit time. Three outcome types migrated to
+    substitutive voicing so far — `Founding`, `Schism`, `MiracleSaint` —
+    everything else still neutral until a later batch. One real deviation
+    from the approved plan, forced by work item 14/19 landing first (not
+    anticipated when the plan was written): `mint` already had a fifth
+    parameter (`Maybe Epoch`), so `Voice` became the sixth, not the fifth;
+    `record` already had multiple direct callers (`backfillWard` etc.), so
+    `Event.evOutcome` is `Maybe Outcome` and a new `recordOutcome` handles
+    the voiced path, rather than changing `record` itself. Full account,
+    including the batched re-scan (two `perSeed` witness seeds replaced,
+    one `richWorld`-dependent trial count widened): `docs/DESIGN.md`
+    Decision 29.
+18. ~~Abstract probabilistic-weight constants into something tunable.~~
+    Done — `Historian.World.Tuning`/`defaultTuning` replaces
+    `BackfillConfig`/`defaultBackfillConfig` outright and adds fields for
+    the other two: `mintBackdatedSaint`'s pick/generate/omit weights
+    (60/15/25, item 14) and `pickNarrator`'s attested/other-share weights
+    (70/30, item 17) — one shared record covering all three, as asked,
+    not three separate fixes. `pickNarrator`'s split doesn't share the
+    other two's existing/generate/omit tuple shape (there's no "generate"
+    or "omit" option for a narrator), so it gets its own two named fields
+    rather than being forced into `(Int, Int, Int)`. `backfillWard`
+    already took its config as an explicit parameter;
+    `mintBackdatedSaint`/`pickNarrator` each gained one too, rather than
+    reaching for `defaultTuning` internally — every current call site
+    still passes `defaultTuning` unchanged, same as `MintOptions`'s own
+    call sites before item 17's refactor. Pure refactor, no weight values
+    changed: `cabal test` held at 200 checks, no RNG-cascade fallout, no
+    batched re-scan needed. See `docs/DESIGN.md` Decision 31. "Load this
+    from a file instead" stays future work, not attempted here.
 19. ~~Recursive, weighted free-variable backfill on ordinary minting.~~
     Done — `Historian.World.weightedResolve` (general pick/generate/omit,
     weighted rather than required/optional) hooked into `newPerson`/
     `newSite`/`newItem` via `backfillWard`: every freshly-minted `Ward`
     gets a chance to be venerated by an existing cult, a freshly-generated
-    one, or left alone. Recursive in the type (`BackfillConfig`'s
-    `bfMaxDepth`, capped at 3) but not yet in practice — a generated
-    cult isn't given its own further backfill this pass, since "what
-    would a cult's own recursive backfill even target" is still an open
-    question. Deliberately **not** the same as backdated minting (item
-    14) — separate mechanism, `Claim`'s new `clEpoch` field stays
+    one, or left alone. Deliberately **not** the same as backdated minting
+    (item 14) — separate mechanism, `Claim`'s new `clEpoch` field stays
     `Nothing` throughout this one — and **not** a new `Outcome`/rule; it
     fires inline during ordinary minting, so it carries the same
     RNG-cascade cost every such change does, paid here with zero witness
     replacements needed (the wide seed pools already absorbed it). Full
     account, including three rejected designs before landing here and a
     real inspectability bug `cabal test` itself caught: `docs/DESIGN.md`
-    Decision 28.
+    Decision 28. **Follow-up done too: `newSociety` gained the symmetric
+    `backfillPatron` hook** (a fresh society's own weighted chance to
+    already venerate an existing or freshly-generated Ward) — closing the
+    "what would a cult's own recursive backfill even target" question left
+    open above (answer: an immediately-venerated Ward, not its patron
+    concept, which every society already gets unconditionally regardless).
+    This makes `backfillWard` and `backfillPatron` genuinely mutually
+    recursive — depth 2/3 are now really reachable — bounded by
+    probability decay rather than a shared hard depth counter (each hop is
+    only 15% likely to recurse at all, so it's a subcritical branching
+    process, provably terminating). Caught and fixed a real duplicate-claim
+    edge case the mutual recursion introduced (guarded with `venerates`
+    checks in both directions, mirroring `isSanctified`/`alreadyMerged`'s
+    style). Hand-built test worlds (`engineWorld`, `richWorld`) needed
+    reseeding since `newSociety` can now itself mint extra entities — the
+    exact same fix technique as any other RNG-cascade round, just against
+    exact-equality checks instead of wide seed pools. `cabal test` 200 to
+    203 checks. Full account: `docs/DESIGN.md` Decision 32.
 
 ## Things not to do
 

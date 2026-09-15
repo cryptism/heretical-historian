@@ -18,11 +18,12 @@
 module Historian.Engine where
 
 import Control.Applicative ((<|>))
+import Control.Monad.State.Strict (execState, get)
 import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Historian.Corpus (vaurethine)
-import Historian.Render (Outcome, commitOutcomes)
+import Historian.Render (commitOutcomes)
 import Historian.Types
 import Historian.World
 
@@ -224,8 +225,20 @@ chooseRule rss = Left (AmbiguousRule rss)
 -- 'Historian.Rules.stepWith'\/'Historian.Rules.generate'), so it's the one
 -- that calls 'commitOutcomes', not 'rsFire' or the @fireX@ function
 -- underneath it.
+--
+-- 'StepAny'\/'StepEntities' both advance the epoch unconditionally first,
+-- the same discipline 'Historian.Rules.stepWith' uses and for the same
+-- reason (CLAUDE.md bug #2: age-gated preconditions can only ever become
+-- true if time passes on a step where nothing fires) — genuinely
+-- autonomous stepping, so this can't skip it the way 'StepRule' can.
+-- 'StepRule' is the one exception, deliberately: it names a specific rule
+-- with specific hints, the precise-construction tool every hand-built test
+-- world already relies on to manage its own epoch explicitly, so it stays
+-- exactly as it always has.
 intelligentStep :: [RuleSpec] -> World -> StepRequest -> Chronicle ()
-intelligentStep specs w StepAny =
+intelligentStep specs _ StepAny = do
+  advanceEpoch
+  w <- get
   case [(rs, assignment) | rs <- specs, assignment <- allAssignments w rs] of
     [] -> pure ()
     (p : ps) -> do
@@ -235,16 +248,25 @@ intelligentStep _ w (StepRule rs hints) = do
   let hints' = take (length (rsSlots rs)) (hints ++ repeat Nothing)
   resolved <- resolveAll w (rsSlots rs) hints' []
   rsFire rs w resolved >>= commitOutcomes
-intelligentStep specs w (StepEntities es)
-  | null candidates = pure ()
-  | otherwise = do
+intelligentStep specs _ (StepEntities es) = do
+  advanceEpoch
+  w <- get
+  let usefulness rs = length [() | slot <- rsSlots rs, e <- es, matchesKind e slot]
+      matchesKind e slot = maybe False ((== slotKind slot) . entKind) (M.lookup e (wEntities w))
+      candidates = [rs | rs <- specs, runnable w rs || usefulness rs > 0]
+  case candidates of
+    [] -> pure ()
+    _ -> do
       rs <- weighted [(1 + usefulness rs', rs') | rs' <- candidates]
       resolved <- resolveAll w (rsSlots rs) (replicate (length (rsSlots rs)) Nothing) es
       rsFire rs w resolved >>= commitOutcomes
-  where
-    candidates = [rs | rs <- specs, runnable w rs || usefulness rs > 0]
-    usefulness rs = length [() | slot <- rsSlots rs, e <- es, matchesKind e slot]
-    matchesKind e slot = maybe False ((== slotKind slot) . entKind) (M.lookup e (wEntities w))
+
+-- | 'intelligentStep' run once, autonomously, and applied directly — the
+-- plain @World -> World@ shape a host-facing caller (wasm's
+-- @historian_step@, or any future one) can use without touching
+-- 'Chronicle'\/@mtl@ itself.
+stepAutonomous :: [RuleSpec] -> World -> World
+stepAutonomous specs w = execState (intelligentStep specs w StepAny) w
 
 -- | A structured, queryable view of one entity — the "query on any
 -- existing world state indexed by any entity id" half of this feature.

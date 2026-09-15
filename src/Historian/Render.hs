@@ -6,21 +6,26 @@
 -- machinery — it is a filter over 'wFacts'.
 --
 -- This is also where a fired rule's prose gets built. Every fired rule's
--- outcome is one case of the 'Outcome' sum type, rendered by the single
--- generic 'render' function below, which is pure — 'World' plus an
--- 'Outcome' in, 'Text' out — deliberately never 'Chronicle': 'Historian.Rules'
--- does every effect (minting, rolling outcomes, building 'Claim's) and
--- hands the *resolved* result here as data, right before its one 'record'
--- call, so 'Historian.Rules' stays about what happened and this module
--- stays about how to say it.
+-- outcome is one case of the 'Outcome' sum type ('Historian.Types'); 'render'
+-- turns one into text — pure, 'World' plus an optional narrating society
+-- plus an 'Outcome' in, 'Text' out, deliberately never 'Chronicle':
+-- 'Historian.Rules' does every effect (minting, rolling outcomes, building
+-- 'Claim's) and hands the *resolved* result here as data. 'Nothing' for
+-- the narrator is the always-neutral reading ('renderNeutral'); 'Just sid'
+-- writes it in that society's own voice where a migrated 'Outcome' case
+-- supports it ('renderWithVoice'), falling back to neutral otherwise.
+-- 'commitOutcomes' is the only place this and 'Historian.World.record' are
+-- called together, right before the one 'record' call for a fired rule.
 module Historian.Render where
 
 import Control.Monad (forM_)
 import Control.Monad.State.Strict (get)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as M
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Historian.Corpus (foundingVoicing, miracleSaintVoicing, schismFreshVoicing, schismRenouncedVoicing)
 import Historian.Types
 import Historian.World
 
@@ -40,7 +45,7 @@ dateTag w e = T.justifyLeft 28 ' ' (dateOf w e)
 chronicle :: World -> Text
 chronicle w =
   T.unlines
-    [ epochTag (evEpoch ev) <> " " <> dateTag w (evEpoch ev) <> " " <> T.justifyLeft 10 ' ' (evKind ev) <> " " <> evText ev
+    [ epochTag (evEpoch ev) <> " " <> dateTag w (evEpoch ev) <> " " <> T.justifyLeft 10 ' ' (evKind ev) <> " " <> evNarratedText ev
     | ev <- sortOn evId (M.elems (wEvents w))
     ]
 
@@ -140,54 +145,11 @@ dossier w i =
 
 -- Rule outcomes -----------------------------------------------------------
 --
--- One record per fired rule, in the same order as their counterparts in
--- 'Historian.Rules'. Field prefixes follow this project's existing
--- convention (@ent@/@ev@/@fact@/@cl@/…) so records can share a module
--- without 'DuplicateRecordFields', which isn't enabled. All of them are
--- gathered as one 'Outcome' sum type below, rendered by the one generic
--- 'render' function — see that type's own comment for why.
-
-data FoundingOutcome = FoundingOutcome
-  { fdSociety :: EntityId
-  , fdFounder :: EntityId
-  , fdExtraClaims :: [Claim]
-  -- ^ The founding society's own 'patronClaims' — claims-only, 'render'
-  -- never reads it. Carried on the outcome itself (the same idiom as
-  -- 'msExtraClaims'/'mrExtraClaims'/…) rather than re-derived from a
-  -- concept id at commit time, since nothing about the freshly-minted
-  -- patron concept is looked-up-able via 'World' before its own claims
-  -- are recorded.
-  }
-
-data SchismOutcome = SchismOutcome
-  { scParent :: EntityId
-  , scHeresiarch :: EntityId
-  , scFresh :: Bool
-  -- ^ True when the heresiarch was minted fresh rather than an existing
-  -- member — the free variable 'Historian.Rules.ruleSchism' fills in
-  -- itself.
-  , scSplinter :: EntityId
-  , scExtraClaims :: [Claim]
-  -- ^ The splinter society's own 'patronClaims' — see 'fdExtraClaims' for
-  -- why this lives on the outcome rather than being re-derived later.
-  }
-
--- | Shared by battle, assassination, and the plain ("saint") miracle
--- production — the three rules with an *optional* relic participant
--- ('Historian.Rules.optionalRelicFor'). This is the canonical term for
--- "what happened with the optional relic": 'rmClaims' is every claim this
--- moment contributes (the 'Embodies' claim if freshly minted, plus the
--- 'regardReactions' output) — both the claims side
--- ('Historian.Rules.relicMomentClaims') and the text side
--- ('relicMomentText', which scans 'rmClaims' itself for a freshly-minted
--- item's first-ever regard) read the same list, rather than a caller
--- pre-digesting two different views of it.
-data RelicMoment = RelicMoment
-  { rmItem :: EntityId
-  , rmFresh :: Bool
-  , rmClaims :: [Claim]
-  , rmFallbackSite :: Maybe EntityId
-  }
+-- The data types themselves — 'Outcome' and everything it's built from —
+-- now live in 'Historian.Types' (needed there so 'Event' can hold one).
+-- What stays here is everything that *operates* on them: the prose
+-- fragments below, plus 'render'/'outcomeKind'/'outcomeClaims' further
+-- down.
 
 -- | The item's presence clause (caller-supplied — "was borne into the
 -- fray.", "was found at the scene.", "was witnessed there.", one per
@@ -229,20 +191,6 @@ enshrineOrSafeguard w cult item regard fallbackSite =
           Shunned -> " sealed " <> nameIn w item <> " away at " <> nameIn w site <> ", safe from rival cults."
     [] -> ""
 
--- | Shared by battle and assassination: an optional dying utterance from
--- the casualty — a curse (always 'Shuns'-omened) or a more general
--- vaticination — see 'Historian.Rules.fireDyingWords'. 'dwClaims' is
--- claims-only, the same "term carries everything" shape 'RelicMoment'
--- already established: just the one 'Prophesied' claim this utterance
--- produces, but kept on the term rather than threaded separately.
-data DyingWords = DyingWords
-  { dwSpeaker :: EntityId
-  , dwTarget :: EntityId
-  , dwFraming :: Text
-  , dwCurse :: Bool
-  , dwClaims :: [Claim]
-  }
-
 dyingWordsText :: World -> DyingWords -> Text
 dyingWordsText w dw =
   " With their last breath, "
@@ -254,35 +202,6 @@ dyingWordsText w dw =
     <> dwFraming dw
     <> "."
 
--- | Shared by all three leadership-transition rules
--- ('Historian.Rules.fireCoronation'\/'fireTrialByCombat'\/'fireCoup', via
--- 'Historian.Rules.fireLeadershipChange') — the same "one sub-term, many
--- consumers" shape 'RelicMoment' and 'DyingWords' already have. Each
--- calling rule frames *who* took power in its own words; the rename
--- itself, when one happens, always reads the same way regardless of which
--- rule triggered it.
-data LeadershipChange = LeadershipChange
-  { lcSociety :: EntityId
-  , lcSocietyName :: Text
-  -- ^ The society's name as it stood going into this transition, captured
-  -- once by 'Historian.Rules.fireLeadershipChange' from the 'World' it's
-  -- given before anything about this transition is decided. Deliberately
-  -- *not* left to be looked up later via 'nameIn' at render time: once
-  -- rendering happens after this event's own claims (including a possible
-  -- 'Named' claim) are committed, 'nameIn' on 'lcSociety' would return the
-  -- *new* name instead, breaking the "Old Name is renamed New Name"
-  -- reading every caller wants. Storing it as plain data instead of
-  -- deriving it from timing is what makes 'render' safe to call whenever a
-  -- caller likes, not just in the narrow window before commit.
-  , lcOldLeader :: Maybe EntityId
-  , lcNewLeader :: EntityId
-  , lcRenamed :: Maybe Text
-  -- ^ The freshly generated name, only when the new leader's own rolled
-  -- disposition toward the patron concept differed from the society's
-  -- prior one.
-  , lcClaims :: [Claim]
-  }
-
 -- | The rename clause alone, if any — spliced into each calling rule's own
 -- "so-and-so takes power" sentence rather than returned as a full one,
 -- since the three rules frame the transition itself quite differently.
@@ -291,212 +210,13 @@ renameText lc = case lcRenamed lc of
   Nothing -> ""
   Just newName -> " In token of the change, " <> lcSocietyName lc <> " takes a new name: " <> newName <> "."
 
-data BattleOutcome = BattleOutcome
-  { btVictor :: EntityId
-  , btVanquished :: EntityId
-  , btSite :: EntityId
-  , btVictim :: Maybe EntityId
-  , btRelic :: Maybe RelicMoment
-  , btDyingWords :: Maybe DyingWords
-  }
-
--- | Not a standalone 'Rule' — triggered from inside another rule's effect
--- rather than from its own candidate list. See 'Historian.Rules.fireDispute'.
-data DisputeOutcome = DisputeOutcome
-  { dsDisputant :: EntityId
-  , dsDisputed :: Event
-  , dsFraming :: Text
-  }
-
-data SanctifyOutcome = SanctifyOutcome
-  { syClaimant :: EntityId
-  , sySite :: EntityId
-  , syFresh :: Bool
-  -- ^ True when the site was minted fresh rather than an existing,
-  -- unsanctified one.
-  }
-
-data DefileOutcome = DefileOutcome
-  { dfSite :: EntityId
-  , dfDeposed :: EntityId
-  , dfClaimant :: EntityId
-  }
-
-data MiracleSaintOutcome = MiracleSaintOutcome
-  { msSociety :: EntityId
-  , msSite :: EntityId
-  , msSaint :: EntityId
-  , msFresh :: Bool
-  , msRelic :: Maybe RelicMoment
-  , msExtraClaims :: [Claim]
-  -- ^ 'Embodies' (if a fresh item was drawn) plus the 'regardReactions'
-  -- output over site, saint, and item together — claims-only, and
-  -- deliberately *not* the same thing as "'msRelic' is 'Just'": this
-  -- production's reactions cover the site and saint regardless of whether
-  -- an optional item was drawn at all, unlike battle/assassination, where
-  -- the reaction roll only ever concerns the item. Folding this into
-  -- 'msRelic' instead would silently drop the site/saint reactions
-  -- whenever no item happened to be drawn.
-  }
-
-data MiracleRelicOutcome = MiracleRelicOutcome
-  { mrSociety :: EntityId
-  , mrSite :: EntityId
-  , mrRelic :: EntityId
-  , mrFresh :: Bool
-  , mrExtraClaims :: [Claim]
-  -- ^ The relic's own 'Embodies' claim when freshly minted, plus the
-  -- 'regardReactions' output — claims-only, 'render's 'MiracleRelic' case
-  -- never reads it, but the term stays the single canonical description of
-  -- what happened rather than splitting "what to say" and "what to record"
-  -- across two values.
-  }
-
-data MiracleOnOutcome = MiracleOnOutcome
-  { moSociety :: EntityId
-  , moSite :: EntityId
-  , moActor :: EntityId
-  , moTarget :: EntityId
-  , moExtraClaims :: [Claim]
-  -- ^ The 'regardReactions' output — claims-only, 'render's 'MiracleOn'
-  -- case never reads it.
-  }
-
-data TheftOutcome = TheftOutcome
-  { thThief :: EntityId
-  , thKeeper :: EntityId
-  , thItem :: EntityId
-  , thRegard :: Regard
-  }
-
--- | Theft's peaceful counterpart: no grievance, no hostility precondition
--- — a relic changing hands willingly. 'giReconciled' is claims-only
--- ('render's 'Gift' case folds it straight into the prose, but the field
--- still belongs on the term, not threaded separately alongside it).
-data GiftOutcome = GiftOutcome
-  { giGiver :: EntityId
-  , giReceiver :: EntityId
-  , giItem :: EntityId
-  , giRegard :: Regard
-  -- ^ The *receiver's* new regard — biased toward matching the giver's own
-  -- (see 'Historian.Rules.fireGift'), not simply copied unchanged: a gift
-  -- carries the giver's implicit endorsement, but the receiver still forms
-  -- its own view, the same way every other regard reaction can.
-  , giReconciled :: Bool
-  -- ^ Whether this gift also reconciled a grievance the receiver held
-  -- against the giver — only ever possible when one existed, and even
-  -- then not guaranteed.
-  }
-
-data DestroyRelicOutcome = DestroyRelicOutcome
-  { drKeeper :: EntityId
-  , drItem :: EntityId
-  , drMourners :: [EntityId]
-  -- ^ Every *other* society currently venerating the relic — claims-only,
-  -- 'render's 'DestroyRelic' case never reads it, but it's part of what
-  -- the rule decided happened.
-  }
-
-data AssassinateOutcome = AssassinateOutcome
-  { asFigure :: EntityId
-  , asSociety :: EntityId
-  , asKillers :: EntityId
-  , asRelic :: Maybe RelicMoment
-  , asDyingWords :: Maybe DyingWords
-  }
-
--- | The two outcomes 'Historian.Rules.fireMerger' coin-flips between — a
--- brand new society absorbing both parents, or one parent absorbing the
--- other. A sum type rather than one record with a spare field: the two
--- shapes genuinely have different arity, not just different values.
-data MergerOutcome
-  = MergerFounding EntityId EntityId EntityId [Claim]
-  -- ^ Parent A, parent B, the brand-new society, and its own
-  -- 'patronClaims' — see 'fdExtraClaims' for why the claims travel on the
-  -- outcome itself.
-  | MergerAbsorption EntityId EntityId
-
-newtype DissolveOutcome = DissolveOutcome
-  { dsSociety :: EntityId
-  }
-
-data ReviveOutcome = ReviveOutcome
-  { rvReviver :: EntityId
-  , rvDefunct :: EntityId
-  }
-
-data ProphesyOutcome = ProphesyOutcome
-  { pyProphet :: EntityId
-  , pyTarget :: EntityId
-  , pyFraming :: Text
-  , pyOmen :: Maybe Predicate
-  -- ^ Claims-only — 'render's 'Prophesy' case never reads it, but the
-  -- claim itself needs it ('ROmen') to record what would fulfill this
-  -- prophecy.
-  }
-
-data CoronationOutcome = CoronationOutcome
-  { crLeadership :: LeadershipChange
-  , crRivals :: [EntityId]
-  -- ^ Passed-over candidates who become 'Rivalry'-holders against the new
-  -- leader — zero, one, or two of them; claims-only for most callers, but
-  -- their names and count matter for the sentence.
-  }
-
-data TrialByCombatOutcome = TrialByCombatOutcome
-  { tcSociety :: EntityId
-  , tcChallenger :: EntityId
-  , tcRival :: EntityId
-  , tcSlain :: [EntityId]
-  -- ^ One or both — a trial by combat always costs at least one life.
-  , tcLeadership :: Maybe LeadershipChange
-  -- ^ 'Nothing' only when both combatants die and nobody is left to lead.
-  }
-
-data CoupOutcome = CoupOutcome
-  { cpDeposed :: EntityId
-  , cpLeadership :: LeadershipChange
-  }
-
--- | Every outcome a rule can hand to 'Historian.Rules.commitOutcomes' to
--- become a permanent 'Event', wrapped as one sum type — this is the
--- closed set 'record' ever gets called against, made explicit rather than
--- implicit in "one @renderX@ per rule". 'MergerOutcome' nests rather than
--- flattens: it was already its own two-constructor sum (a brand-new
--- society absorbing both parents, or one parent absorbing the other), and
--- that distinction belongs to the merger outcome itself, not to this type.
---
--- Deliberately *not* included here: 'RelicMoment'\/'DyingWords'\/
--- 'LeadershipChange' are sub-terms spliced into a *parent* outcome's own
--- prose ('relicRecognitionText'\/'dyingWordsText'\/'renameText', plain
--- functions below) — they're never independently recorded, so they don't
--- belong in "the set of things a rule can hand to commit."
-data Outcome
-  = Founding FoundingOutcome
-  | Schism SchismOutcome
-  | Battle BattleOutcome
-  | Dispute DisputeOutcome
-  | Sanctify SanctifyOutcome
-  | Defile DefileOutcome
-  | MiracleSaint MiracleSaintOutcome
-  | MiracleRelic MiracleRelicOutcome
-  | MiracleOn MiracleOnOutcome
-  | Theft TheftOutcome
-  | Gift GiftOutcome
-  | DestroyRelic DestroyRelicOutcome
-  | Assassinate AssassinateOutcome
-  | Merger MergerOutcome
-  | Dissolve DissolveOutcome
-  | Revive ReviveOutcome
-  | Prophesy ProphesyOutcome
-  | Coronation CoronationOutcome
-  | TrialByCombat TrialByCombatOutcome
-  | Coup CoupOutcome
-
--- | The one generic renderer every fired rule's effect calls, one branch
--- per 'Outcome' case.
-render :: World -> Outcome -> Text
-render w = \case
+-- | The always-neutral, voice-agnostic reading of any 'Outcome' — one
+-- branch per case. Never modified by voice; this is what 'render' falls
+-- back to for 'Nothing' and for any outcome type not yet migrated to a
+-- voiced rendering (see 'render'/'renderWithVoice' below), and what the
+-- wasm FFI's "generic log" reading is built from.
+renderNeutral :: World -> Outcome -> Text
+renderNeutral w = \case
   Founding o -> nameIn w (fdSociety o) <> " was founded by " <> nameIn w (fdFounder o) <> "."
   Schism o
     | scFresh o -> hN <> ", until then unrecorded, broke from " <> sN <> " and took the name " <> cN <> "."
@@ -628,6 +348,75 @@ render w = \case
       <> lcSocietyName (cpLeadership o)
       <> " without a drop of blood spilled."
       <> renameText (cpLeadership o)
+
+-- | Voiced readings for the three outcome types migrated so far —
+-- substitutive, not just an appended clause: a cult's 'VoiceRegister'
+-- swaps the specific reporting phrase inside the same sentence shape
+-- 'renderNeutral' uses, rather than bolting flavor text on. Every other
+-- constructor falls through to 'renderNeutral' unchanged — "not yet
+-- migrated", not "no voice".
+renderWithVoice :: World -> Voice -> Outcome -> Text
+renderWithVoice w v = \case
+  Founding o -> nameIn w (fdSociety o) <> " " <> foundingVoicing (voiceRegister v) <> " " <> nameIn w (fdFounder o) <> "."
+  Schism o
+    | scFresh o -> hN <> ", until then unrecorded, " <> broke <> " " <> sN <> " " <> took <> " " <> cN <> "."
+    | otherwise -> hN <> " " <> renounced <> " " <> sN <> " " <> ledOut <> " " <> cN <> "."
+    where
+      hN = nameIn w (scHeresiarch o)
+      sN = nameIn w (scParent o)
+      cN = nameIn w (scSplinter o)
+      (broke, took) = schismFreshVoicing (voiceRegister v)
+      (renounced, ledOut) = schismRenouncedVoicing (voiceRegister v)
+  MiracleSaint o -> core <> maybe "" (relicMomentText w "was witnessed there.") (msRelic o)
+    where
+      sN = nameIn w (msSociety o)
+      siteN = nameIn w (msSite o)
+      saintN = nameIn w (msSaint o)
+      verb = miracleSaintVoicing (voiceRegister v)
+      core
+        | msFresh o = sN <> " " <> verb <> " " <> siteN <> ", and names " <> saintN <> " a saint sprung from nowhere."
+        | isDead w (msSaint o) = sN <> " " <> verb <> " " <> siteN <> ": " <> saintN <> ", once slain, walks the dreams of the faithful still."
+        | otherwise = sN <> " " <> verb <> " " <> siteN <> " performed through " <> saintN <> "."
+  other -> renderNeutral w other
+
+-- | The one entry point every caller outside this module should use.
+-- 'Nothing' is the always-neutral reading — the permanent "generic log"
+-- kept for the wasm FFI. 'Just sid' writes it in that specific society's
+-- own voice, for *any* society, not only whoever actually narrated it —
+-- an explicit, live query against whatever 'World' is passed in, not a
+-- frozen historical reading (see 'Historian.Types.Event's own Haddock).
+render :: World -> Maybe EntityId -> Outcome -> Text
+render w Nothing o = renderNeutral w o
+render w (Just sid) o = case voiceOf w sid of
+  Nothing -> renderNeutral w o
+  Just v -> renderWithVoice w v o
+
+-- | The claim-derived candidate favored by 'pickNarrator' below —
+-- whichever society attested the outcome's first claim ('outcomeClaims's
+-- own list order). Not itself the narrator, just the "attested" input to
+-- the weighted pick.
+attestedSociety :: World -> Outcome -> Maybe EntityId
+attestedSociety w o = listToMaybe (outcomeClaims w o) >>= clAttestedBy
+
+-- | Weighted and probabilistic, run once at commit time like every other
+-- roll in this codebase: heavily favors the attested society but never
+-- guarantees it, spreading the remaining weight across every other active
+-- society. Never falls back to 'Nothing' unless there's truly no active
+-- society at all to pick from — neutral is the empty-candidates edge
+-- case, not a normal weighted option. Weights come from
+-- 'Historian.World.tnNarratorAttested'/'tnNarratorOtherShare' (work queue
+-- item 18) — still a first cut, not finalized.
+pickNarrator :: Tuning -> World -> Outcome -> Chronicle (Maybe EntityId)
+pickNarrator tn w o
+  | null candidates = pure Nothing
+  | otherwise = Just <$> weighted candidates
+  where
+    attested = attestedSociety w o
+    others = [s | s <- activeSocieties w, Just s /= attested]
+    share = tnNarratorOtherShare tn `div` max 1 (length others)
+    candidates =
+      [(tnNarratorAttested tn, s) | Just s <- [attested]]
+        ++ [(share, s) | s <- others]
 
 -- Outcome claims and commit ------------------------------------------------
 --
@@ -863,10 +652,16 @@ outcomeClaims w = \case
 -- or 'Historian.Engine.intelligentStep' for the engine's own single-rule
 -- path). 'fulfillProphecies' runs uniformly over every outcome's claims —
 -- harmless for 'Dispute'\/'Revive'\/'Prophesy', since 'omenOf' has no case
--- for their own predicates ('Disputes'\/'Revives'\/'Prophesied').
+-- for their own predicates ('Disputes'\/'Revives'\/'Prophesied'). Picks a
+-- narrator and freezes both the narrated and neutral readings right here,
+-- against this same 'World' snapshot — never recomputed later (see
+-- 'Historian.Types.Event's own Haddock for why that matters).
 commitOutcomes :: [Outcome] -> Chronicle ()
 commitOutcomes outcomes = do
   w <- get
-  forM_ outcomes $ \o ->
+  forM_ outcomes $ \o -> do
+    narrator <- pickNarrator defaultTuning w o
     let claims = outcomeClaims w o
-     in record (outcomeKind o) (render w o) (claims ++ fulfillProphecies w claims)
+        narrated = render w narrator o
+        neutral = render w Nothing o
+    recordOutcome (outcomeKind o) o narrator narrated neutral (claims ++ fulfillProphecies w claims)

@@ -59,11 +59,13 @@ executable historian
     , heretical-historian
     , text
 
--- | The wasm boundary, per docs/DESIGN.md Decision 7 and CLAUDE.md's work
--- queue: two functions wide (generate, then encodeWorld), wrapped in a
--- foreign export. Builds as an ordinary native executable in this flake's
--- dev shell — actually producing a .wasm file needs a wasm-targeting GHC
--- (e.g. wasm32-wasi-ghc from ghc-wasm-meta), not wired into flake.nix yet.
+-- | The wasm boundary, per docs/DESIGN.md Decision 7 and its stateful-
+-- handle follow-up: generateJson (batch, one shot) plus the
+-- historian_new/step/query/free family (a World kept resident behind an
+-- opaque handle, one step at a time). Builds as an ordinary native
+-- executable in this flake's dev shell — actually producing a .wasm file
+-- needs a wasm-targeting GHC (e.g. wasm32-wasi-ghc from ghc-wasm-meta),
+-- not wired into flake.nix yet.
 executable historian-wasm
   import:         shared
   hs-source-dirs: wasm
@@ -98,6 +100,10 @@ executable historian-wasm
   if arch(wasm32)
     ghc-options:
       -optl-Wl,--export=generateJson
+      -optl-Wl,--export=historian_new
+      -optl-Wl,--export=historian_step
+      -optl-Wl,--export=historian_query
+      -optl-Wl,--export=historian_free
       -optl-Wl,--export=hs_init
 
 test-suite historian-test

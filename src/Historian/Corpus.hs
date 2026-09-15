@@ -5,7 +5,7 @@ module Historian.Corpus where
 
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
-import Historian.Types (Culture (..), Kind (..), Predicate (..))
+import Historian.Types (Culture (..), Kind (..), Predicate (..), VoiceRegister (..))
 
 vaurethine :: Culture
 vaurethine = Culture "Vaurethine"
@@ -311,6 +311,38 @@ curseFramings =
        , "will be cursed in every mouth that speaks their name"
        , "will watch everything they hold dear turn away"
        ]
+
+-- | A cult's writing register, substituted into the neutral sentence
+-- templates for the three outcome types migrated to voiced rendering so
+-- far ('Historian.Render.renderWithVoice') — reusing the same voice's own
+-- verb phrase wherever the neutral template repeats one (e.g.
+-- 'miracleSaintVoicing' across 'MiracleSaint's three sub-cases), same
+-- shape as 'curseFramings'/'disputedFramings'.
+foundingVoicing :: VoiceRegister -> Text
+foundingVoicing = \case
+  Plain -> "was founded by"
+  Fervent -> "was raised up in fire by"
+  Grim -> "was first named in blood by"
+
+miracleSaintVoicing :: VoiceRegister -> Text
+miracleSaintVoicing = \case
+  Plain -> "proclaims a miracle at"
+  Fervent -> "calls down a burning wonder upon"
+  Grim -> "reads a bone-sign into"
+
+-- | The two connective phrases 'Schism's "fresh" template needs — see
+-- 'schismRenouncedVoicing' for its other branch.
+schismFreshVoicing :: VoiceRegister -> (Text, Text)
+schismFreshVoicing = \case
+  Plain -> ("broke from", "and took the name")
+  Fervent -> ("tore free of", "and was reborn as")
+  Grim -> ("cut itself loose from", "and took up the name")
+
+schismRenouncedVoicing :: VoiceRegister -> (Text, Text)
+schismRenouncedVoicing = \case
+  Plain -> ("renounced", "and led the dissent out as")
+  Fervent -> ("cast off", "and led the faithful out as")
+  Grim -> ("turned against", "and led the broken out as")
 
 -- | The symbolic properties a relic can embody, and by extension what a
 -- cult can independently venerate or shun as a 'Concept' in its own right

@@ -87,6 +87,19 @@ optionalPick xs = do
 coin :: Chronicle Bool
 coin = (== (0 :: Int)) <$> roll (0, 1)
 
+-- | Every 'Society' gets one, at founding — uniform over the three
+-- 'VoiceRegister's. Deliberately 'pick' plus a defensive fallback rather
+-- than 'pickOr Plain [Fervent, Grim]': 'pickOr's fallback is only ever
+-- reached when its list argument is empty, so that shape would make
+-- 'Plain' unreachable here instead of one of three equally-likely results.
+rollVoice :: Chronicle Voice
+rollVoice = Voice . fromMaybe Plain <$> pick [Plain, Fervent, Grim]
+
+-- | A society's current voice — 'Nothing' for every other 'Kind', or for
+-- an id that isn't a society at all.
+voiceOf :: World -> EntityId -> Maybe Voice
+voiceOf w i = M.lookup i (wEntities w) >>= entVoice
+
 -- | Weighted choice among alternatives, each tagged with a positive integer
 -- weight. Sums the weights, rolls once in that range, and walks the
 -- cumulative buckets — the same minimal style as 'coin'\/'pickOr'. The
@@ -127,17 +140,37 @@ weightedResolve candidates (existingW, generateW, omitW) generate = do
     GenerateFresh -> Bound <$> generate
     PickExisting -> maybe Unbound Bound <$> pick candidates
 
--- | Tunable by hand for now (work queue item 18: load this from a file
--- instead, later). Depth 1's own weights prefer binding an existing cult
--- over minting a fresh one.
-data BackfillConfig = BackfillConfig
-  { bfWeights :: (Int, Int, Int)
-  -- ^ existing, generate, omit
-  , bfMaxDepth :: Int
+-- | Every hand-tuned probability weight in the codebase, in one place
+-- (work queue item 18) — covers 'backfillWard', 'Historian.Rules.
+-- mintBackdatedSaint', and 'Historian.Render.pickNarrator', which each
+-- picked their own ad hoc constants before this existed, with no way to
+-- tune one without hunting down the others. Still a first cut, not
+-- finalized ("tune by feel"); "load this from a file instead" stays
+-- future work, not attempted here.
+data Tuning = Tuning
+  { tnBackfillWeights :: (Int, Int, Int)
+  -- ^ existing\/generate\/omit, for 'backfillWard' — depth 1 prefers
+  -- binding an existing cult over minting a fresh one.
+  , tnBackfillMaxDepth :: Int
+  , tnBackdatedSaintWeights :: (Int, Int, Int)
+  -- ^ existing\/generate\/omit, for 'Historian.Rules.mintBackdatedSaint'.
+  , tnNarratorAttested :: Int
+  -- ^ 'Historian.Render.pickNarrator': weight for the society whose claim
+  -- is actually attested to the outcome.
+  , tnNarratorOtherShare :: Int
+  -- ^ 'Historian.Render.pickNarrator': weight split evenly across every
+  -- other active society.
   }
 
-defaultBackfillConfig :: BackfillConfig
-defaultBackfillConfig = BackfillConfig {bfWeights = (60, 15, 25), bfMaxDepth = 3}
+defaultTuning :: Tuning
+defaultTuning =
+  Tuning
+    { tnBackfillWeights = (60, 15, 25)
+    , tnBackfillMaxDepth = 3
+    , tnBackdatedSaintWeights = (60, 15, 25)
+    , tnNarratorAttested = 70
+    , tnNarratorOtherShare = 30
+    }
 
 -- | Sample up to @n@ distinct elements from a list, without replacement —
 -- how 'Historian.Rules.regardReactions' draws a handful of spectator cults
@@ -356,20 +389,37 @@ freshEntityId = do
   put w {wNextEntity = wNextEntity w + 1}
   pure (EntityId (wNextEntity w))
 
--- | The 'Maybe Int' is relic data — 'Nothing' for every kind but 'Item' —
--- rolled here, at creation, rather than filled in later: entities are
--- never mutated once minted anywhere in this codebase, and relic data is
--- no exception. See 'newItem'. The 'Maybe Epoch' is an explicit birth
--- epoch override, 'Nothing' meaning "now" (every existing caller) —
--- 'Just' is for backdated minting (see 'Historian.Rules.mintBackdatedSaint'),
--- where the entity's own 'entBorn' must be the backdated moment, not
--- whenever this function happens to run during generation.
-mint :: Kind -> Culture -> Text -> Maybe Int -> Maybe Epoch -> Chronicle EntityId
-mint k c nm modifier bornOverride = do
+-- | 'mint's optional, per-'Kind' fields — one 'Maybe' too many to keep
+-- adding positionally (this has grown by exactly one field per major
+-- feature: relic modifier, backdated epoch, voice), the same "record plus
+-- a default, overridden by name" shape 'Tuning'\/'defaultTuning' already
+-- established. Every field here is
+-- meaningful for exactly one 'Kind' and 'Nothing' for every other —
+-- see 'mint's own Haddock for which.
+data MintOptions = MintOptions
+  { moModifier :: Maybe Int
+  , moBornOverride :: Maybe Epoch
+  , moVoice :: Maybe Voice
+  }
+
+defaultMintOptions :: MintOptions
+defaultMintOptions = MintOptions {moModifier = Nothing, moBornOverride = Nothing, moVoice = Nothing}
+
+-- | 'moModifier' is relic data — meaningful only for 'Item' — rolled
+-- here, at creation, rather than filled in later: entities are never
+-- mutated once minted anywhere in this codebase, and relic data is no
+-- exception. See 'newItem'. 'moBornOverride' is an explicit birth epoch
+-- override, 'Nothing' meaning "now" (every ordinary caller) — 'Just' is
+-- for backdated minting (see 'Historian.Rules.mintBackdatedSaint'), where
+-- the entity's own 'entBorn' must be the backdated moment, not whenever
+-- this function happens to run during generation. 'moVoice' is meaningful
+-- only for 'Society' — see 'newSociety'.
+mint :: Kind -> Culture -> Text -> MintOptions -> Chronicle EntityId
+mint k c nm opts = do
   i <- freshEntityId
   now <- gets wEpoch
-  let ep = fromMaybe now bornOverride
-  modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep modifier) (wEntities w)}
+  let ep = fromMaybe now (moBornOverride opts)
+  modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep (moModifier opts) (moVoice opts)) (wEntities w)}
   pure i
 
 -- | The modifier phrase before a society's noun, guaranteeing exactly one
@@ -404,13 +454,18 @@ generateSocietyName c = do
 -- | Every society gets an independent patron concept from the moment it
 -- exists. Returns the concept alongside the society so the caller can add
 -- the 'Embodies' claim (unattested, intrinsic) and an initial 'Venerates'
--- (the starting regard a later leadership change can flip).
+-- (the starting regard a later leadership change can flip). Also gives the
+-- fresh society its own 'backfillPatron' chance — the mirror of every
+-- other minting function's 'backfillWard' call, and work queue item 19's
+-- own "give newSociety its own hook" follow-up.
 newSociety :: Culture -> Chronicle (EntityId, EntityId)
 newSociety c = do
   name <- generateSocietyName c
-  s <- mint Society c name Nothing Nothing
+  voice <- rollVoice
+  s <- mint Society c name defaultMintOptions {moVoice = Just voice}
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
+  backfillPatron defaultTuning s
   pure (s, concept)
 
 -- | 'newSociety', but backdated — and, deliberately, without a patron
@@ -421,29 +476,114 @@ newSociety c = do
 newSocietyAt :: Culture -> Epoch -> Chronicle EntityId
 newSocietyAt c epoch = do
   name <- generateSocietyName c
-  mint Society c name Nothing (Just epoch)
+  voice <- rollVoice
+  mint Society c name defaultMintOptions {moBornOverride = Just epoch, moVoice = Just voice}
 
 -- | Give a freshly-minted Ward (Person\/Item\/Site) a weighted chance to
 -- also be venerated by a cult — bind to an existing eligible one,
 -- generate a fresh one, or leave it genuinely uncared-for
--- ('weightedResolve'). Recursive, bounded by 'bfMaxDepth': a generated
--- cult isn't itself given a further chance this pass (there's no defined
--- notion yet of what a cult's *own* recursive backfill would even be),
--- so depth 2/3 exist in the mechanism but aren't reachable in practice
--- until that's designed. Claims are dated to "now" (`Nothing` for
--- 'clEpoch') — not backdated; see 'newPersonAt'/'newSocietyAt' for the
--- separate, standalone backdated-minting capability this doesn't touch.
-backfillWard :: BackfillConfig -> Int -> EntityId -> Chronicle ()
+-- ('weightedResolve'). Recursive via 'tnBackfillMaxDepth', and — since
+-- 'newSociety' gained its own 'backfillPatron' hook — a generated cult
+-- (via 'generateCultFor') now genuinely can reach depth 2\/3: the fresh
+-- cult gets its own chance at a Ward, which, if also freshly generated,
+-- gets its own chance at a cult, and so on until 'depth' runs out. Claims
+-- are dated to "now" (`Nothing` for 'clEpoch') — not backdated; see
+-- 'newPersonAt'\/'newSocietyAt' for the separate, standalone backdated-
+-- minting capability this doesn't touch.
+backfillWard :: Tuning -> Int -> EntityId -> Chronicle ()
 backfillWard cfg depth ward
   | depth <= 0 = pure ()
   | otherwise = do
       w <- get
       let candidates = entitiesOf Society w
-      resolution <- weightedResolve candidates (bfWeights cfg) (generateCultFor ward)
+      resolution <- weightedResolve candidates (tnBackfillWeights cfg) (generateCultFor ward)
       case resolution of
         Unbound -> pure ()
         Bound cult -> do
           w' <- get
+          -- 'generateCultFor' (the GenerateFresh branch above) mints its
+          -- cult via 'newSociety', which now runs its own 'backfillPatron'
+          -- — genuinely able to bind that same fresh cult back to this
+          -- same 'ward' on its own, since 'ward' already exists as a
+          -- candidate by the time it runs. Guard rather than assume it
+          -- can't happen: harmless either way (nothing here is exclusive),
+          -- but a silent duplicate fact is still worth skipping.
+          if venerates w' cult ward
+            then pure ()
+            else do
+              let text = nameIn w' cult <> " comes to venerate " <> nameIn w' ward <> "."
+              record "backstory" text [Claim cult Venerates (Just (ROf ward)) (Just cult) Nothing]
+
+-- | Every Ward currently in the world (Person\/Site\/Item combined) — the
+-- candidate pool 'backfillPatron' picks an existing veneration target
+-- from, the mirror of 'backfillWard's own @entitiesOf Society@ pool.
+wardsOf :: World -> [EntityId]
+wardsOf w = entitiesOf Person w ++ entitiesOf Site w ++ entitiesOf Item w
+
+-- | Mint a fresh Ward (uniformly, Person\/Site\/Item) for a freshly-
+-- founded society's own veneration — 'backfillPatron's GenerateFresh
+-- branch. A fresh 'Item' still needs its own 'Embodies' claim recorded
+-- here, the same "'Historian.World' can't reuse 'Historian.Rules''s
+-- per-rule claims functions" reason 'generateCultFor' already duplicates
+-- 'Historian.Rules.patronClaims' for; every other 'Kind' needs nothing
+-- extra. Goes through the ordinary 'newPerson'\/'newSite' (which
+-- themselves roll their own independent 'backfillWard' chance — see
+-- 'backfillWard's Haddock for why that's fine, not a bug) rather than a
+-- bespoke raw mint.
+generateWardFor :: Culture -> Chronicle EntityId
+generateWardFor c = do
+  n <- roll (0, 2)
+  case n of
+    0 -> newPerson c
+    1 -> newSite c
+    _ -> do
+      (item, concept) <- newItem c
+      w <- get
+      record
+        "backstory"
+        (nameIn w item <> " takes shape, bound to " <> nameIn w concept <> ".")
+        [Claim item Embodies (Just (ROf concept)) Nothing Nothing]
+      pure item
+
+-- | Give a freshly-founded society a weighted chance to already venerate a
+-- Ward at founding — the mirror image of 'backfillWard' (there, an
+-- existing Ward gains a cult; here, a fresh cult gains a Ward), so a new
+-- society's own free variable ("does this cult already revere someone or
+-- something?") gets the same pick\/generate\/omit treatment
+-- ('weightedResolve'), reusing 'tnBackfillWeights' rather than a separate
+-- knob for the mirrored choice.
+--
+-- Deliberately not depth-limited the way 'backfillWard' is: called
+-- unconditionally from 'newSociety' every time, including from
+-- 'generateCultFor' itself — the two functions are now genuinely mutually
+-- recursive (a generated cult can generate a Ward, which can generate a
+-- cult, ...) rather than a hard integer counter bounding how deep that
+-- goes. Bounded instead by the same probability decay that already makes
+-- runaway growth vanishingly unlikely: each hop only has a 15%
+-- ('tnBackfillWeights') chance of even choosing @GenerateFresh@, so this
+-- is a subcritical branching process — it terminates with probability 1,
+-- and the expected number of *extra* entities from any one founding is
+-- small (well under one). A shared hard depth cap across both directions
+-- was considered and not built, to avoid the raw-mint duplication it would
+-- need (the fresh Ward would have to skip 'newPerson'\/'newSite'\/
+-- 'newItem's own 'backfillWard' call to keep a counter meaningful); see
+-- docs/DESIGN.md Decision 32 for the full reasoning.
+backfillPatron :: Tuning -> EntityId -> Chronicle ()
+backfillPatron cfg cult = do
+  w <- get
+  resolution <- weightedResolve (wardsOf w) (tnBackfillWeights cfg) (generateWardFor (cultureOf w cult))
+  case resolution of
+    Unbound -> pure ()
+    Bound ward -> do
+      w' <- get
+      -- Mirror of the guard in 'backfillWard': the GenerateFresh branch
+      -- above mints 'ward' via 'newPerson'\/'newSite'\/'newItem', each of
+      -- which runs its own 'backfillWard' — which can, since 'cult' is
+      -- already a candidate by then, bind 'ward' straight back to this
+      -- same 'cult' before control even returns here.
+      if venerates w' cult ward
+        then pure ()
+        else do
           let text = nameIn w' cult <> " comes to venerate " <> nameIn w' ward <> "."
           record "backstory" text [Claim cult Venerates (Just (ROf ward)) (Just cult) Nothing]
 
@@ -473,8 +613,8 @@ newPerson c = do
   stem <- syllableName c
   bn <- pickOr "the Silent" bynames
   useByname <- coin
-  p <- mint Person c (if useByname then stem <> " " <> bn else stem) Nothing Nothing
-  backfillWard defaultBackfillConfig (bfMaxDepth defaultBackfillConfig) p
+  p <- mint Person c (if useByname then stem <> " " <> bn else stem) defaultMintOptions
+  backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) p
   pure p
 
 -- | 'newPerson', but backdated to a given birth epoch instead of "now" —
@@ -484,14 +624,14 @@ newPersonAt c epoch = do
   stem <- syllableName c
   bn <- pickOr "the Silent" bynames
   useByname <- coin
-  mint Person c (if useByname then stem <> " " <> bn else stem) Nothing (Just epoch)
+  mint Person c (if useByname then stem <> " " <> bn else stem) defaultMintOptions {moBornOverride = Just epoch}
 
 newSite :: Culture -> Chronicle EntityId
 newSite c = do
   stem <- markovWord c
   nn <- pickOr "Stair" siteNouns
-  st <- mint Site c ("The " <> nn <> " of " <> stem) Nothing Nothing
-  backfillWard defaultBackfillConfig (bfMaxDepth defaultBackfillConfig) st
+  st <- mint Site c ("The " <> nn <> " of " <> stem) defaultMintOptions
+  backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) st
   pure st
 
 -- | Every item is "relic-eligible" from the moment it exists: a modifier
@@ -507,8 +647,8 @@ newItem c = do
   modifier <- roll (-2, 4)
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
-  item <- mint Item c ("The " <> nn <> " of " <> stem) (Just modifier) Nothing
-  backfillWard defaultBackfillConfig (bfMaxDepth defaultBackfillConfig) item
+  item <- mint Item c ("The " <> nn <> " of " <> stem) defaultMintOptions {moModifier = Just modifier}
+  backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) item
   pure (item, concept)
 
 -- | Concepts are the one 'Kind' minted once per name and reused, not
@@ -521,7 +661,7 @@ conceptNamed c name = do
   w <- get
   case [i | (i, e) <- M.toList (wEntities w), entKind e == Concept, entName e == name] of
     (i : _) -> pure i
-    [] -> mint Concept c name Nothing Nothing
+    [] -> mint Concept c name defaultMintOptions
 
 -- | For an 'Item', the 'Concept' it symbolically embodies, read from its
 -- 'Embodies' fact — 'Nothing' for every other 'Kind'. Deliberately fact-
@@ -572,13 +712,36 @@ backdatedEpoch = do
   pure (Epoch (unEpoch (wEpoch w) - daysBack))
 
 -- | Append one event and its facts. This is the only way facts enter the
--- world, so every fact has a source event whose prose can be shown.
+-- world, so every fact has a source event whose prose can be shown. No
+-- structured 'Outcome' behind this text (see 'Historian.Types.Event's own
+-- Haddock) — for a fired rule's own 'Outcome', 'Historian.Render.
+-- commitOutcomes' calls 'recordOutcome' instead.
 record :: Text -> Text -> [Claim] -> Chronicle ()
 record kind txt claims = do
   w <- get
   let eid = EventId (wNextEvent w)
       ep = wEpoch w
-      ev = Event eid ep kind txt
+      ev = Event eid ep kind Nothing Nothing txt txt
+      fs = [Fact (clSubject c) (clPred c) (clObject c) (fromMaybe ep (clEpoch c)) eid (clAttestedBy c) | c <- claims]
+  put
+    w
+      { wNextEvent = wNextEvent w + 1
+      , wEvents = M.insert eid ev (wEvents w)
+      , wFacts = fs ++ wFacts w
+      }
+
+-- | Like 'record', but for a fired rule's own 'Outcome' — stores it (so a
+-- caller can later ask for a different, explicit voice's reading of this
+-- event on demand) along with the narrator picked for it and both frozen
+-- text readings. Called only from 'Historian.Render.commitOutcomes',
+-- which decides the narrator and renders both readings immediately
+-- beforehand, against the same 'World' snapshot 'record' itself uses.
+recordOutcome :: Text -> Outcome -> Maybe EntityId -> Text -> Text -> [Claim] -> Chronicle ()
+recordOutcome kind outcome narrator narrated neutral claims = do
+  w <- get
+  let eid = EventId (wNextEvent w)
+      ep = wEpoch w
+      ev = Event eid ep kind (Just outcome) narrator narrated neutral
       fs = [Fact (clSubject c) (clPred c) (clObject c) (fromMaybe ep (clEpoch c)) eid (clAttestedBy c) | c <- claims]
   put
     w
@@ -599,7 +762,8 @@ recordBackdated kind factEp claims = do
   w <- get
   let eid = EventId (wNextEvent w)
       now = wEpoch w
-      ev = Event eid now kind ("(backstory) " <> kind)
+      txt = "(backstory) " <> kind
+      ev = Event eid now kind Nothing Nothing txt txt
       fs = [Fact (clSubject c) (clPred c) (clObject c) factEp eid (clAttestedBy c) | c <- claims]
   put
     w
@@ -679,9 +843,6 @@ venerates w subject obj =
 -- 'venerates' — 'ruleMiracle'\'s own precondition and 'ruleDefile'\'s
 -- framing keep reading the cumulative history exactly as before. See
 -- docs/DESIGN.md.
-data Regard = Venerated | Shunned
-  deriving stock (Eq, Show)
-
 -- | The 'Claim' a cult's regard toward a Ward actually asserts — shared by
 -- every rule that rolls a regard reaction and by 'Historian.Render's
 -- claims-building for 'Historian.Render.TheftOutcome'\/'GiftOutcome',

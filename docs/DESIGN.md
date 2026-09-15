@@ -2263,3 +2263,420 @@ gaining its own hook; backdated claims from this mechanism; file-based
 `BackfillConfig`; the eventual `Outcome`/narrated-backstory version and
 explicit user-driven variable binding — both real, both named by the user
 as wanted eventually, neither part of this decision.
+
+## Decision 29: cult voice — narrated prose from a stored `Outcome`
+
+**Needed for:** work queue item 17. Full design history (four rounds of
+correction before the plan was even approved — no `Outcome` involvement
+rejected twice before landing on relocating it into `Historian.Types`;
+`chronicle` calling `render` at read time rejected as a real bug, not a
+style choice; the narrator pick required to almost never be neutral) is
+`docs/plans/17-cult-voice.md`, written *before* work items 14/19 existed.
+This entry records what changed between that plan and what actually got
+built, now that both had landed first.
+
+**`Outcome` (and everything it's built from — `Regard`, `RelicMoment`,
+`DyingWords`, `LeadershipChange`, every `XOutcome` record) relocated from
+`Historian.Render` into `Historian.Types`, exactly as planned** — needed
+so `Event` can hold one without a layering cycle. Everything that
+*operates* on them (`render` and its helpers, the `xClaims` functions,
+`outcomeKind`/`outcomeClaims`) stayed in `Historian.Render` unchanged.
+`Historian.Engine`'s only ripple: drop `Outcome` from its explicit
+`Historian.Render` import list, since it already imports
+`Historian.Types` unqualified.
+
+**Deviation 1: `Voice` is `mint`'s sixth parameter, not its fifth.** The
+plan assumed `mint`'s next free slot; work item 14 had already claimed it
+(`Maybe Epoch`, for backdated minting) by the time this was built. Same
+"one targeted optional field" shape either way — `Nothing` for every kind
+but `Society`, which rolls one via `rollVoice` (uniform over the three
+`VoiceRegister`s). One correctness catch along the way: `rollVoice`'s
+first cut was `pickOr Plain [Fervent, Grim]` — wrong, for the exact reason
+flagged as a live risk in this project's own `pickOr`/`pick1` convention
+(the fallback argument is only ever reached when the list is empty, so
+`Plain` would never actually be chosen). Fixed with `pick [Plain, Fervent,
+Grim]` plus a defensive `fromMaybe Plain`, genuinely uniform over all
+three.
+
+**Deviation 2: `record` keeps its original signature; a new `recordOutcome`
+carries the voiced path.** The plan's `record`'s signature change assumed
+one call site (`commitOutcomes`) — true when written, no longer true once
+work item 19 landed `backfillWard`/`generateCultFor`, which call `record`
+directly and have no `Outcome` to supply. Rather than force those into an
+`Outcome`-shaped mold (explicitly rejected for item 19 — "no new Outcome,
+no commitOutcomes involvement"), `record` stays exactly as it always was;
+`recordOutcome :: Text -> Outcome -> Maybe EntityId -> Text -> Text ->
+[Claim] -> Chronicle ()`, called only from `commitOutcomes`, is the new
+one. Correspondingly, `Event.evOutcome :: Maybe Outcome` — `Nothing` for
+events recorded via plain `record` (no structured data to re-narrate in a
+different voice for those), `Just` for anything that went through
+`commitOutcomes`. A second, smaller consequence: `Event` lost its
+`deriving stock (Show)` — deriving it would have required `Show` on
+`Outcome` and every record it's built from, for a capability nothing in
+the codebase actually calls (`World` itself never derived `Show` either).
+
+**`render :: World -> Maybe EntityId -> Outcome -> Text` is the one entry
+point, exactly as planned** — `Nothing` the always-neutral reading
+(`renderNeutral`, today's old `render` body, untouched), `Just sid` that
+society's own voice (`renderWithVoice`, falling back to neutral per-
+constructor for the ~17 outcome types not yet migrated). `pickNarrator`
+is unchanged from the plan: heavily favors whichever society attested the
+outcome's first claim, spreads the rest across every other active
+society, and only ever returns `Nothing` when no active society exists at
+all.
+
+**Three outcome types migrated — `Founding`, `Schism`, `MiracleSaint` —
+each with its own small `VoiceRegister -> Text` phrase table in
+`Historian.Corpus`** (`foundingVoicing`, `schismFreshVoicing`/
+`schismRenouncedVoicing`, `miracleSaintVoicing`), substituting the
+reporting verb/connective phrase inside the existing sentence shape
+rather than appending flavor text. Genuinely grammar-sensitive, not just
+swapped words: `miracleSaintVoicing`'s alternatives ("calls down a
+burning wonder upon", "reads a bone-sign into") were written to still
+read correctly as `<society> <phrase> <site>`, the same slot the neutral
+"proclaims a miracle at" fills.
+
+**Verified against a real run, not just the test suite.** `--json` for
+seed 1 at 15 steps shows the exact expected shape: `"text"` byte-for-byte
+identical across every narrator, `"narratedText"` differing precisely
+when `"narrator"` resolves to a non-`Plain`-registered society and
+matching `"text"` exactly otherwise. Live in the CLI chronicle: two
+`MiracleSaint` events at the same site read as "proclaims a miracle at"
+(one society) and "reads a bone-sign into" (another) in the same seed 1
+run; a schism reads as "renounced ... and led the dissent out as" from
+one heresiarch and "turned against ... and led the broken out as" from
+another. Composes for free with everything unrelated: reinterpretation
+disputes a `backstory` event (work item 19) with no special-casing
+needed anywhere.
+
+**The batched re-scan, done once, at the end, per the user's own standing
+instruction — and larger than any prior change this session, since
+`rollVoice`/`pickNarrator` both consume RNG on essentially every commit:**
+
+- `engineWorld`'s fixed seed (999) reseeded to 1000: `rollVoice`'s new
+  roll inside `newSociety`, called by `genesis` *before* the founder's own
+  `newPerson`/`backfillWard` roll, shifted whether that founder's backstory
+  generated a second society for that specific seed — breaking
+  `candidatesFor engineWorld [] societySlot == [engineSociety]`, a hand-
+  built-world assertion, not a scanned one. Confirmed via direct
+  enumeration (990–1010) that most seeds still give exactly one society;
+  1000 does.
+- `backdatedTrials`'s range widened from 200 to 2000: `richWorld`'s own
+  construction (seed 777, unchanged) now consumes enough extra RNG
+  (`rollVoice` on every society it mints) that its societies' `entBorn`
+  epochs sit closer to its final `wEpoch`, making "an existing cult
+  qualifies for backdating" a genuinely rarer draw (empirically ~2 in 500
+  trials, confirmed by direct measurement, not guessed) rather than
+  impossible — 200 trials stopped reliably catching it.
+- `seeds` (the five individually-narrated, per-seed structural-check
+  seeds): 7 and 13 replaced with 2 and 3. Neither produced a schism within
+  `steps` any more (checked out to 20 steps, still none) — genuinely a
+  different kind of failure than the two above, since `checksFor`'s "at
+  least one schism occurred" is an existence check riding on the
+  per-seed list rather than `aggregateSeeds`, so there's no wider pool to
+  fall back on; the fix is the same shape this project has always used for
+  a lost witness, just applied to a list that's usually stable. 2 and 3
+  confirmed to pass every other `checksFor` assertion, not only this one.
+- Nothing else needed rescanning: `aggregateSeeds`/`wideSeeds`/
+  `veryWideSeeds`-based checks all survived unchanged, and the new
+  `"backstory" event occurs`-style checks from Decision 28 were
+  unaffected.
+
+**`cabal test` went from 193 to 200 checks** (seven new, all in
+`voiceChecks`: three confirming `renderWithVoice` genuinely diverges from
+`renderNeutral` per migrated outcome type, one confirming `render w
+Nothing` is exactly the neutral reading, one confirming `render w (Just
+sid)` picks up that society's own voice independent of any stored
+narrator, and two on `pickNarrator` itself — sometimes picks a non-
+attested society across 200 trials, and only ever falls back to `Nothing`
+when genuinely no active society exists (using a `Dissolve` outcome
+specifically, since its own claim is unattested — a `Founding` sample
+can never exercise that branch, since its claim's attestor comes from the
+outcome's own data regardless of whether that entity exists in whatever
+`World` is passed in — caught while writing the check, not after).
+
+**Explicitly deferred, unchanged from the plan:** migrating the other
+~17 outcome types; voice reaching how a cult refers to *other* entities;
+a CLI flag for an explicit narrator override; making the on-demand
+alternate-voice path historically accurate against renames (documented,
+known limitation, reads live `World` state). One new item, not in the
+original plan: unifying `mintBackdatedSaint`'s own pick/generate/omit
+logic with `weightedResolve` (work item 19 already forced this
+unification once, for the same reason — a naming collision — and this
+plan's own `Historian.Engine.Slot` precedent already made the case for
+one shared primitive over three parallel ones).
+
+## Decision 30: `mint`'s optional fields packaged into `MintOptions`
+
+**Needed for:** `mint` had grown a trailing `Maybe` per major feature —
+relic modifier (`Item`), backdated epoch (item 14), voice (item 17) — three
+in a row, each call site forced to remember which positional `Nothing`
+meant what. The user asked directly whether packaging was rational; agreed
+it was, given the trend, and given this codebase already had the exact
+precedent to follow.
+
+**Chosen: `MintOptions` (`moModifier`, `moBornOverride`, `moVoice`) plus
+`defaultMintOptions`, the same "record, default value, override by name
+via record update" shape `BackfillConfig`\/`defaultBackfillConfig`
+(Decision 28) already established** — not a new pattern invented for this,
+a second application of one already in the codebase. `mint`'s arity drops
+from six positional parameters to four; every call site changed from e.g.
+`mint Item c name (Just modifier) Nothing Nothing` to `mint Item c name
+defaultMintOptions {moModifier = Just modifier}`, naming only the field it
+actually sets. A future fourth field costs one new `MintOptions` field and
+`defaultMintOptions` entry — no existing call site's arity moves.
+
+**Verified as a pure refactor, not just asserted:** `cabal test` stayed at
+exactly 200 checks, unchanged, before and after — expected, since every
+call site now constructs the identical `Entity` value it did positionally,
+just addressed by field name instead of position. No RNG-cascade
+implications at all (nothing about *what* gets rolled or *when* changed,
+only how the resulting values are threaded into `mint`), so no batched
+re-scan was needed this time.
+
+## Decision 31: work queue item 18 — one `Tuning` record for every hand-tuned weight
+
+**Needed for:** three independent probability-weight constants had
+accumulated, each marked "first cut, not finalized" where it was written,
+with no shared home: `backfillWard`'s `bfWeights` (`BackfillConfig`,
+Decision 28), `mintBackdatedSaint`'s bare `(60, 15, 25)` literal (Decision
+27 follow-up), and `pickNarrator`'s `70`/`30` literals (Decision 29). Tuning
+any one meant hunting down whichever module happened to own it; item 18
+asked for these to become "one shared item covering all three, not three
+separate ones" — not three small independent fixes.
+
+**Chosen: a single `Tuning` record in `Historian.World`** (the shared base
+layer both `Historian.Render` and `Historian.Rules` already import),
+replacing `BackfillConfig`/`defaultBackfillConfig` outright rather than
+sitting alongside it — `tnBackfillWeights`/`tnBackfillMaxDepth` cover what
+`BackfillConfig` used to, plus `tnBackdatedSaintWeights` and
+`tnNarratorAttested`/`tnNarratorOtherShare` for the other two. One
+`defaultTuning` value, the same "record, default, override by name" shape
+`MintOptions`/`BackfillConfig` already established (Decision 30) — kept
+even though nothing overrides any field yet, since that's exactly the shape
+work queue item 18 itself names as the next step ("load this from a file
+instead"). `pickNarrator`'s attested/other-share split doesn't share
+`weightedResolve`'s existing-generate-omit shape (there's no "generate" or
+"omit" option — every active society is always an eligible narrator), so it
+gets its own two fields rather than being forced into the `(Int, Int, Int)`
+tuple shape the other two use — one record, not one shared tuple type,
+since the three weight-sets are not all shaped alike.
+
+**Threading:** `backfillWard` already took its config as an explicit
+parameter (`BackfillConfig`, now `Tuning`); `mintBackdatedSaint` and
+`pickNarrator` gained one (`Tuning -> World -> ...`) rather than reaching
+for `defaultTuning` internally, so a future caller that does want to
+override a weight can, without an unwind. Every current call site (three in
+`Historian.World`, one in `Historian.Render.commitOutcomes`, several in
+`test/Spec.hs`) passes `defaultTuning` explicitly — no site overrides a
+field yet, same as `MintOptions`'s own call sites before Decision 30 needed
+one.
+
+**Verified as a pure refactor, not just asserted:** every weight value is
+unchanged, only where it lives — `cabal test` stayed at exactly 200 checks
+throughout, and a manual `cabal run historian` spot check (seed 5, 8 steps)
+showed nothing behaviorally different. No RNG-cascade implications (no
+change to what gets rolled or when), so no batched re-scan was needed.
+
+## Decision 32: `newSociety` gets its own `backfillPatron` hook — the mutual-recursion follow-up to Decision 28
+
+**Needed for:** Decision 28 shipped `backfillWard` on `newPerson`/`newSite`/
+`newItem` but explicitly left `newSociety` untouched, naming the open
+question directly: "what would a cult's own recursive backfill even
+target — its patron concept? something it venerates immediately?" The user
+asked for this symmetric hook directly, alongside item 18 (Decision 31), as
+one of "the two well-scoped tasks."
+
+**Chosen: "something it venerates immediately" — a fresh society gets a
+weighted chance to already venerate a Ward at founding, the mirror image of
+`backfillWard`.** `backfillPatron :: Tuning -> EntityId -> Chronicle ()`,
+called unconditionally from `newSociety` right after minting (same
+unconditional placement `newPerson`/`newSite`/`newItem` already use for
+`backfillWard`): `weightedResolve` over `wardsOf` (every existing
+`Person`/`Site`/`Item` combined — the mirror of `backfillWard`'s own
+`entitiesOf Society` pool), reusing `tnBackfillWeights` rather than adding
+a fourth tunable knob for what's structurally the same choice mirrored.
+`newSociety`'s own patron-concept minting (unconditional, every founding)
+is untouched — this is a second, independent, *optional* dependency, not a
+replacement for it. `newSocietyAt` (item 14's backdated path) does **not**
+get this hook, consistent with it already deliberately skipping the patron
+concept too — the backdated PoC stays minimal, untouched, exactly as
+Decision 28 left it.
+
+**`generateWardFor` mints the fresh Ward, rolling its `Kind` uniformly
+across `Person`/`Site`/`Item`, going through the ordinary `newPerson`/
+`newSite`/`newItem` rather than a bespoke raw mint** — deliberately, not an
+oversight: those three already carry their own `backfillWard` call, so
+reusing them is what makes the recursion in the next paragraph real rather
+than something to build separately. A fresh `Item` still needs its own
+`Embodies` claim recorded by hand (the same `Historian.World`-can't-import-
+`Historian.Rules` reason `generateCultFor` already duplicates
+`patronClaims` for).
+
+**The real consequence: `backfillWard` and `backfillPatron` are now
+genuinely mutually recursive, not depth-capped by a shared counter.**
+`backfillWard`'s `GenerateFresh` branch mints a cult via `generateCultFor`
+→ `newSociety`, which now runs `backfillPatron` on that fresh cult; if
+`backfillPatron` also generates fresh, it mints a Ward via `newPerson`/
+`newSite`/`newItem`, each of which runs its own `backfillWard` — the same
+function that started the chain. `tnBackfillMaxDepth`'s integer counter
+still bounds `backfillWard`'s own single-direction recursion exactly as
+before, but does **not** bound this new cross-function cycle, since
+`newSociety`'s call to `backfillPatron`, and `newPerson`/`newSite`/
+`newItem`'s calls to `backfillWard`, are all unconditional and always start
+at `tnBackfillMaxDepth` again — there's no shared counter passed between
+the two directions.
+
+A hard cross-mechanism depth cap was considered and rejected as not worth
+the cost: enforcing one would mean the fresh Ward inside `backfillPatron`
+could no longer go through the ordinary `newPerson`/`newSite`/`newItem`
+(since those always restart `backfillWard` at full depth) — it would need
+its own raw-mint variants that skip their own `backfillWard` call, just to
+keep a counter meaningful. **Left bounded by probability instead, which is
+already strong:** each hop only has a 15% (`tnBackfillWeights`) chance of
+even choosing `GenerateFresh`, so the chain is a subcritical branching
+process (expected offspring 0.15 < 1) — it terminates with probability 1,
+and the expected number of *extra* entities from any one founding is small
+(≈0.15/0.85, well under one). This is arguably a better fit for what the
+user actually asked for than a hard cap would have been — "not calling for
+things to just infinitely cascade outward... a chance to assign, a chance
+to mint, a chance to leave open" describes a probability-bounded process,
+not a fixed-depth one.
+
+**A real duplicate-claim bug, caught by manually tracing the mutual
+recursion before trusting it, not by `cabal test`.** When
+`backfillPatron`'s `GenerateFresh` branch mints a Ward via `newPerson`/
+`newSite`/`newItem`, the calling `cult` already exists as a candidate by
+the time that Ward's *own* `backfillWard` call runs — so `backfillWard` can
+independently bind the same Ward straight back to the same `cult`, and then
+`backfillPatron`, still unwinding, records the identical `Venerates` claim
+a second time. Confirmed for real, not just reasoned about: seed 10 at 3
+steps showed "The Unwritten Order of Wooeeha comes to venerate The Crown of
+Ah-Ah-Ohooh." printed twice in the same founding-epoch cluster before the
+fix. Harmless in effect (nothing in this codebase assumes claims are
+deduplicated — `regardOf`/`venerates` are unaffected either way), but
+worth skipping rather than leaving as a silent artifact: both
+`backfillWard`'s and `backfillPatron`'s `Bound` branches now check
+`venerates w' cult ward` before recording, mirroring the guard style
+`isSanctified`/`alreadyMerged`/`hasClaimedRevival` already use elsewhere
+for the same "don't restate a fact already on record" reason.
+
+**Verified against a real run, not just written.** A manual scan across
+seeds 1–10 at short step counts shows the mutual recursion actually firing
+— seed 6 and seed 10 both show three- and four-deep alternating chains
+(cult → Ward → cult → Ward) all landing in the same founding epoch, exactly
+the "depth 2/3 now reachable" gap Decision 28 named. Nothing pathological:
+`cabal run historian` at 40 steps across several seeds shows ordinary-
+looking growth, consistent with the branching-process math above.
+
+**RNG-cascade fallout, batched into one pass at the end, larger than most
+prior rounds since `newSociety` is called from nearly every rule (genesis,
+schism, merger, `generateCultFor`, the engine's `generateForKind`) — but
+resolved the same way as always:** `engineWorld`'s seed moved from 1000 to
+3 (1000 had genesis's own `backfillPatron` mint an extra `Site`, breaking
+two exact-candidate-equality checks that assumed none existed yet);
+`richWorld`'s seed moved from 777 to 7 (777's extra entities from the
+`newSociety` calls inside `fireSchism`/`buildRichWorld` broke four more
+exact-equality `batchEngineChecks`, all found by literally reproducing
+`buildRichWorld` plus the failing checks in a scratch script and scanning
+seeds 1–500 for one where every check held). Both are hand-built,
+deterministic worlds relying on exact shapes — not the wide probabilistic
+seed pools (`aggregateSeeds`/`wideSeeds`/`veryWideSeeds`) that already
+absorbed Decision 28's own cascade for free; hand-built worlds need a
+working seed found directly, the same technique used for `engineWorld`'s
+999→1000 move in Decision 29. One new check added, mirroring
+`backdatedTrials`'s own style: `patronChecks`/`patronTrials` scan 500 RNG
+states against `richWorld` (which already has real existing Wards, so the
+pick-existing branch is reachable) and confirm all three `weightedResolve`
+branches — omit, bind-existing, generate-fresh — actually occur. `cabal
+test` went from 200 to 203 checks, all passing; `hlint` clean.
+
+## Decision 33: work queue item 15's own last piece — a stateful wasm handle for `intelligentStep`/`queryEntity`
+
+**Needed for:** item 15's remaining sentence, verbatim: "wire
+`intelligentStep`/`queryEntity` into the wasm boundary via a stateful
+handle (keep `World` resident in the wasm module's own heap behind an
+opaque handle, marshal only single events/query results across the
+boundary, not the whole world every call)." `generateJson` (item 12,
+Decision 7) already covers "give a host N steps at once, batched"; this
+is the other shape — a host driving history one step at a time and
+inspecting it along the way, without re-marshaling the entire `World` on
+every call.
+
+**Four new exports in `wasm/Main.hs`, alongside the existing
+`generateJson`: `historian_new`, `historian_step`, `historian_query`,
+`historian_free`.** The handle is `StablePtr (IORef World)`, not a bare
+`StablePtr World` — a `StablePtr` names a fixed Haskell value, and the
+whole point of a handle that survives `historian_step` calls is that the
+`World` underneath it changes while the handle itself doesn't; the
+`IORef` is what makes that possible. Ownership is the same discipline
+FFI code always needs and Haskell can't enforce from this side: a host
+calls `historian_free` exactly once per `historian_new`, and never
+touches a handle again afterward — documented in the module's own
+Haddock, not encoded in the types.
+
+**`Historian.Engine.stepAutonomous :: [RuleSpec] -> World -> World`** is
+`intelligentStep specs w StepAny` run once via `execState` — the plain
+`World -> World` shape `historian_step` needs, so wasm's FFI wrapper
+doesn't have to touch `Chronicle`/@mtl@ itself. `Historian.Rules.
+genesisWorld :: Int -> World` is the matching starting point for
+`historian_new` — genesis committed, nothing else, as opposed to
+`generate`'s own "run N steps up front."
+
+**A real bug, caught before anything ever exercised it: `StepAny`/
+`StepEntities` never called `advanceEpoch`.** Every existing use of
+`intelligentStep` in `test/Spec.hs` went through `StepRule` only, which
+manages its own epoch explicitly (it's the precise-construction tool
+hand-built test worlds already rely on) — so nothing had ever driven
+`StepAny`/`StepEntities` in an actual loop before `stepAutonomous` did.
+Genuinely autonomous stepping needs the same discipline
+`Historian.Rules.stepWith` already uses for exactly the reason CLAUDE.md
+bug #2 documents: age-gated preconditions can only ever become true if
+time passes on a step where nothing fires, so skipping the epoch advance
+on an empty-candidates step is a silent, permanent deadlock, not a
+missed edge case. Fixed by advancing unconditionally at the top of both
+`StepAny` and `StepEntities`, mirroring `stepWith`'s own placement;
+`StepRule` is untouched, deliberately — it names a specific rule with
+specific hints and stays exactly the precise tool it always was.
+
+**`Historian.Json.encodeStepResult`/`encodeQueryResult`: delta and
+dossier shapes, not `encodeWorld` reused.** The stateful-handle design's
+whole reason to exist is not re-marshaling the entire `World` every call,
+so `encodeStepResult` takes the `World` before and after one step and
+reports only what changed: `fired` (did an event actually commit),
+`newEntities`/`newEvents` (via `M.difference` on the keyed maps — exact
+and cheap), `newFacts` (via `take` on the newest-first fact list, since
+`record` only ever prepends — the same property `World`'s own Haddock
+already documents elsewhere). `encodeQueryResult` wraps
+`Historian.Engine.queryEntity`'s existing `EntityDossier` (unchanged;
+this decision only exposes it across the boundary, it doesn't add
+anything to it) as JSON, `Null` for an id that doesn't resolve.
+`eventJson` also picked up `narratedText`/`narrator` fields alongside the
+unchanged `text` (still always `evNeutralText` — the permanent "generic
+log" reading item 17/Decision 29 preserved on purpose) — a host that
+wants cult voice can now actually see it; one that doesn't can keep
+reading `text` exactly as before.
+
+**Verified with `engineStepChecks`: `genesisWorld` driven through
+`stepAutonomous` N times in sequence, then compared two ways.**
+`stepNTimes` builds a `World` the same "one call per step" way a real
+wasm host would via repeated `historian_step` calls, not through
+`generate`/`stepWith`. `stepResultRoundTrips` round-trips
+`encodeStepResult` through a real `Data.Aeson.decode` and checks the
+parsed delta's counts against a direct diff of the two `World`s
+involved — entities, events, and facts all independently agree. Six new
+checks; `cabal test` went from 203 to 209, all passing; `hlint` clean.
+
+**Not verified this round, same caveat item 12 already named and still
+true:** nothing here was compiled through the actual `wasm32-wasi-ghc`
+toolchain or run against a real wasm host. `wasm/Main.hs` compiles clean
+under ordinary native GHC (the `ccall` convention was chosen precisely so
+it does) and `historian_new`/`historian_step`/`historian_query`/
+`historian_free` follow the same shape `generateJson` already used when
+it *was* verified end-to-end — but confirming the four new exports
+actually work from JS across a real wasm boundary needs the same ad hoc
+`ghc-wasm-meta` shell item 12 used and still isn't wired into
+`flake.nix`. Treat this decision as "the Haskell side is built and
+internally verified," not "the wasm boundary was re-confirmed live" —
+that re-confirmation is still open work, not something to assume done
+because the native build and tests pass.

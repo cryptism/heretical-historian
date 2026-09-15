@@ -1324,6 +1324,13 @@ generate :: Int -> Int -> World
 generate seed steps =
   execState (genesis >>= commitOutcomes >> replicateM_ steps step) (emptyWorld seed)
 
+-- | A freshly-founded 'World' — genesis committed, nothing else — as
+-- opposed to 'generate's own "run N steps up front" shape. The starting
+-- point for incremental, one-step-at-a-time driving (wasm's
+-- @historian_new@, via 'Historian.Engine.stepAutonomous').
+genesisWorld :: Int -> World
+genesisWorld seed = execState (genesis >>= commitOutcomes) (emptyWorld seed)
+
 -- | Turns a 'RuleSpec' into an ordinary 'Rule' by enumerating every
 -- satisfying assignment via 'Historian.Engine.allAssignments' and firing
 -- each one through the spec's own 'rsFire'. Drops any assignment that
@@ -1374,10 +1381,10 @@ generateViaEngine seed steps =
 -- existing or freshly-generated cult behind them, with a real chance of
 -- neither — 'Historian.World.weightedResolve', the same general pick\/
 -- generate\/omit primitive 'Historian.World.backfillWard' now also uses.
--- Weights are a first cut, not finalized (docs/plans/14-backdated-
--- minting.md §5).
-mintBackdatedSaint :: World -> Chronicle (Maybe EntityId)
-mintBackdatedSaint w = do
+-- Weights come from 'Historian.World.tnBackdatedSaintWeights' (work queue
+-- item 18) — still a first cut, not finalized.
+mintBackdatedSaint :: Tuning -> World -> Chronicle (Maybe EntityId)
+mintBackdatedSaint tn w = do
   epoch <- backdatedEpoch
   -- The one hard invariant this needs beyond what 'Slot' already gives
   -- ordinary rules: a candidate cult must have already existed, and not
@@ -1391,7 +1398,7 @@ mintBackdatedSaint w = do
   -- generation's auxiliary-claims shape is still unsettled" gap
   -- 'Historian.Engine.generateForKind' already has, not a new one
   -- introduced here.
-  resolution <- weightedResolve candidates (60, 15, 25) (newSocietyAt vaurethine epoch)
+  resolution <- weightedResolve candidates (tnBackdatedSaintWeights tn) (newSocietyAt vaurethine epoch)
   w' <- get
   let culture = case resolution of
         Bound cult -> cultureOf w' cult
