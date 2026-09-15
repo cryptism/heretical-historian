@@ -2667,16 +2667,48 @@ parsed delta's counts against a direct diff of the two `World`s
 involved — entities, events, and facts all independently agree. Six new
 checks; `cabal test` went from 203 to 209, all passing; `hlint` clean.
 
-**Not verified this round, same caveat item 12 already named and still
-true:** nothing here was compiled through the actual `wasm32-wasi-ghc`
-toolchain or run against a real wasm host. `wasm/Main.hs` compiles clean
-under ordinary native GHC (the `ccall` convention was chosen precisely so
-it does) and `historian_new`/`historian_step`/`historian_query`/
-`historian_free` follow the same shape `generateJson` already used when
-it *was* verified end-to-end — but confirming the four new exports
-actually work from JS across a real wasm boundary needs the same ad hoc
-`ghc-wasm-meta` shell item 12 used and still isn't wired into
-`flake.nix`. Treat this decision as "the Haskell side is built and
-internally verified," not "the wasm boundary was re-confirmed live" —
-that re-confirmation is still open work, not something to assume done
-because the native build and tests pass.
+**Follow-up: re-verified end-to-end against a real wasm build, same day.**
+Fetched `wasm32-wasi-ghc-9.14.1` via the same ad hoc `ghc-wasm-meta` shell
+item 12 used (still not wired into `flake.nix` — that remains open, see
+item 12's own text), cross-compiled `historian-wasm` (`wasm32-wasi-cabal
+build historian-wasm`, the whole dependency tree including `aeson` from
+source, same as item 12's own build), and ran the existing
+`wasm/patch-reactor.nu` on the result — its own self-check confirms all
+four new exports (`historian_new`/`historian_step`/`historian_query`/
+`historian_free`) survive the `_start`-removal round-trip alongside
+`generateJson`/`hs_init`/`__wasm_call_ctors`/`__wasi_init_tp`, unchanged
+from item 12 since the patch only touches the module's ctor/`_start`
+plumbing, not which application-level functions are exported.
+
+**New, kept artifact: `wasm/verify.mjs`.** Item 12's own `generateJson`
+verification was done ad hoc in a session and never saved; this time it
+was "worth automating" the same way `patch-reactor.nu` was, since a
+four-function stateful handle is a bigger surface to hand-check by typing
+Node commands interactively every time it changes. Follows the exact
+init sequence Decision 7 established (`wasi.initialize()` →
+`__wasi_init_tp()` → `__wasm_call_ctors()` → `hs_init(0, 0)` → one
+microtask tick) and checks, against a real Node `WASI` host, not just
+inspection: `generateJson` still round-trips; `historian_new` returns a
+non-null handle; fifteen `historian_step` calls actually mint entities
+and fire events, and the returned delta has the documented
+`newEntities`/`newEvents`/`newFacts` shape; `historian_query` returns a
+correctly-shaped dossier for a real id and JSON `null` for a nonexistent
+one; `historian_free` doesn't trap; and — scanning seeds 1–20 for one —
+a narrated event's `narratedText` genuinely differs from its neutral
+`text`, with clean, uncorrupted UTF-8 (the exact em-dash-mojibake bug
+class item 12 found and fixed with `bsToCString`, which every export
+here shares — nothing reverted to the broken `newCString`/`String`
+round-trip). All eleven checks pass. Run it yourself with:
+
+```nu
+nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command wasm32-wasi-cabal build historian-wasm
+nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command nu wasm/patch-reactor.nu <built.wasm> <patched.wasm>
+nix shell nixpkgs#nodejs --command node wasm/verify.mjs <patched.wasm>
+```
+
+Treat this as "the wasm boundary for the stateful handle is real and
+independently confirmed," on the same footing `generateJson` already had
+— not just "the Haskell side type-checks and the native tests pass."
+Wiring the toolchain into `flake.nix` so this stops being a three-command
+ad hoc dance is still genuinely separate, unstarted work (item 12's own
+long-standing gap, not reopened or worsened by this).

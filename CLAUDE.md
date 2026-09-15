@@ -371,11 +371,14 @@ unbuilt rule.
     through `stepAutonomous` the same "one call per step" way a real wasm
     host would and round-trip `encodeStepResult` through a real JSON
     parser against a direct diff of the two `World`s involved; `cabal
-    test` went from 203 to 209 checks. **Not re-verified against a real
-    wasm build this round** — same open caveat item 12 already named:
-    nothing here has run through the actual `wasm32-wasi-ghc` toolchain
-    or a real JS host yet, only compiled and tested natively. Full
-    account: `docs/DESIGN.md` Decision 33.
+    test` went from 203 to 209 checks. **Re-verified end-to-end against a
+    real wasm build, same day:** cross-compiled via `wasm32-wasi-ghc`
+    (`ghc-wasm-meta`, still not wired into `flake.nix`), patched with the
+    existing `wasm/patch-reactor.nu`, and exercised from a real Node WASI
+    host with a new kept script, `wasm/verify.mjs` — eleven checks, all
+    passing, including a narrated event's prose genuinely differing from
+    its neutral reading with clean, uncorrupted UTF-8. Full account:
+    `docs/DESIGN.md` Decision 33.
 16. ~~Remodel the inter-step day gap.~~ Done — `advanceEpoch` rolls
     within `1..maxGap`, `maxGap = max 20 (300 - 5 * activity)`, `activity`
     = active society count plus their total `livingMembers`. Still draws
