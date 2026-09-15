@@ -2767,3 +2767,118 @@ immediately after this). Treat this as "the wasm boundary for the
 stateful handle is real and independently confirmed," on the same
 footing `generateJson` already had — not just "the Haskell side
 type-checks and the native tests pass."
+
+## Decision 34: an idiosyncrasy layer on top of `VoiceRegister` (branch sketch, not yet on `main`)
+
+**Needed for:** a user request to explore, conceptually, whether text
+could be "non-deterministically reworded" cheaply — the answer was
+lexical substitution and, layered on top, per-quirk stochastic
+post-processing (ALL CAPS, a recurring interjection, a meandering aside,
+outright declining to elaborate). Asked to sketch how that second layer
+would actually plug into this codebase's existing `VoiceRegister`/
+`render`, on a separate branch (`idiosyncratic-voice`) rather than
+`main`, via an isolated `git worktree` — a second Claude Code session was
+live-editing `World.hs`/`Rules.hs`/`Engine.hs`/`Spec.hs` in the shared
+checkout at the time, and a worktree keeps this sketch from touching any
+of those uncommitted files.
+
+**`VoiceRegister` (`Plain`/`Fervent`/`Grim`) is a lexical substitution
+axis — it swaps specific words inside a fixed sentence template. The
+idiosyncrasy layer is a different, independent axis: post-processing
+applied *after* that substituted sentence exists, not another set of
+sentence templates.** Kept genuinely separate rather than folded into
+`renderWithVoice`'s existing per-`Outcome` cases, for the same reason the
+lexical-substitution/post-processing distinction was drawn in the first
+place when this was discussed conceptually: `renderWithVoice` decides
+*what the sentence says*; idiosyncrasy decides *how it's delivered*,
+and conflating the two would mean every future migrated `Outcome` case
+also has to hand-author its own ALL-CAPS/hail/meander/omission variants,
+instead of getting them for free from one shared post-processing pass.
+
+**Four independent weighted coin flips, in `Historian.Render.
+applyIdiosyncrasies :: Tuning -> Text -> Chronicle Text`, new `Tuning`
+fields (`tnAllCapsChance`/`tnHailChance`/`tnMeanderChance`/
+`tnOmitChance`, work queue item 18's shared-record precedent again)
+rather than one bundled "chaos" knob** — the same design conclusion
+reached when this was discussed conceptually: independently tunable
+weights, not one dial, so turning up "meanders" doesn't also drag
+"sometimes says nothing" along with it. `Historian.World.chance :: Int
+-> Chronicle Bool` is the new general "does this one quirk fire"
+primitive underneath all four (and `pickNarrator`-style weighted rolls
+generally) — `weighted [(pct, True), (100 - pct, False)]`, clamping
+gracefully outside 0..100 the same way `weighted`'s own bucket walk
+already does for any out-of-range input.
+
+**Fixed order, not incidental — this was the ordering-collision problem
+named when the idea was first discussed conceptually, now actually
+resolved:** omission is checked first and short-circuits everything else
+(nothing to meander about or shout once the narrator's declined to
+elaborate); meander and hail both operate on plain prose, so they run
+before the final caps pass; caps runs last so it covers whatever the
+sentence grew into — a hailed, meandered sentence that then gets
+shouted — rather than just the original reading with an un-shouted
+hail/meander bolted on afterward.
+
+**Omission needed a real fallback, not `Nothing`.** `evNarratedText ::
+Text`, not `Maybe Text` (invariant 3 predates this decision and wasn't
+reopened for it) — so "the narrator declines to elaborate" still has to
+produce actual `Text`. `Historian.Corpus.omissionTexts`, a small pool of
+non-committal stand-ins ("...", "The full account goes unrecorded."),
+picked the same `pick1` way every other corpus pool is. The event still
+gets recorded — invariant 1 is about `Fact`s, not narration text, so this
+doesn't touch it either way, but a record that says "nothing further is
+said of it" is still a real, inspectable claim about the event having
+happened, not a hole in the history.
+
+**Wired into `commitOutcomes`, applied only to the narrated reading,
+`evNeutralText` completely untouched — same discipline Decision 29
+already established for the narrated/neutral split, just extended, not
+reopened.** `render`/`renderWithVoice` themselves are untouched and stay
+pure — deliberately not given `applyIdiosyncrasies`'s `Chronicle`
+requirement, so the documented "explicitly-requested different voice is
+a live, repeatable query" contract (invariant 3's own carve-out) keeps
+meaning what it already says: a live `render w (Just otherSid) o` query
+still reads in that society's `VoiceRegister` only, with no idiosyncrasy
+dressing and no RNG draw, exactly as before this decision. Idiosyncrasy
+is deliberately a one-time performative flourish minted at commit time
+only, like everything else `evNarratedText` freezes — not a property of
+`render` itself.
+
+**Default weights kept modest** (8/12/10/4 out of 100 for
+caps/hail/meander/omit) so ordinary output isn't overwhelmed — "off-chance",
+per how this was originally described, not "constant."
+
+**Verified with direct, deterministic checks, not sampling alone** (a
+standing lesson from this project's own history: a probabilistic feature
+needs a hand-built-world check with the odds forced to the edge, because
+sampling alone can mask a real bug). Each quirk gets its own `Tuning`
+value with that one chance forced to 100 and the other three forced to 0,
+checked against a fixed base sentence: caps-only produces exactly
+`T.toUpper` of the base; hail-only always starts with a member of
+`hailWords`; meander-only always contains a member of `meanderClauses`;
+omit-only always returns a member of `omissionTexts`, and that member is
+never empty text. One more check runs `defaultTuning`'s actual (modest)
+weights across 200 independent RNG states and confirms the reading
+changes at least once — the same "does it ever actually happen" shape
+`pickNarrator`'s own check already uses. A last check scans `genesisWorld`
+across 50 seeds and confirms `evNeutralText` is byte-identical to a
+direct `renderNeutral` call on the same outcome every time — proof the
+neutral/narrated split holds under this addition, not just an assumption
+carried over from Decision 29.
+
+**RNG-cascade fallout, the same kind every new roll inside
+`commitOutcomes` causes, resolved the same documented way:** `richWorld`'s
+seed moved (scan documented in the commit that landed this) after the
+new rolls shifted its downstream construction enough to break one
+`theftSpec` candidate-set check; `cabal test` count and the new seed are
+recorded in the commit, not duplicated here.
+
+**Deliberately not attempted here:** per-society idiosyncrasy weight
+profiles (every society currently shares `defaultTuning`'s global
+weights, the same way `VoiceRegister` is the only thing that currently
+varies per society) — a natural follow-up, not needed to answer the
+original question of "is this a real, working layer." Also not
+attempted: wiring a custom `Tuning` through `commitOutcomes` itself
+(it still hardcodes `defaultTuning`, matching `pickNarrator`'s own
+existing call one line above it) — a real parameterization, not
+something this sketch needed to settle.

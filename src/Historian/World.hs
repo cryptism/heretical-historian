@@ -87,6 +87,14 @@ optionalPick xs = do
 coin :: Chronicle Bool
 coin = (== (0 :: Int)) <$> roll (0, 1)
 
+-- | 'True' with probability @pct@ percent (clamped to 0..100 by
+-- 'weighted''s own bucket walk — a value outside that range just floors
+-- to always-'False'\/always-'True'). The general "does this one
+-- independent quirk fire" primitive 'Historian.Render.applyIdiosyncrasies'
+-- rolls once per quirk.
+chance :: Int -> Chronicle Bool
+chance pct = weighted [(pct, True), (100 - pct, False)]
+
 -- | Every 'Society' gets one, at founding — uniform over the three
 -- 'VoiceRegister's. Deliberately 'pick' plus a defensive fallback rather
 -- than 'pickOr Plain [Fervent, Grim]': 'pickOr's fallback is only ever
@@ -160,6 +168,19 @@ data Tuning = Tuning
   , tnNarratorOtherShare :: Int
   -- ^ 'Historian.Render.pickNarrator': weight split evenly across every
   -- other active society.
+  , tnAllCapsChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 that a
+  -- narrated reading gets shouted in full caps.
+  , tnHailChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 of a
+  -- recurring hailing word opening the reading.
+  , tnMeanderChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 of a
+  -- rambling aside tacked onto the end of the reading.
+  , tnOmitChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 that the
+  -- narrator declines to elaborate at all, replacing the reading with a
+  -- non-committal stand-in rather than the actual account.
   }
 
 defaultTuning :: Tuning
@@ -170,6 +191,10 @@ defaultTuning =
     , tnBackdatedSaintWeights = (60, 15, 25)
     , tnNarratorAttested = 70
     , tnNarratorOtherShare = 30
+    , tnAllCapsChance = 8
+    , tnHailChance = 12
+    , tnMeanderChance = 10
+    , tnOmitChance = 4
     }
 
 -- | Sample up to @n@ distinct elements from a list, without replacement —

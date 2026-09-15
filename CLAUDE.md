@@ -19,9 +19,9 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (209 checks — seeds 1/2/3/42/99 for
-per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
-(1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
+Builds and passes `cabal test` (217 checks on this branch — seeds
+1/2/3/42/99 for per-seed structural checks, `aggregateSeeds` (1-40) and
+`wideSeeds` (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-6000, precomputed once as `veryWideWorlds`) for the two rarest —
 trial by combat and a coup — plus two hand-built worlds, `schismSpec`/
 `sanctifySpec`'s and the richer `richWorld`, covering direct-construction
@@ -462,6 +462,36 @@ unbuilt rule.
     exact same fix technique as any other RNG-cascade round, just against
     exact-equality checks instead of wide seed pools. `cabal test` 200 to
     203 checks. Full account: `docs/DESIGN.md` Decision 32.
+20. **Branch sketch, not on `main`: an idiosyncrasy layer on top of
+    `VoiceRegister`.** Lives on `idiosyncratic-voice`, built in an isolated
+    `git worktree` at the user's request (a second session was live-editing
+    `World.hs`/`Rules.hs`/`Engine.hs`/`Spec.hs` on `main` at the time).
+    `Historian.Render.applyIdiosyncrasies` — four independent weighted
+    coin flips (shout the reading in full caps, open with a recurring
+    hailing word, tack on a meandering aside, or decline to elaborate
+    entirely) layered onto the already-voiced reading, distinct from
+    `VoiceRegister`'s lexical substitution: that decides *what* a sentence
+    says, this decides *how* it's delivered. New `Tuning` fields
+    (`tnAllCapsChance`/`tnHailChance`/`tnMeanderChance`/`tnOmitChance`,
+    default 8/12/10/4) and a general `Historian.World.chance :: Int ->
+    Chronicle Bool` percent-roll primitive underneath them. Wired into
+    `commitOutcomes`, applied only to the narrated reading —
+    `evNeutralText` stays exactly what Decision 29 already made it,
+    untouched. `render`/`renderWithVoice` themselves are unchanged and
+    stay pure, so a live `render w (Just otherSid) o` re-query still
+    means exactly what invariant 3 already says it means. `cabal test`
+    209 to 217 checks (`idiosyncrasyChecks`, deterministic — each quirk's
+    chance forced to 100 with the other three at 0). `richWorld`'s seed
+    moved 7 → 14 (RNG-cascade fallout, found instantly via a scratch
+    binary reproducing every `richWorld`-dependent check across 3000
+    seeds, rather than the much slower approach of re-running the whole
+    `cabal test` suite — including its 6000-seed `veryWideSeeds` scan —
+    per candidate). Full account: `docs/DESIGN.md` Decision 34.
+    **Deliberately not attempted:** per-society idiosyncrasy weight
+    profiles (every society currently shares one global `Tuning`), and
+    parameterizing `commitOutcomes`'s own hardcoded `defaultTuning` — real
+    follow-ups, not needed to answer whether the layer works at all. Not
+    yet reviewed for merge into `main`.
 
 ## Things not to do
 

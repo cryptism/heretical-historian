@@ -13,10 +13,11 @@ import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Historian.Corpus (vaurethine)
+import qualified Data.List.NonEmpty as NE
+import Historian.Corpus (hailWords, meanderClauses, omissionTexts, vaurethine)
 import Historian.Engine
 import Historian.Json (encodeQueryResult, encodeStepResult, encodeWorld)
-import Historian.Render (chronicle, commitOutcomes, pickNarrator, render, renderNeutral, renderWithVoice)
+import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, pickNarrator, render, renderNeutral, renderWithVoice)
 import Historian.Rules
   ( assassinateSpec
   , battleSpec
@@ -287,7 +288,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ patronChecks ++ engineStepChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -477,7 +478,7 @@ buildRichWorld = do
 
 richIds :: (EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId)
 richWorld :: World
-(richIds, richWorld) = runState buildRichWorld (emptyWorld 7)
+(richIds, richWorld) = runState buildRichWorld (emptyWorld 14)
 
 rS0, rS1, rS2, rSt0, rItem, rP0, rP1, rP2, rDeadSoc, rDissolvable :: EntityId
 (rS0, rS1, rS2, rSt0, rItem, rP0, rP1, rP2, rDeadSoc, rDissolvable) = richIds
@@ -819,6 +820,57 @@ voiceChecks =
     -- (by rS0's id, real or not), so it can never hit the Nothing branch.
     -- Dissolve's own claim is genuinely unattested (Nothing), so this is
     -- the one outcome shape that can actually reach it.
+  ]
+
+-- | Branch sketch: an idiosyncrasy layer on top of 'VoiceRegister'
+-- (docs/DESIGN.md Decision 34). Deterministic weight overrides isolate
+-- one quirk at a time — chance forced to 100 for the quirk under test,
+-- 0 for the other three — so a single 'evalState' call is enough per
+-- check, no seed scanning needed (a lesson this project has already
+-- learned the hard way: verify a probabilistic feature with the odds
+-- forced to the edge, not just by sampling).
+idiosyncrasyBase :: Text
+idiosyncrasyBase = "The Hollow Covenant of Girijanthu founds a shrine."
+
+allCapsOnly, hailOnly, meanderOnly, omitOnly, allIdiosyncrasiesOff :: Tuning
+allCapsOnly = defaultTuning {tnAllCapsChance = 100, tnHailChance = 0, tnMeanderChance = 0, tnOmitChance = 0}
+hailOnly = defaultTuning {tnAllCapsChance = 0, tnHailChance = 100, tnMeanderChance = 0, tnOmitChance = 0}
+meanderOnly = defaultTuning {tnAllCapsChance = 0, tnHailChance = 0, tnMeanderChance = 100, tnOmitChance = 0}
+omitOnly = defaultTuning {tnAllCapsChance = 0, tnHailChance = 0, tnMeanderChance = 0, tnOmitChance = 100}
+allIdiosyncrasiesOff = defaultTuning {tnAllCapsChance = 0, tnHailChance = 0, tnMeanderChance = 0, tnOmitChance = 0}
+
+idiosyncrasyChecks :: [(Bool, Text)]
+idiosyncrasyChecks =
+  [ ( evalState (applyIdiosyncrasies allIdiosyncrasiesOff idiosyncrasyBase) richWorld == idiosyncrasyBase
+    , "Direct: applyIdiosyncrasies with every chance at 0 leaves the reading unchanged"
+    )
+  , ( evalState (applyIdiosyncrasies allCapsOnly idiosyncrasyBase) richWorld == T.toUpper idiosyncrasyBase
+    , "Direct: applyIdiosyncrasies with allCapsChance 100 (others 0) shouts the whole reading"
+    )
+  , ( any (`T.isPrefixOf` evalState (applyIdiosyncrasies hailOnly idiosyncrasyBase) richWorld) (NE.toList hailWords)
+    , "Direct: applyIdiosyncrasies with hailChance 100 (others 0) opens with a hailing word"
+    )
+  , ( any (`T.isInfixOf` evalState (applyIdiosyncrasies meanderOnly idiosyncrasyBase) richWorld) (NE.toList meanderClauses)
+    , "Direct: applyIdiosyncrasies with meanderChance 100 (others 0) tacks on a meandering clause"
+    )
+  , ( evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) richWorld `elem` NE.toList omissionTexts
+    , "Direct: applyIdiosyncrasies with omitChance 100 replaces the reading with a stand-in, not the actual account"
+    )
+  , ( all (\i -> not (T.null (evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) (richWorld {wGen = mkStdGen i})))) [1 .. 50]
+    , "Direct: an omitted reading is never empty text, even though it isn't the actual account, across 50 independent RNG trials"
+    )
+  , ( any (\i -> evalState (applyIdiosyncrasies defaultTuning idiosyncrasyBase) (richWorld {wGen = mkStdGen i}) /= idiosyncrasyBase) [1 .. 200]
+    , "Direct: applyIdiosyncrasies with defaultTuning's actual (modest) weights sometimes changes the reading across 200 independent RNG trials"
+    )
+  , ( all
+        ( \i ->
+            let w = genesisWorld i
+                ev = firstOrErr "genesis produced no event" (M.elems (wEvents w))
+             in maybe True (\o -> evNeutralText ev == renderNeutral w o) (evOutcome ev)
+        )
+        [1 .. 50]
+    , "Direct: evNeutralText is byte-identical to a direct renderNeutral call even when the narrated reading gets idiosyncratically dressed, across 50 seeds"
+    )
   ]
 
 -- | 'newSociety'\/'backfillPatron' trials (work queue item 19's own

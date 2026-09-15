@@ -312,6 +312,44 @@ curseFramings =
        , "will watch everything they hold dear turn away"
        ]
 
+-- | Idiosyncratic dressing pools for 'Historian.Render.applyIdiosyncrasies'
+-- — independent of 'VoiceRegister' (that's a lexical substitution axis;
+-- this is a post-processing one, see docs/DESIGN.md Decision 34). A
+-- recurring exclamation a narrator opens with, regardless of what's being
+-- reported.
+hailWords :: NonEmpty Text
+hailWords =
+  "Hark!"
+    :| [ "Mark this well:"
+       , "Hear us now:"
+       , "Attend:"
+       , "Let it be known:"
+       ]
+
+-- | A rambling aside a narrator tacks onto the end of an account —
+-- meaning nothing, committing to nothing, the idiosyncratic opposite of a
+-- clean report.
+meanderClauses :: NonEmpty Text
+meanderClauses =
+  "though the details blur with every retelling"
+    :| [ "or so three separate accounts agree, more or less"
+       , "the exact order of things already disputed among the faithful"
+       , "as much as anyone still living can attest to it"
+       , "though who first spoke of it, nobody now recalls"
+       ]
+
+-- | What gets recorded in place of the narration when a narrator simply
+-- declines to elaborate — still real 'Text' (invariant 3 gives
+-- 'evNarratedText' no 'Maybe'), just a non-committal stand-in rather than
+-- the actual account.
+omissionTexts :: NonEmpty Text
+omissionTexts =
+  "..."
+    :| [ "The full account goes unrecorded."
+       , "Nothing further is said of it."
+       , "The rest is passed over in silence."
+       ]
+
 -- | A cult's writing register, substituted into the neutral sentence
 -- templates for the three outcome types migrated to voiced rendering so
 -- far ('Historian.Render.renderWithVoice') — reusing the same voice's own

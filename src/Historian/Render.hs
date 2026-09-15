@@ -25,7 +25,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Historian.Corpus (foundingVoicing, miracleSaintVoicing, schismFreshVoicing, schismRenouncedVoicing)
+import Historian.Corpus (foundingVoicing, hailWords, meanderClauses, miracleSaintVoicing, omissionTexts, schismFreshVoicing, schismRenouncedVoicing)
 import Historian.Types
 import Historian.World
 
@@ -418,6 +418,44 @@ pickNarrator tn w o
       [(tnNarratorAttested tn, s) | Just s <- [attested]]
         ++ [(share, s) | s <- others]
 
+-- | Idiosyncratic dressing layered onto an already-voiced reading —
+-- independent of 'VoiceRegister' (that's a lexical substitution axis
+-- inside 'renderWithVoice'; this is a post-processing one applied after
+-- it). Four independent weighted coin flips (docs/DESIGN.md Decision
+-- 34), each its own quirk: shout the whole thing in caps, open with a
+-- recurring hailing word, tack on a rambling aside, or decline to
+-- elaborate at all. Deliberately outside 'render'\/'renderWithVoice'
+-- themselves, which stay pure — this needs 'Chronicle' for its rolls, and
+-- 'commitOutcomes' is the only caller, applied once to the narrated
+-- reading and never to 'evNeutralText' (same discipline invariant 3
+-- already establishes for every other narrated/neutral split).
+--
+-- Order matters and is fixed on purpose: omission short-circuits
+-- everything else (nothing to meander or shout about once the narrator's
+-- declined to elaborate), meander and hail both operate on plain prose so
+-- they run before the final caps pass, and caps is applied last so it
+-- covers whatever the sentence grew into, not just the original reading —
+-- avoiding the exact "which order did the quirks run in" collision named
+-- when this was first discussed conceptually.
+applyIdiosyncrasies :: Tuning -> Text -> Chronicle Text
+applyIdiosyncrasies tn base = do
+  omit <- chance (tnOmitChance tn)
+  if omit
+    then pick1 omissionTexts
+    else do
+      meander <- chance (tnMeanderChance tn)
+      withMeander <-
+        if meander
+          then (\m -> T.dropWhileEnd (== '.') base <> ", " <> m <> ".") <$> pick1 meanderClauses
+          else pure base
+      hail <- chance (tnHailChance tn)
+      withHail <-
+        if hail
+          then (\h -> h <> " " <> withMeander) <$> pick1 hailWords
+          else pure withMeander
+      shout <- chance (tnAllCapsChance tn)
+      pure (if shout then T.toUpper withHail else withHail)
+
 -- Outcome claims and commit ------------------------------------------------
 --
 -- The other half of "'Outcome' -> anything", alongside 'render': one
@@ -662,6 +700,11 @@ commitOutcomes outcomes = do
   forM_ outcomes $ \o -> do
     narrator <- pickNarrator defaultTuning w o
     let claims = outcomeClaims w o
-        narrated = render w narrator o
         neutral = render w Nothing o
+    narrated <- case narrator of
+      Nothing -> pure neutral
+      -- Idiosyncrasies dress only the in-voice reading — 'evNeutralText'
+      -- stays the permanent, unmangled "generic log" (docs/DESIGN.md
+      -- Decision 29), same as before this existed.
+      Just sid -> applyIdiosyncrasies defaultTuning (render w (Just sid) o)
     recordOutcome (outcomeKind o) o narrator narrated neutral (claims ++ fulfillProphecies w claims)
