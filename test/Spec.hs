@@ -1081,7 +1081,7 @@ checksFor seed =
   , (all ((> 0) . monLength) (yearMonths (wSeed w) 0), tag "every month has a positive length")
   , (yearMonths (wSeed w) 0 /= yearMonths (wSeed w) 1, tag "consecutive years don't generate identical months")
   , (all (\f -> dateOf w (factEpoch f) /= "an unrecorded day") facts, tag "every fact's epoch resolves to a real date")
-  , (all (not . null . historyOf w) (M.keys (wEntities w)), tag "every entity is inspectable")
+  , (not (any (null . historyOf w) (M.keys (wEntities w))), tag "every entity is inspectable")
   , (chronicle w == chronicle (generate seed steps), tag "generation is deterministic")
   ]
   where

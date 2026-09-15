@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | Rules: a nondeterministic precondition plus an effect.
 --
@@ -388,7 +389,7 @@ fireMiracleSaint :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle
 fireMiracleSaint w s site msaint = do
   (saint, saintFresh) <- case msaint of
     Just p -> pure (p, False)
-    Nothing -> (\p -> (p, True)) <$> newPerson (cultureOf w s)
+    Nothing -> (, True) <$> newPerson (cultureOf w s)
   (mrelicItem, embodiesClaims) <- optionalRelicFor w (cultureOf w s) [s]
   let wardParticipants = [site, saint] ++ maybe [] (pure . fst) mrelicItem
   reactions <- regardReactions s wardParticipants

@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | The fact store and the effect monad rules run in.
 --
@@ -748,7 +749,7 @@ themedItemName cfg w cult =
           -- between them first — a cult with three shunned things and one
           -- venerated one should lean toward theming off a shunned thing,
           -- not draw the two pools evenly.
-          mChoice <- pick (map (\t -> (t, True)) venerated ++ map (\t -> (t, False)) shunned)
+          mChoice <- pick (map (, True) venerated ++ map (, False) shunned)
           case mChoice of
             Nothing -> pure Nothing
             Just (target, True) -> do
