@@ -824,3 +824,81 @@ deliberate, narrow, per-kind carve-out (revival for cults, discovery
 for lost items — see `docs/EVENTS.md` under Concepts and relics), not
 a generic reversible-terminus rule, or it reopens the exact class of
 bug invariant 7 exists to close.
+
+**Themed relic naming, at the user's request** — an item can now be named
+for something its commissioning cult already venerates or shuns instead
+of an arbitrary Markov stem: "The Chalice of `<venerated name>`" for the
+former, a `baneName` portmanteau ("Catbane") for the latter. `newItem`
+gained a `Maybe EntityId` parameter for the commissioning cult, `Nothing`
+at every call site with no single society meaningfully "the" one yet
+(`generateWardFor`, `Historian.Engine.generateForKind`); `fireMiracleRelic`
+passes its officiant directly, and `optionalRelicFor` — which only knows
+an event's whole participant list, not a single officiant — picks one at
+random to theme against. `regardedThings`/`themedItemName` are new;
+`tnThemedItemNameChance` (`Tuning`, default 40) is the chance, checked
+only once the cult is confirmed to already have a current
+`Venerates`/`Shuns` stance at all — reusing `Tuning` rather than a
+bespoke constant, work queue item 18's same call. Mint-time only, per
+invariant 2: the theming can never reflect a regard fact this same mint
+is about to create, only ones that already existed.
+
+**A real bug caught by direct construction, not by `cabal test`:** the
+collision-rejection discipline `newItem` reused from `markovWord`
+("reject the candidate if it's found as a substring of any existing
+name") is exactly backwards for a themed name, which is *supposed* to
+contain the venerated/shunned entity's existing name verbatim — it
+vetoed every single themed name, unconditionally. `cabal test` never
+caught it because nothing in the suite distinguishes a themed item name
+from an ordinary one. Statistical sampling across real generated worlds
+was the first hint (suspiciously few "of `<Name>`" hits for how common
+an available veneration target — every society's own patron `Concept` —
+should be), but the confirming check was a direct, deterministic one: a
+hand-built world with a cult holding one known `Venerates` fact, 400
+mints against it, exact hit rate compared to the configured 40%. Fixed
+by dropping the collision check for the themed branch entirely — it was
+never the right guard for a name whose entire point is to echo an
+existing one. Re-verified the same way after the fix (roughly 39% hit
+rate over 400 trials) and against real generation (dozens of "of
+`<Name>`" and several `<Name>bane` items across a sample of seeds, both
+categories exercising Person, Site, Item, and Concept targets).
+`cabal test` held at exactly 209 checks throughout — this changes what a
+handful of fresh items get named, not any rule's own candidate count or
+firing logic, so no seed replacement was needed.
+
+**The test suite's wide seed scans now run in parallel, at the user's
+request after noticing how slow verification felt.** Measured first,
+not assumed: the compiled `historian-test` binary alone (not the build)
+took 50.6s wall clock, pinned at ~98% CPU — one core — on a 12-core
+machine. `veryWideWorlds = map (\`generate\` longSteps) veryWideSeeds`
+(`test/Spec.hs`) was the obvious target: 6000 independent `generate`
+calls, each a pure function of its own seed with nothing shared —
+genuinely embarrassingly parallel, unlike `generate` itself, which stays
+sequential by design (invariant 5, and the whole point per the
+Architecture section: each event answers to everything generated before
+it). Renamed to `veryWideResults` and restructured to compute the two
+things the trial-by-combat/coup checks actually need (`(Bool, Bool)` per
+seed) rather than the whole `World`, spread across
+`Control.Parallel.Strategies.parListChunk` sparks. `parallel` added as a
+new, `test-suite`-only dependency — checked against nixpkgs
+`haskellPackages` first, the same discipline `aeson` got (CLAUDE.md
+"Things not to do"). `-threaded -rtsopts "-with-rtsopts=-N"` added to
+the test-suite's own `ghc-options` (not the library's, not the app's —
+neither needs it) so the sparks actually run on separate OS threads by
+default, no `+RTS -N` needed at the call site.
+
+Chunk size was tuned empirically, not guessed once and left: one spark
+per seed (`parList`) measured 26.3s with real waste (6000 sparks
+created, only 3461 converted, 2539 GC'd before a capability claimed
+them — too fine-grained, scheduling overhead ate the gain); chunks of
+250 (24 sparks, 2 per core) measured *worse* than the naive version,
+29.98s, despite zero wasted sparks — too coarse for even load balancing
+across 12 cores; chunks of 50 (120 sparks) measured 21.3s; chunks of 20
+(300 sparks) measured 20.4s and looked like the point of diminishing
+returns, so that's what shipped. Final measured result: 50.6s down to
+~19.8s running the compiled binary directly with no flags (the baked-in
+`-with-rtsopts=-N` default doing the work) — roughly 2.5x on a 12-core
+machine, not the naive 12x, because the wide-seed scans are only part of
+the suite's total runtime and 12 cores were never going to be used at
+100% efficiency for this shape of work regardless of chunk size.
+`cabal test` held at exactly 209 checks — this only changes how quickly
+an unchanged set of checks gets computed.

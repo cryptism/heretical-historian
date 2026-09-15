@@ -44,17 +44,17 @@ data Kind
   = Society
   | Person
   | Site
-  | Item
-  -- ^ A physical object that can be venerated or shunned like a person or
-  -- site.
-  | Concept
-  -- ^ A shared, symbolic idea — an element, mineral, animal, monster, or
-  -- similar (see 'Historian.Corpus.conceptNames') — that a cult can itself
-  -- venerate or shun, same as a Ward. Unlike every other 'Kind', a named
-  -- concept is minted once and reused by name across the whole world (see
-  -- 'Historian.World.conceptNamed') rather than freshly minted every time:
-  -- there is only ever one "Fire", not a new one per relic that embodies
-  -- it.
+  | -- | A physical object that can be venerated or shunned like a person or
+    -- site.
+    Item
+  | -- | A shared, symbolic idea — an element, mineral, animal, monster, or
+    -- similar (see 'Historian.Corpus.conceptNames') — that a cult can itself
+    -- venerate or shun, same as a Ward. Unlike every other 'Kind', a named
+    -- concept is minted once and reused by name across the whole world (see
+    -- 'Historian.World.conceptNamed') rather than freshly minted every time:
+    -- there is only ever one "Fire", not a new one per relic that embodies
+    -- it.
+    Concept
   deriving stock (Eq, Ord, Show)
 
 -- | A cult's writing register — swaps specific words/phrases inside the
@@ -101,66 +101,66 @@ data Predicate
   | Reconciled
   | Sanctified
   | Venerates
-  | Shuns
-  -- ^ Opposite polarity to 'Venerates'. Together with 'Disavows', these
-  -- three predicates form the closed set 'Historian.World.regardOf' reads
-  -- latest-fact-wins to find a cult's *current* stance toward a Ward —
-  -- mirroring how 'Grievance'\/'Reconciled' are two predicates for one
-  -- directional relationship's two states (here, three).
-  | Disavows
-  -- ^ A cult retracting its own prior 'Venerates'\/'Shuns' toward a
-  -- specific Ward, back to neutral. Needed because 'Predicate' carries no
-  -- polarity payload — see invariant 4 in CLAUDE.md and Decision 9.
+  | -- | Opposite polarity to 'Venerates'. Together with 'Disavows', these
+    -- three predicates form the closed set 'Historian.World.regardOf' reads
+    -- latest-fact-wins to find a cult's *current* stance toward a Ward —
+    -- mirroring how 'Grievance'\/'Reconciled' are two predicates for one
+    -- directional relationship's two states (here, three).
+    Shuns
+  | -- | A cult retracting its own prior 'Venerates'\/'Shuns' toward a
+    -- specific Ward, back to neutral. Needed because 'Predicate' carries no
+    -- polarity payload — see invariant 4 in CLAUDE.md and Decision 9.
+    Disavows
   | Heretic
   | MergedInto
-  | Terminated
-  -- ^ The permanent terminal state, shared by a dissolved society and a
-  -- destroyed relic — gates 'Historian.World.activeSocieties'\/
-  -- 'activeItems' via 'Historian.World.isTerminated' (invariant 7 in
-  -- CLAUDE.md). One predicate, not two, because the only real difference
-  -- between "a society dissolves" and "a relic is destroyed" is the
-  -- attestor: 'Nothing' when a society dissolves (nobody is left to hold
-  -- the account) versus 'Just' the destroying actor when a relic is
-  -- destroyed (there's always a clear one) — a distinction the *existing*
-  -- optional attestor field already carries, so it needed no new 'Fact'
-  -- shape, just fewer 'Predicate' constructors doing the same job.
-  -- Rendering the right verb for the right 'Kind' of subject
-  -- ('Historian.Render.verbForFact') is the one place this costs more than
-  -- a plain 'Predicate -> Text' table.
+  | -- | The permanent terminal state, shared by a dissolved society and a
+    -- destroyed relic — gates 'Historian.World.activeSocieties'\/
+    -- 'activeItems' via 'Historian.World.isTerminated' (invariant 7 in
+    -- CLAUDE.md). One predicate, not two, because the only real difference
+    -- between "a society dissolves" and "a relic is destroyed" is the
+    -- attestor: 'Nothing' when a society dissolves (nobody is left to hold
+    -- the account) versus 'Just' the destroying actor when a relic is
+    -- destroyed (there's always a clear one) — a distinction the *existing*
+    -- optional attestor field already carries, so it needed no new 'Fact'
+    -- shape, just fewer 'Predicate' constructors doing the same job.
+    -- Rendering the right verb for the right 'Kind' of subject
+    -- ('Historian.Render.verbForFact') is the one place this costs more than
+    -- a plain 'Predicate -> Text' table.
+    Terminated
   | Revives
   | Prophesied
-  | Fulfilled
-  -- ^ Marks an open 'Prophesied' fact resolved: subject is whoever gets
-  -- attributed the fulfilling act, object is 'REvent' pointing back at the
-  -- *prophecy's own* event — the same shape 'Disputes' points at a
-  -- disputed one. See 'Historian.Rules.fulfillProphecies'.
-  | Embodies
-  -- ^ An 'Item''s (or any 'Society''s) link to the 'Concept' it
-  -- symbolically embodies — intrinsic, not attested by anyone, asserted
-  -- unconditionally the moment the entity is minted. What makes a
-  -- 'Concept' entity inspectable at all, and what
-  -- 'Historian.World.propertyOf' reads to bias
-  -- 'Historian.Rules.polarityWeights' toward whatever the reacting cult
-  -- already thinks of that concept. For a society, this is its *patron*
-  -- concept — see 'Named'.
-  | Named
-  -- ^ Marks a society's current name resolved — 'Historian.World.nameIn'
-  -- reads the latest one, falling back to 'entName' when there isn't one
-  -- yet. Self-attested: the collective renaming itself. See Decision 19.
-  | Leads
-  -- ^ The one currently distinguished leader of a society, latest-fact-
-  -- wins — unlike 'LeaderOf', which just means "current member" and says
-  -- nothing about rank. Established at founding and schism alongside the
-  -- existing 'LeaderOf' claim, and reassigned by coronation, trial by
-  -- combat, and coup. See Decision 19.
-  | Rivalry
-  -- ^ Person-to-person tension, the same directional shape 'Grievance'
-  -- has for societies — needed as its own predicate for the same reason
-  -- 'Heretic' was: 'grievancePairs'\/'ruleBattle' assume every
-  -- 'Grievance' fact is society-to-society, so reusing it for two
-  -- ordinary members would silently make either of them a battle
-  -- candidate. What 'ruleTrialByCombat' consumes; what 'ruleCoronation'
-  -- produces for a passed-over candidate. See Decision 19.
+  | -- | Marks an open 'Prophesied' fact resolved: subject is whoever gets
+    -- attributed the fulfilling act, object is 'REvent' pointing back at the
+    -- *prophecy's own* event — the same shape 'Disputes' points at a
+    -- disputed one. See 'Historian.Rules.fulfillProphecies'.
+    Fulfilled
+  | -- | An 'Item''s (or any 'Society''s) link to the 'Concept' it
+    -- symbolically embodies — intrinsic, not attested by anyone, asserted
+    -- unconditionally the moment the entity is minted. What makes a
+    -- 'Concept' entity inspectable at all, and what
+    -- 'Historian.World.propertyOf' reads to bias
+    -- 'Historian.Rules.polarityWeights' toward whatever the reacting cult
+    -- already thinks of that concept. For a society, this is its *patron*
+    -- concept — see 'Named'.
+    Embodies
+  | -- | Marks a society's current name resolved — 'Historian.World.nameIn'
+    -- reads the latest one, falling back to 'entName' when there isn't one
+    -- yet. Self-attested: the collective renaming itself. See Decision 19.
+    Named
+  | -- | The one currently distinguished leader of a society, latest-fact-
+    -- wins — unlike 'LeaderOf', which just means "current member" and says
+    -- nothing about rank. Established at founding and schism alongside the
+    -- existing 'LeaderOf' claim, and reassigned by coronation, trial by
+    -- combat, and coup. See Decision 19.
+    Leads
+  | -- | Person-to-person tension, the same directional shape 'Grievance'
+    -- has for societies — needed as its own predicate for the same reason
+    -- 'Heretic' was: 'grievancePairs'\/'ruleBattle' assume every
+    -- 'Grievance' fact is society-to-society, so reusing it for two
+    -- ordinary members would silently make either of them a battle
+    -- candidate. What 'ruleTrialByCombat' consumes; what 'ruleCoronation'
+    -- produces for a passed-over candidate. See Decision 19.
+    Rivalry
   deriving stock (Eq, Ord, Show)
 
 -- | What a fact's object slot points at. Almost always another entity; a
@@ -172,20 +172,20 @@ data Predicate
 data Referent
   = ROf EntityId
   | REvent EventId
-  | ROmen EntityId (Maybe Predicate)
-  -- ^ A 'Prophesied' fact's object: the entity it's about, and — when the
-  -- prophecy is mechanically checkable at all — the 'Predicate' whose
-  -- future assertion about that entity would fulfill it
-  -- (see 'Historian.Rules.omenOf'/'fulfillProphecies' and
-  -- 'Historian.World.openProphecies'). 'Nothing' means purely rhetorical,
-  -- same as every prophecy was before this existed. Extending 'Referent'
-  -- again rather than a parallel record, per Decision 9 in docs/DESIGN.md.
-  | RName Text
-  -- ^ A 'Named' fact's object: the entity's freshly chosen name. The only
-  -- case where 'Referent' carries raw text rather than pointing at
-  -- something else — nothing else in 'Fact'\/'Claim' has a text-carrying
-  -- slot; extending 'Referent' again keeps this out of a parallel record,
-  -- per Decision 9. See 'Historian.World.nameIn'.
+  | -- | A 'Prophesied' fact's object: the entity it's about, and — when the
+    -- prophecy is mechanically checkable at all — the 'Predicate' whose
+    -- future assertion about that entity would fulfill it
+    -- (see 'Historian.Rules.omenOf'/'fulfillProphecies' and
+    -- 'Historian.World.openProphecies'). 'Nothing' means purely rhetorical,
+    -- same as every prophecy was before this existed. Extending 'Referent'
+    -- again rather than a parallel record, per Decision 9 in docs/DESIGN.md.
+    ROmen EntityId (Maybe Predicate)
+  | -- | A 'Named' fact's object: the entity's freshly chosen name. The only
+    -- case where 'Referent' carries raw text rather than pointing at
+    -- something else — nothing else in 'Fact'\/'Claim' has a text-carrying
+    -- slot; extending 'Referent' again keeps this out of a parallel record,
+    -- per Decision 9. See 'Historian.World.nameIn'.
+    RName Text
   deriving stock (Eq, Ord, Show)
 
 data Fact = Fact
@@ -438,10 +438,10 @@ data AssassinateOutcome = AssassinateOutcome
 -- other. A sum type rather than one record with a spare field: the two
 -- shapes genuinely have different arity, not just different values.
 data MergerOutcome
-  = MergerFounding EntityId EntityId EntityId [Claim]
-  -- ^ Parent A, parent B, the brand-new society, and its own
-  -- 'Historian.Rules.patronClaims' — see 'fdExtraClaims' for why the
-  -- claims travel on the outcome itself.
+  = -- | Parent A, parent B, the brand-new society, and its own
+    -- 'Historian.Rules.patronClaims' — see 'fdExtraClaims' for why the
+    -- claims travel on the outcome itself.
+    MergerFounding EntityId EntityId EntityId [Claim]
   | MergerAbsorption EntityId EntityId
 
 newtype DissolveOutcome = DissolveOutcome
@@ -558,10 +558,11 @@ data Event = Event
   -- permanent "generic log" text kept for the wasm FFI, unaffected by
   -- voice.
   }
-  -- No 'deriving stock (Show)': would require one on 'Outcome' and every
-  -- record it's built from too, for a capability nothing in this codebase
-  -- actually uses (checked directly — nothing calls 'show' on an
-  -- 'Event').
+
+-- No 'deriving stock (Show)': would require one on 'Outcome' and every
+-- record it's built from too, for a capability nothing in this codebase
+-- actually uses (checked directly — nothing calls 'show' on an
+-- 'Event').
 
 -- | One month in one year of the calendar: a name and a length in days.
 -- Months are never reused across years — see 'Historian.World.yearMonths' —

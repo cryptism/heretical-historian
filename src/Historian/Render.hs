@@ -75,12 +75,13 @@ verbFor = \case
   Leads -> "is the leader of"
   Rivalry -> "holds a rivalry against"
   Terminated -> "reached its end"
-  -- ^ The one predicate 'verbFor' can't phrase well on its own: a
-  -- dissolved society "passed from history" but a destroyed relic "was
-  -- destroyed", and 'verbFor' has no way to know which — it only sees the
-  -- 'Predicate', not the subject's 'Kind'. This arm exists purely so
-  -- 'verbFor' stays total; 'factLine' never actually uses it, reaching for
-  -- 'verbForFact' instead. See 'verbForFact'.
+
+-- \^ The one predicate 'verbFor' can't phrase well on its own: a
+-- dissolved society "passed from history" but a destroyed relic "was
+-- destroyed", and 'verbFor' has no way to know which — it only sees the
+-- 'Predicate', not the subject's 'Kind'. This arm exists purely so
+-- 'verbFor' stays total; 'factLine' never actually uses it, reaching for
+-- 'verbForFact' instead. See 'verbForFact'.
 
 -- | 'verbFor' plus the one case it can't get right on its own: a
 -- 'Terminated' fact reads as "passed from history" for a dissolved society
@@ -196,8 +197,8 @@ dyingWordsText w dw =
   " With their last breath, "
     <> nameIn w (dwSpeaker dw)
     <> ( if dwCurse dw
-          then " cursed " <> nameIn w (dwTarget dw) <> ", that they "
-          else " prophesied that " <> nameIn w (dwTarget dw) <> " "
+           then " cursed " <> nameIn w (dwTarget dw) <> ", that they "
+           else " prophesied that " <> nameIn w (dwTarget dw) <> " "
        )
     <> dwFraming dw
     <> "."
@@ -233,8 +234,8 @@ renderNeutral w = \case
       <> nameIn w (btSite o)
       <> ". The ground was held by the former"
       <> ( case btVictim o of
-            Nothing -> "."
-            Just p -> "; " <> nameIn w p <> " was left among the dead."
+             Nothing -> "."
+             Just p -> "; " <> nameIn w p <> " was left among the dead."
          )
       <> maybe "" (relicMomentText w "was borne into the fray.") (btRelic o)
       <> maybe "" (dyingWordsText w) (btDyingWords o)
@@ -312,12 +313,15 @@ renderNeutral w = \case
       <> " as its leader."
       <> renameText (crLeadership o)
       <> ( case crRivals o of
-            [] -> ""
-            rivals ->
-              " "
-                <> T.intercalate " and " (map (nameIn w) rivals)
-                <> (if length rivals == 1 then 
-                  " begrudges the choice." else " begrudge the choice.")
+             [] -> ""
+             rivals ->
+               " "
+                 <> T.intercalate " and " (map (nameIn w) rivals)
+                 <> ( if length rivals == 1
+                        then
+                          " begrudges the choice."
+                        else " begrudge the choice."
+                    )
          )
   TrialByCombat o ->
     nameIn w (tcChallenger o)
@@ -327,9 +331,9 @@ renderNeutral w = \case
       <> tcSocietyName
       <> "."
       <> ( case tcSlain o of
-            [d] -> " " <> nameIn w d <> " is left dead on the ground."
-            [d1, d2] -> " " <> nameIn w d1 <> " and " <> nameIn w d2 <> " fall together, and neither is left to claim victory."
-            _ -> ""
+             [d] -> " " <> nameIn w d <> " is left dead on the ground."
+             [d1, d2] -> " " <> nameIn w d1 <> " and " <> nameIn w d2 <> " fall together, and neither is left to claim victory."
+             _ -> ""
          )
       <> maybe "" (\lc -> " " <> nameIn w (lcNewLeader lc) <> " is proclaimed leader of " <> tcSocietyName <> " in the aftermath.") (tcLeadership o)
       <> maybe "" renameText (tcLeadership o)

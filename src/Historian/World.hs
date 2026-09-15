@@ -160,6 +160,12 @@ data Tuning = Tuning
   , tnNarratorOtherShare :: Int
   -- ^ 'Historian.Render.pickNarrator': weight split evenly across every
   -- other active society.
+  , tnThemedItemNameChance :: Int
+  -- ^ 'themedItemName': chance out of 100 that a freshly-minted item with
+  -- a known commissioning cult gets named after something that cult
+  -- already venerates or shuns, rather than an arbitrary stem — checked
+  -- only once the cult is confirmed to have at least one current
+  -- Venerates\/Shuns stance to draw on at all.
   }
 
 defaultTuning :: Tuning
@@ -170,6 +176,7 @@ defaultTuning =
     , tnBackdatedSaintWeights = (60, 15, 25)
     , tnNarratorAttested = 70
     , tnNarratorOtherShare = 30
+    , tnThemedItemNameChance = 40
     }
 
 -- | Sample up to @n@ distinct elements from a list, without replacement —
@@ -537,7 +544,11 @@ generateWardFor c = do
     0 -> newPerson c
     1 -> newSite c
     _ -> do
-      (item, concept) <- newItem c
+      -- 'Nothing': the cult this Ward is being generated for ('backfillPatron's
+      -- caller) has no regard facts of its own yet — recording this very
+      -- veneration is what gives it its first one — so 'themedItemName'
+      -- would always come back empty here regardless.
+      (item, concept) <- newItem c Nothing
       w <- get
       record
         "backstory"
@@ -640,16 +651,96 @@ newSite c = do
 -- Becoming an actual relic, narratively, is simply the first time any
 -- cult asserts 'Venerates'\/'Shuns' on it — see
 -- 'Historian.Rules.regardReactions'.
-newItem :: Culture -> Chronicle (EntityId, EntityId)
-newItem c = do
-  stem <- syllableName c
-  nn <- pickOr "Relic" itemNouns
+--
+-- @mCult@ is whichever society is already known, at mint time, to be
+-- commissioning\/holding this item — 'Nothing' when no single society is
+-- meaningfully "the" one yet (a generic slot fill, a backfilled Ward with
+-- no owner in view). When it's 'Just' a cult, 'themedItemName' gets a
+-- chance to name the item after something that cult already venerates or
+-- shuns instead of an arbitrary stem, before falling back to the ordinary
+-- name below. This is a mint-time-only decision, same as everything else
+-- here — see invariant 2. Call sites unable to name a single cult but
+-- able to name a few candidates (e.g. 'Historian.Rules.optionalRelicFor',
+-- which knows a battle's two combatant societies but not which of them
+-- ends up regarding the relic) pick one at random themselves before
+-- calling in.
+newItem :: Culture -> Maybe EntityId -> Chronicle (EntityId, EntityId)
+newItem c mCult = do
+  mThemed <- case mCult of
+    Nothing -> pure Nothing
+    Just cult -> get >>= \w -> themedItemName defaultTuning w cult
+  -- No collision check here, unlike 'markovWord'\/'syllableName': a themed
+  -- name is *supposed* to contain the venerated\/shunned thing's existing
+  -- name verbatim ("The Chalice of Cat" legitimately contains "Cat"), so
+  -- that discipline's "reject the candidate if it's a substring of an
+  -- existing name" rejection would veto every themed name on principle,
+  -- not just accidental near-duplicates.
+  name <- case mThemed of
+    Just nm -> pure nm
+    Nothing -> do
+      stem <- syllableName c
+      nn <- pickOr "Relic" itemNouns
+      pure ("The " <> nn <> " of " <> stem)
   modifier <- roll (-2, 4)
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
-  item <- mint Item c ("The " <> nn <> " of " <> stem) defaultMintOptions {moModifier = Just modifier}
+  item <- mint Item c name defaultMintOptions {moModifier = Just modifier}
   backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) item
   pure (item, concept)
+
+-- | Every distinct thing @cult@ currently venerates or shuns — latest
+-- 'Venerates'\/'Shuns'\/'Disavows' fact wins per object, same discipline
+-- as 'regardOf', just run over every object the cult has ever gone on
+-- record about rather than one named one. The pool 'themedItemName' draws
+-- a naming theme from.
+regardedThings :: World -> EntityId -> ([EntityId], [EntityId])
+regardedThings w cult =
+  ( [t | t <- targets, regardOf w cult t == Just Venerated]
+  , [t | t <- targets, regardOf w cult t == Just Shunned]
+  )
+  where
+    targets = nub [t | f <- wFacts w, factSubject f == cult, factPred f `elem` [Venerates, Shuns], Just (ROf t) <- [factObject f]]
+
+-- | An item's chance, at mint time, to be named for something its
+-- commissioning cult already venerates or shuns instead of an arbitrary
+-- Markov stem: "The Chalice of Saint Ilyra" for something venerated,
+-- "Catbane" ('baneName') for something shunned. 'Nothing' whenever there's
+-- nothing to draw on yet or the roll simply misses — 'newItem' always has
+-- its ordinary stem-based name to fall back to, so this can never leave an
+-- item unnamed. Deliberately reuses 'Tuning' rather than a bespoke
+-- constant, the same "one shared record" call this project already made
+-- for 'mintBackdatedSaint'\/'pickNarrator' (CLAUDE.md work queue item 18).
+themedItemName :: Tuning -> World -> EntityId -> Chronicle (Maybe Text)
+themedItemName cfg w cult =
+  case regardedThings w cult of
+    ([], []) -> pure Nothing
+    (venerated, shunned) -> do
+      attempt <- weighted [(tnThemedItemNameChance cfg, True), (100 - tnThemedItemNameChance cfg, False)]
+      if not attempt
+        then pure Nothing
+        else do
+          -- Uniform over both categories combined, not a 50\/50 split
+          -- between them first — a cult with three shunned things and one
+          -- venerated one should lean toward theming off a shunned thing,
+          -- not draw the two pools evenly.
+          mChoice <- pick (map (\t -> (t, True)) venerated ++ map (\t -> (t, False)) shunned)
+          case mChoice of
+            Nothing -> pure Nothing
+            Just (target, True) -> do
+              nn <- pickOr "Relic" itemNouns
+              pure (Just ("The " <> nn <> " of " <> nameIn w target))
+            Just (target, False) -> pure (Just (baneName (nameIn w target)))
+
+-- | "<Name>bane" portmanteau for an item named after something its
+-- commissioning cult shuns — "Catbane", "Tidebane". Keeps only the last
+-- word of the shunned thing's current name, so a multi-word 'Concept'
+-- ("the Wormwood Thing") still reads as one compact epithet ("Thingbane")
+-- rather than a run-on; a leading article ("the"\/"a") is naturally
+-- dropped by only keeping the last word.
+baneName :: Text -> Text
+baneName nm = case reverse (T.words (T.filter (/= ',') nm)) of
+  (w : _) -> w <> "bane"
+  [] -> "Bane"
 
 -- | Concepts are the one 'Kind' minted once per name and reused, not
 -- freshly minted every time — there is only ever one "Fire" entity in a
@@ -855,7 +946,7 @@ regardClaim cult thing Shunned = Claim cult Shuns (Just (ROf thing)) (Just cult)
 
 regardOf :: World -> EntityId -> EntityId -> Maybe Regard
 regardOf w subject thing =
-  case [ f | f <- wFacts w, factSubject f == subject, factObject f == Just (ROf thing), factPred f `elem` [Venerates, Shuns, Disavows] ] of
+  case [f | f <- wFacts w, factSubject f == subject, factObject f == Just (ROf thing), factPred f `elem` [Venerates, Shuns, Disavows]] of
     (f : _) -> case factPred f of
       Venerates -> Just Venerated
       Shuns -> Just Shunned

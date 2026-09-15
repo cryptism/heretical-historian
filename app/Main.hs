@@ -3,8 +3,8 @@
 module Main (main) where
 
 import qualified Data.ByteString.Lazy.Char8 as BSLC
-import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -25,8 +25,8 @@ main = do
       w = generate seed steps
   if hasFlag "--json" args
     then -- The same boundary a wasm host crosses: 'generate' then
-      -- 'encodeWorld', nothing else — lets the encoder be tested with no
-      -- wasm toolchain involved.
+    -- 'encodeWorld', nothing else — lets the encoder be tested with no
+    -- wasm toolchain involved.
       BSLC.putStrLn (encodeWorld w)
     else do
       TIO.putStrLn "== CHRONICLE =="

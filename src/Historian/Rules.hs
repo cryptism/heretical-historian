@@ -403,7 +403,7 @@ fireMiracleRelic w s site mrelic = do
   (relic, relicFresh, embodiesClaim) <- case mrelic of
     Just it -> pure (it, False, [])
     Nothing -> do
-      (it, concept) <- newItem (cultureOf w s)
+      (it, concept) <- newItem (cultureOf w s) (Just s)
       pure (it, True, [Claim it Embodies (Just (ROf concept)) Nothing Nothing])
   reactions <- regardReactions s [site, relic]
   let outcome = MiracleRelicOutcome s site relic relicFresh (embodiesClaim ++ reactions)
@@ -587,7 +587,13 @@ optionalRelicFor w cult cults = do
       case mExisting of
         Just i -> pure (Just (i, False), [])
         Nothing -> do
-          (i, concept) <- newItem cult
+          -- No single officiant here — @cults@ is the event's whole
+          -- participant list (both sides of a battle, say) — so pick one
+          -- at random to be the commissioning cult 'themedItemName' themes
+          -- the fresh item's name against, rather than skipping theming
+          -- entirely just because more than one cult is in the running.
+          mCommissioner <- pick cults
+          (i, concept) <- newItem cult mCommissioner
           pure (Just (i, True), [Claim i Embodies (Just (ROf concept)) Nothing Nothing])
 
 -- | The optional-relic sequence shared by battle and assassination: draw
@@ -994,10 +1000,10 @@ ruleAssassinate = rule "assassinate" $ \w ->
   [ fireAssassinate figure s h
   | s <- entitiesOf Society w
   , figure <- livingMembers w s
-  -- s needs no explicit activeness check: a defunct society has no living
+  , -- s needs no explicit activeness check: a defunct society has no living
   -- members by definition, so a nonempty livingMembers already implies s
   -- is active. h, the acting killers, does need the check.
-  , h <- activeSocieties w
+  h <- activeSocieties w
   , h /= s
   , holdsGrievance w h s
   ]

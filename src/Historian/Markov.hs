@@ -3,11 +3,11 @@
 -- Deliberately not used for sentences: a Markov model cannot respect the
 -- variables a rule has already bound, so it produces mush at that level.
 -- Structure comes from the rules; texture comes from here.
-module Historian.Markov
-  ( Chain
-  , buildChain
-  , runChain
-  ) where
+module Historian.Markov (
+  Chain,
+  buildChain,
+  runChain,
+) where
 
 import Data.Char (toLower, toUpper)
 import qualified Data.Map.Strict as M

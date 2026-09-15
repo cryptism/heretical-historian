@@ -22,11 +22,25 @@ history rather than sampling it.
 Builds and passes `cabal test` (209 checks — seeds 1/2/3/42/99 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
-(1-6000, precomputed once as `veryWideWorlds`) for the two rarest —
-trial by combat and a coup — plus two hand-built worlds, `schismSpec`/
-`sanctifySpec`'s and the richer `richWorld`, covering direct-construction
-checks for the `RuleSpec` engine and everything migrated onto it. Full
-breakdown: `docs/HISTORY.md`.
+(1-6000, precomputed once as `veryWideResults`, in parallel — see
+below) for the two rarest — trial by combat and a coup — plus two
+hand-built worlds, `schismSpec`/`sanctifySpec`'s and the richer
+`richWorld`, covering direct-construction checks for the `RuleSpec`
+engine and everything migrated onto it. Full breakdown: `docs/HISTORY.md`.
+
+The `test-suite` is now genuinely parallel where it can be: every
+`veryWideSeeds` `generate` call is a pure function of its own seed with
+nothing shared, so `test/Spec.hs`'s `veryWideResults` sparks them via
+`Control.Parallel.Strategies.parListChunk` (`parallel`, a new
+`test-suite`-only dependency) instead of folding them one at a time, and
+the test-suite's own `ghc-options` gained `-threaded -with-rtsopts=-N` so
+those sparks actually land on separate OS threads. Chunk size (20, tuned
+empirically — 250 and one-spark-per-seed were both measured slower; see
+`docs/HISTORY.md`) matters more than it looks. Measured: 50.6s wall
+(single core) down to ~19.8s (12-core machine, no explicit `+RTS` flags
+needed at the call site). This doesn't touch `generate` itself, which
+stays deliberately sequential — see invariant 5 and the Architecture
+section below.
 
 Sixteen event rules are built and firing: the eight from `docs/EVENTS.md`
 (schism, battle, sanctification, defilement/purification, miracle,
@@ -57,11 +71,33 @@ ordinary `newPerson`/`newSite`/`newItem` (`weightedResolve`/
 by a cult, work queue item 19, `docs/DESIGN.md` Decision 28), now
 mutually recursive with `newSociety`'s own symmetric `backfillPatron`
 hook (a fresh cult's chance to already venerate a Ward, `docs/DESIGN.md`
-Decision 32); and cult
+Decision 32); cult
 voice — three outcome types (`Founding`/`Schism`/`MiracleSaint`) narrated
 in whichever society's own `VoiceRegister` gets picked to tell them, a
 kept, unmodified neutral reading still available for the wasm FFI (work
-queue item 17, `docs/DESIGN.md` Decision 29).
+queue item 17, `docs/DESIGN.md` Decision 29); and themed relic naming —
+`newItem` takes an optional commissioning cult, and when one's known at
+mint time and already has a current `Venerates`/`Shuns` stance on
+something, `themedItemName` gets a `tnThemedItemNameChance` (`Tuning`)
+chance to name the item after it instead of an arbitrary stem: "The
+Chalice of `<venerated name>`", or a `baneName` portmanteau
+("Catbane") for something shunned. Mint-time only, per invariant 2.
+
+Bug caught building this one, worth flagging since it's the kind that
+silently defeats a feature rather than crashing: the collision-rejection
+check newly-minted items reused from `markovWord` (reject the candidate
+if it's found as a substring of any existing name) is backwards for a
+themed name, which is *supposed* to contain the venerated/shunned
+entity's existing name verbatim — it vetoed every themed name, 100% of
+the time, with no test failure to catch it (nothing in the suite
+distinguishes a themed name from an ordinary one). Found by a direct,
+deterministic check (a hand-built cult with a known `Venerates` fact,
+400 mints, exact hit-rate against the configured 40%) after statistical
+sampling across real generated worlds turned up suspiciously few
+"of `<Name>`" hits for how common an available veneration target
+(every society's patron `Concept`) should be. Fixed by dropping the
+collision check for the themed branch entirely — it was never the right
+guard for this shape of name. `docs/HISTORY.md` covers the full account.
 
 **`docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
@@ -478,4 +514,5 @@ unbuilt rule.
   the wasm boundary needed a JSON encoder: `aeson` (plus `bytestring`) was
   added deliberately for that, checked against nixpkgs first, and confirmed
   to cross-compile cleanly to wasm32-wasi from source alongside everything
-  else. Still don't add one without checking.
+  else. `parallel` was added the same way, `test-suite`-only, for the
+  wide seed scans (see Status). Still don't add one without checking.

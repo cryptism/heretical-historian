@@ -1,0 +1,5 @@
+indentation: 2
+haddock-style: single-line
+record-brace-space: true
+indent-wheres: true
+single-constraint-parens: never
