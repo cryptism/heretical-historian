@@ -12,8 +12,9 @@
 --
 -- Exported with the portable @ccall@ convention (not @javascript@) so this
 -- module also compiles under ordinary native GHC; only producing an actual
--- @.wasm@ needs a wasm-targeting GHC (@wasm32-wasi-ghc@ from
--- @ghc-wasm-meta@, not wired into this flake).
+-- @.wasm@ needs a wasm-targeting GHC (@wasm32-wasi-ghc@, via the @wasm@
+-- devShell in @flake.nix@ — @nix develop .#wasm@, or @nix run .#build-wasm@
+-- to build, patch, and verify it in one step).
 --
 -- Ownership: every function here returning a 'CString' hands a host a
 -- pointer to read as a NUL-terminated UTF-8 string; nothing here frees it.

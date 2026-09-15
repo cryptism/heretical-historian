@@ -63,9 +63,10 @@ executable historian
 -- handle follow-up: generateJson (batch, one shot) plus the
 -- historian_new/step/query/free family (a World kept resident behind an
 -- opaque handle, one step at a time). Builds as an ordinary native
--- executable in this flake's dev shell — actually producing a .wasm file
--- needs a wasm-targeting GHC (e.g. wasm32-wasi-ghc from ghc-wasm-meta),
--- not wired into flake.nix yet.
+-- executable in this flake's default dev shell; actually producing a
+-- .wasm file needs the wasm32-wasi-ghc toolchain from `nix develop .#wasm`
+-- (or `nix run .#build-wasm` to build/patch/verify it in one step) — see
+-- flake.nix.
 executable historian-wasm
   import:         shared
   hs-source-dirs: wasm

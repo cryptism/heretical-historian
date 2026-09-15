@@ -239,7 +239,13 @@ happens.
 
 ## Conventions
 
-- **Shell is Nushell.** Any command in docs or scripts should be Nushell-valid.
+- **Shell is Nushell.** Any command in docs or scripts should be
+  Nushell-valid. **Carve-out: scripts invoked from `flake.nix`
+  (`wasm/patch-reactor.sh`, and anything else a `pkgs.writeShellApplication`
+  wraps) are bash**, not Nushell — a Nix-generated shell wrapper is bash,
+  and requiring Nushell there would mean pulling it in as an extra runtime
+  dependency of the build pipeline for no reason. Interactive, developer-
+  facing commands stay Nushell.
 - **NixOS.** Flake-based; `nix develop` for the shell, `nix run . -- --seed 42`
   to run. `.envrc` is `use flake` for direnv.
 - **Extensions live in `default-extensions`** in `heretical-historian.cabal`, not in file
@@ -308,12 +314,13 @@ unbuilt rule.
     `hs_init(0, 0)` directly before `generateJson` is usable — never a
     Haskell-level `foreign export` (`docs/DESIGN.md` Decision 7 follow-up
     explains why that can't work) — and the built `.wasm` needs
-    `wasm/patch-reactor.nu` run on it first (self-checks its four
-    required exports). **Not wired into `flake.nix`** — the toolchain
-    used to verify this was fetched ad hoc via
-    `nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git`, and
-    that same shell's `wasm-tools` needs to be on `PATH` for the patch
-    script to run.
+    `wasm/patch-reactor.sh` run on it first (self-checks its four
+    required exports). **Wired into `flake.nix`** — `nix develop .#wasm`
+    gives `wasm32-wasi-ghc`/`-cabal`, `wasm-tools`, and `node` (bundled
+    from a pinned `ghc-wasm-meta` flake input), and `nix run .#build-wasm`
+    cross-compiles, patches, and re-verifies `historian-wasm.wasm` in one
+    command — no more ad hoc `nix shell git+https://...` invocation. Full
+    account of the wiring: `docs/DESIGN.md` Decision 7's flake follow-up.
 13. ~~Unify the terminus predicate shape across `Dissolved` and
     `Destroyed`.~~ Done — one predicate, `Terminated` (`Historian.Types`),
     distinguished by the existing `factAttestedBy`: `Nothing` for a
@@ -372,13 +379,18 @@ unbuilt rule.
     host would and round-trip `encodeStepResult` through a real JSON
     parser against a direct diff of the two `World`s involved; `cabal
     test` went from 203 to 209 checks. **Re-verified end-to-end against a
-    real wasm build, same day:** cross-compiled via `wasm32-wasi-ghc`
-    (`ghc-wasm-meta`, still not wired into `flake.nix`), patched with the
-    existing `wasm/patch-reactor.nu`, and exercised from a real Node WASI
-    host with a new kept script, `wasm/verify.mjs` — eleven checks, all
-    passing, including a narrated event's prose genuinely differing from
-    its neutral reading with clean, uncorrupted UTF-8. Full account:
-    `docs/DESIGN.md` Decision 33.
+    real wasm build, same day:** cross-compiled via `wasm32-wasi-ghc`,
+    patched with `wasm/patch-reactor.sh`, and exercised from a real Node
+    WASI host with a new kept script, `wasm/verify.mjs` — eleven checks,
+    all passing, including a narrated event's prose genuinely differing
+    from its neutral reading with clean, uncorrupted UTF-8. **Follow-up,
+    same day: the toolchain itself is now wired into `flake.nix`** (item
+    12's own long-standing gap) — `nix run .#build-wasm` runs all three
+    steps (cross-compile, patch, verify) in one command; `patch-reactor.nu`
+    was rewritten as `patch-reactor.sh` (bash, not Nushell — see
+    Conventions) since it's now invoked from a Nix-generated shell script.
+    Full account: `docs/DESIGN.md` Decision 33 and Decision 7's flake
+    follow-up.
 16. ~~Remodel the inter-step day gap.~~ Done — `advanceEpoch` rolls
     within `1..maxGap`, `maxGap = max 20 (300 - 5 * activity)`, `activity`
     = active society count plus their total `livingMembers`. Still draws

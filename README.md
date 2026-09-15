@@ -127,15 +127,18 @@ sidesteps the whole problem of storing heterogeneously-typed bindings.
 ## Known gaps
 
 See `CLAUDE.md`'s work queue for what's open. The wasm boundary works end
-to end, verified from a real JS host, but building for it is two steps —
-`build-type: Simple` has no `Setup.hs` hooks to do this automatically:
+to end, verified from a real JS host:
 
 ```nu
-nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command wasm32-wasi-cabal build historian-wasm
-nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command nu wasm/patch-reactor.nu <built.wasm> <patched.wasm>
+nix run .#build-wasm
 ```
 
-The second step (`wasm/patch-reactor.nu`) strips the auto-generated
-`_start` export and adds the `__wasm_call_ctors`/`__wasi_init_tp` exports a
-reactor-style host (one that calls in repeatedly, e.g. Node's
-`wasi.initialize()`) needs.
+cross-compiles `historian-wasm`, patches it into a reactor-style module
+(`wasm/patch-reactor.sh` — strips the auto-generated `_start` export and
+adds the `__wasm_call_ctors`/`__wasi_init_tp` exports a reactor-style host,
+e.g. Node's `wasi.initialize()`, needs), and re-verifies it against a real
+Node WASI host (`wasm/verify.mjs`), all in one command — `build-type:
+Simple` has no `Setup.hs` hooks to do this automatically at the cabal
+level, so it's a flake app instead. `nix develop .#wasm` drops into a
+shell with the same toolchain (`wasm32-wasi-ghc`/`-cabal`, `wasm-tools`,
+`node`) for running the steps by hand.

@@ -347,6 +347,61 @@ step a developer or CI runs after `wasm32-wasi-cabal build historian-wasm`,
 needing `wasm-tools` on `PATH` from the same `ghc-wasm-meta` shell used
 throughout this investigation.
 
+**Follow-up: the toolchain itself wired into `flake.nix`, closing the gap
+work queue item 12 named from the start.** Everything above was verified
+by hand-typing `nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git
+--command ...` for each of three separate steps, every single time. Added
+`ghc-wasm-meta` as a pinned flake input (`?rev=...`, the exact revision
+this and Decision 33's own re-verification both used — not tracking its
+default branch, since this toolchain is large and GHC-version-specific
+enough that a silent upstream move is exactly the kind of thing worth
+pinning against) and exposed it two ways:
+
+- `devShells.wasm` (`nix develop .#wasm`) — the bundled
+  `wasm32-wasi-ghc`/`-cabal`, `wasi-sdk`, `wasm-tools`, and `node` all on
+  `PATH`, for running the steps by hand. Kept separate from the project's
+  own `devShells.default` rather than merged into it: nothing else here
+  needs this toolchain, and folding it in would slow down `nix develop`
+  for every ordinary Haskell change.
+- `apps.build-wasm` (`nix run .#build-wasm`) — a `pkgs.writeShellApplication`
+  that runs all three steps (`wasm32-wasi-cabal build historian-wasm`,
+  `wasm/patch-reactor.sh`, `wasm/verify.mjs`) in one command, against the
+  checked-out source tree in the current directory (not a hermetic `nix
+  build` of the `.wasm` itself — modeling `wasm32-wasi-cabal`'s own
+  cross-compilation as a Nix derivation is real, separate future work, not
+  attempted here; this is "wire the toolchain in," not "make the wasm
+  artifact reproducible from a bare `nix build`").
+
+**`wasm/patch-reactor.nu` rewritten as `wasm/patch-reactor.sh`, bash
+instead of Nushell — at the user's explicit request, overriding this
+project's own stated shell convention (CLAUDE.md Conventions) for this
+one case.** The practical reason it matters here and didn't before:
+`pkgs.writeShellApplication`'s generated wrapper is bash, and shelling out
+from it to a Nushell script would mean pulling Nushell in as an extra
+runtime dependency of the build pipeline for something a plain POSIX
+script does just as well. Same three-step logic (drop the `_start`
+export, add `__wasm_call_ctors`/`__wasi_init_tp` after the `hs_init`
+export line, self-check all four exports plus the absence of `_start`) —
+`awk` substring matching (`index($0, ...)`) instead of Nushell's `str
+contains`, otherwise a direct port. **Verified byte-identical, not just
+"looks equivalent":** ran both scripts against the same input `.wasm` and
+diffed the two outputs — identical — before deleting the Nushell version,
+and re-ran the full `wasm/verify.mjs` suite against the bash-patched
+output (all eleven checks passing) as the real correctness check, not
+just the byte-diff. CLAUDE.md's Conventions section now carries an
+explicit carve-out: scripts a `flake.nix` output invokes are bash;
+interactive, developer-typed commands stay Nushell.
+
+**Re-verified end-to-end through the new one-command path, not just
+assumed to work because the pieces did individually.** `nix run
+.#build-wasm`, run fresh from the repo root: cross-compiled, patched, and
+every one of `wasm/verify.mjs`'s eleven checks passed, same as the manual
+three-command version. `nix flake check` passes for `x86_64-linux` (the
+only system this has actually been tried on — `ghc-wasm-meta` does
+publish packages for the other three systems in this flake's own
+`systems` list, so nothing is hard-restricted, but aarch64-darwin etc.
+are unverified, not confirmed-working).
+
 ## Decision 8: seed scope
 
 The first build was deliberately the smallest thing that proves the architecture:
@@ -2669,11 +2724,13 @@ checks; `cabal test` went from 203 to 209, all passing; `hlint` clean.
 
 **Follow-up: re-verified end-to-end against a real wasm build, same day.**
 Fetched `wasm32-wasi-ghc-9.14.1` via the same ad hoc `ghc-wasm-meta` shell
-item 12 used (still not wired into `flake.nix` — that remains open, see
-item 12's own text), cross-compiled `historian-wasm` (`wasm32-wasi-cabal
-build historian-wasm`, the whole dependency tree including `aeson` from
-source, same as item 12's own build), and ran the existing
-`wasm/patch-reactor.nu` on the result — its own self-check confirms all
+item 12 used (at the time; wired into `flake.nix` shortly after, see
+item 12's own text and Decision 7's flake follow-up), cross-compiled
+`historian-wasm` (`wasm32-wasi-cabal build historian-wasm`, the whole
+dependency tree including `aeson` from source, same as item 12's own
+build), and ran the existing `wasm/patch-reactor.nu` (since rewritten as
+`wasm/patch-reactor.sh` — see Decision 7's flake follow-up) on the
+result — its own self-check confirms all
 four new exports (`historian_new`/`historian_step`/`historian_query`/
 `historian_free`) survive the `_start`-removal round-trip alongside
 `generateJson`/`hs_init`/`__wasm_call_ctors`/`__wasi_init_tp`, unchanged
@@ -2701,14 +2758,12 @@ here shares — nothing reverted to the broken `newCString`/`String`
 round-trip). All eleven checks pass. Run it yourself with:
 
 ```nu
-nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command wasm32-wasi-cabal build historian-wasm
-nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command nu wasm/patch-reactor.nu <built.wasm> <patched.wasm>
-nix shell nixpkgs#nodejs --command node wasm/verify.mjs <patched.wasm>
+nix run .#build-wasm
 ```
 
-Treat this as "the wasm boundary for the stateful handle is real and
-independently confirmed," on the same footing `generateJson` already had
-— not just "the Haskell side type-checks and the native tests pass."
-Wiring the toolchain into `flake.nix` so this stops being a three-command
-ad hoc dance is still genuinely separate, unstarted work (item 12's own
-long-standing gap, not reopened or worsened by this).
+(originally three separate ad hoc `nix shell git+https://...` commands,
+collapsed into one by Decision 7's flake follow-up, written up
+immediately after this). Treat this as "the wasm boundary for the
+stateful handle is real and independently confirmed," on the same
+footing `generateJson` already had — not just "the Haskell side
+type-checks and the native tests pass."
