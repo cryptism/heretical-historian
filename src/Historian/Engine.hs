@@ -105,7 +105,7 @@ generateForKind cult k = case k of
   Person -> newPerson cult
   Site -> newSite cult
   Society -> fst <$> newSociety cult
-  Item -> fst <$> newItem cult
+  Item -> fst <$> newItem cult Nothing
   Concept -> conceptNamed cult "the Unnamed"
 
 -- | Resolve one slot: a caller-supplied hint wins outright; otherwise pick
@@ -183,19 +183,19 @@ allAssignments w rs = go [] (rsSlots rs)
 
 -- | What a caller can ask 'intelligentStep' to do.
 data StepRequest
-  = StepAny
-  -- ^ Today's autonomous behavior, unchanged in spirit — every given
-  -- 'RuleSpec's every satisfying assignment ('allAssignments') is pooled
-  -- and one is picked uniformly.
-  | StepRule RuleSpec [Maybe EntityId]
-  -- ^ Run this rule. Each element is a hint for the slot at that
-  -- position (padded\/truncated to the rule's own slot count if it
-  -- doesn't match — never a failure), or 'Nothing' to let the engine
-  -- resolve it.
-  | StepEntities [EntityId]
-  -- ^ No rule specified — pick a runnable\/useful 'RuleSpec' weighted
-  -- toward how many of these entities it can actually use, then resolve
-  -- the rest of its slots from the same pool where types match.
+  = -- | Today's autonomous behavior, unchanged in spirit — every given
+    -- 'RuleSpec's every satisfying assignment ('allAssignments') is pooled
+    -- and one is picked uniformly.
+    StepAny
+  | -- | Run this rule. Each element is a hint for the slot at that
+    -- position (padded\/truncated to the rule's own slot count if it
+    -- doesn't match — never a failure), or 'Nothing' to let the engine
+    -- resolve it.
+    StepRule RuleSpec [Maybe EntityId]
+  | -- | No rule specified — pick a runnable\/useful 'RuleSpec' weighted
+    -- toward how many of these entities it can actually use, then resolve
+    -- the rest of its slots from the same pool where types match.
+    StepEntities [EntityId]
 
 -- | 'StepRequest's own three constructors are all unambiguous by
 -- construction — 'StepRule' only ever names exactly one 'RuleSpec' — so

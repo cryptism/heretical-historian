@@ -112,11 +112,19 @@ test-suite historian-test
   type:           exitcode-stdio-1.0
   hs-source-dirs: test
   main-is:        Spec.hs
+  -- The wide/very-wide seed scans (up to 6000 independent 'generate'
+  -- calls, per CLAUDE.md Status) are the actual bottleneck — each is a
+  -- pure function of its own seed with nothing shared, so they're
+  -- embarrassingly parallel. '-threaded'/'-N' let the sparks 'parList'
+  -- creates in test/Spec.hs actually land on separate OS threads instead
+  -- of running on the one capability a normal single-threaded RTS has.
+  ghc-options:    -threaded -rtsopts "-with-rtsopts=-N"
   build-depends:
     , aeson
     , base
     , containers
     , heretical-historian
     , mtl
+    , parallel
     , random
     , text

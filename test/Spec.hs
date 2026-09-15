@@ -6,6 +6,7 @@ module Main (main) where
 
 import Control.Monad (unless)
 import Control.Monad.State.Strict (evalState, execState, get, runState)
+import Control.Parallel.Strategies (parListChunk, rdeepseq, using)
 import Data.Aeson (FromJSON (..), withObject, (.:))
 import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as M
@@ -18,45 +19,45 @@ import Historian.Corpus (hailWords, meanderClauses, omissionTexts, vaurethine)
 import Historian.Engine
 import Historian.Json (encodeQueryResult, encodeStepResult, encodeWorld)
 import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, pickNarrator, render, renderNeutral, renderWithVoice)
-import Historian.Rules
-  ( assassinateSpec
-  , battleSpec
-  , coronationSpec
-  , coupSpec
-  , defileSpec
-  , destroyRelicSpec
-  , dissolveSpec
-  , fireDispute
-  , fireSanctify
-  , fireSchism
-  , genesis
-  , generate
-  , generateViaEngine
-  , genesisWorld
-  , giftSpec
-  , mergerSpec
-  , mintBackdatedSaint
-  , miracleOnItemSpec
-  , miracleOnPersonSpec
-  , miracleRelicSpec
-  , miracleSaintSpec
-  , prophesyItemSpec
-  , prophesyPersonSpec
-  , prophesySiteSpec
-  , prophesySocietySpec
-  , reviveSpec
-  , ruleBattle
-  , ruleCandidates
-  , ruleDissolve
-  , ruleFromSpec
-  , ruleSanctify
-  , ruleSchism
-  , ruleSpecs
-  , sanctifySpec
-  , schismSpec
-  , theftSpec
-  , trialByCombatSpec
-  )
+import Historian.Rules (
+  assassinateSpec,
+  battleSpec,
+  coronationSpec,
+  coupSpec,
+  defileSpec,
+  destroyRelicSpec,
+  dissolveSpec,
+  fireDispute,
+  fireSanctify,
+  fireSchism,
+  generate,
+  generateViaEngine,
+  genesis,
+  genesisWorld,
+  giftSpec,
+  mergerSpec,
+  mintBackdatedSaint,
+  miracleOnItemSpec,
+  miracleOnPersonSpec,
+  miracleRelicSpec,
+  miracleSaintSpec,
+  prophesyItemSpec,
+  prophesyPersonSpec,
+  prophesySiteSpec,
+  prophesySocietySpec,
+  reviveSpec,
+  ruleBattle,
+  ruleCandidates,
+  ruleDissolve,
+  ruleFromSpec,
+  ruleSanctify,
+  ruleSchism,
+  ruleSpecs,
+  sanctifySpec,
+  schismSpec,
+  theftSpec,
+  trialByCombatSpec,
+ )
 import Historian.Types
 import Historian.World
 import System.Exit (exitFailure)
@@ -209,9 +210,10 @@ instance FromJSON WireDossier where
 -- produces one, since no 'prophecyFramings' line offers 'Shuns' as an
 -- omen (Decision 17, docs/DESIGN.md).
 isCurse :: Fact -> Bool
-isCurse f = factPred f == Prophesied && case factObject f of
-  Just (ROmen _ (Just Shuns)) -> True
-  _ -> False
+isCurse f =
+  factPred f == Prophesied && case factObject f of
+    Just (ROmen _ (Just Shuns)) -> True
+    _ -> False
 
 main :: IO ()
 main = do
@@ -219,8 +221,25 @@ main = do
       -- Shared across trial-by-combat's and coup's own checks below —
       -- both need 'veryWideSeeds' at 'longSteps', and computing 'generate'
       -- once per seed rather than once per check halves what was becoming
-      -- the most expensive pair of checks in the whole suite.
-      veryWideWorlds = map (`generate` longSteps) veryWideSeeds
+      -- the most expensive pair of checks in the whole suite. Each seed's
+      -- pair is also the single most expensive computation in the entire
+      -- suite (6000 independent `generate` calls) and each is a pure
+      -- function of its own seed with nothing shared — genuinely
+      -- embarrassingly parallel. `rdeepseq` (not `rseq`): a spark only
+      -- pays off if it forces the *whole* Bool pair, not just the outer
+      -- tuple constructor, since the two 'Bool's inside are what does the
+      -- actual scanning work. `parListChunk` (250 seeds\/spark, 24 sparks)
+      -- rather than one spark per seed: a first pass at one-spark-per-seed
+      -- measured most of the 6000 getting GC'd before any capability
+      -- claimed them — scheduling overhead dwarfing the tiny per-seed
+      -- work. Coarser chunks cut that overhead without losing meaningful
+      -- balance across a typical multi-core machine.
+      veryWideResults =
+        [ (any ((== "trial-by-combat") . evKind) evs, any ((== "coup") . evKind) evs)
+        | s <- veryWideSeeds
+        , let evs = M.elems (wEvents (generate s longSteps))
+        ]
+          `using` parListChunk 20 rdeepseq
       -- Most of what used to live here was "does this ever happen"
       -- checks scanning aggregateSeeds/wideSeeds hoping a rule's
       -- precondition arose somewhere in real generation — the only tool
@@ -231,7 +250,7 @@ main = do
       -- the rule, check the exact fact/event shape — no scanning, no
       -- lucky seed. What's left here are the checks a hand-built world
       -- genuinely can't replace: Disavows and renaming both need a
-      -- *further*, independent probabilistic roll on top of an already-
+      -- \*further*, independent probabilistic roll on top of an already-
       -- satisfied precondition (constructing the precondition doesn't
       -- make that roll land any sooner), the dying curse needs four such
       -- rolls to line up at once, and trial-by-combat/coup are about
@@ -240,25 +259,32 @@ main = do
       -- systemic property of `generate` itself, not a single rule's
       -- precondition a hand-built world could stand in for.
       aggregate =
-        [ ( any (\s -> any ((== Disavows) . factPred) (wFacts (generate s longSteps))) aggregateSeeds
+        [
+          ( any (\s -> any ((== Disavows) . factPred) (wFacts (generate s longSteps))) aggregateSeeds
           , "at least one Disavows claim occurs for at least one seed (at longSteps)"
           )
-        , ( any (\s -> any isCurse (wFacts (generate s longSteps))) wideSeeds
+        ,
+          ( any (\s -> any isCurse (wFacts (generate s longSteps))) wideSeeds
           , "at least one dying curse lands on a relic, not just a cult, somewhere (a Shuns-omened prophecy)"
           )
-        , ( any (\s -> any ((== Named) . factPred) (wFacts (generate s longSteps))) wideSeeds
+        ,
+          ( any (\s -> any ((== Named) . factPred) (wFacts (generate s longSteps))) wideSeeds
           , "at least one society renames itself for at least one seed (at longSteps, wideSeeds)"
           )
-        , ( any (any ((== "trial-by-combat") . evKind) . M.elems . wEvents) veryWideWorlds
+        ,
+          ( any fst veryWideResults
           , "trial by combat occurs for at least one seed (at longSteps, veryWideSeeds)"
           )
-        , ( any (any ((== "coup") . evKind) . M.elems . wEvents) veryWideWorlds
+        ,
+          ( any snd veryWideResults
           , "a coup occurs for at least one seed (at longSteps, veryWideSeeds)"
           )
-        , ( all jsonRoundTrips aggregateSeeds
+        ,
+          ( all jsonRoundTrips aggregateSeeds
           , "JSON encoding round-trips with matching entity/event/fact counts for every seed"
           )
-        , ( ordinal 1 == "1st"
+        ,
+          ( ordinal 1 == "1st"
               && ordinal 2 == "2nd"
               && ordinal 3 == "3rd"
               && ordinal 4 == "4th"
@@ -272,7 +298,8 @@ main = do
               && ordinal 111 == "111th"
           , "ordinal suffixes are correct, including the 11th/12th/13th exceptions"
           )
-        , ( eraLabel BeforeAfter "the Sundering" 0 == "Year 1 After the Sundering"
+        ,
+          ( eraLabel BeforeAfter "the Sundering" 0 == "Year 1 After the Sundering"
               && eraLabel BeforeAfter "the Sundering" 4 == "Year 5 After the Sundering"
               && eraLabel BeforeAfter "the Sundering" (-1) == "Year 1 Before the Sundering"
               && eraLabel BeforeAfter "the Sundering" (-5) == "Year 5 Before the Sundering"
@@ -281,10 +308,12 @@ main = do
               && eraLabel SignedYear "the Sundering" (-7) == "Year -7 of the Sundering"
           , "eraLabel renders both schemes correctly, including no year zero for BeforeAfter"
           )
-        , ( all (\s -> let (_, _, y0) = calendarParams s in y0 >= -500 && y0 <= 500) aggregateSeeds
+        ,
+          ( all (\s -> let (_, _, y0) = calendarParams s in y0 >= -500 && y0 <= 500) aggregateSeeds
           , "genesis year offset falls within the declared range for every seed"
           )
-        , ( any (\s -> any ((== "backstory") . evKind) (M.elems (wEvents (generate s longSteps)))) aggregateSeeds
+        ,
+          ( any (\s -> any ((== "backstory") . evKind) (M.elems (wEvents (generate s longSteps)))) aggregateSeeds
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
@@ -338,36 +367,44 @@ engineWorldWithSite = execState (newSite vaurethine) engineWorld
 
 engineChecks :: [(Bool, Text)]
 engineChecks =
-  [ ( candidatesFor engineWorld [] societySlot == [engineSociety]
+  [
+    ( candidatesFor engineWorld [] societySlot == [engineSociety]
     , "Engine: candidatesFor finds the lone eligible society"
     )
-  , ( runnable engineWorld schismSpec
+  ,
+    ( runnable engineWorld schismSpec
     , "Engine: schismSpec is runnable once a society has aged past zero"
     )
-  , ( evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing personSlot) engineWorld
+  ,
+    ( evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing personSlot) engineWorld
         == Just engineFounder
     , "Engine: resolveSlot picks the sole existing living member as heresiarch"
     )
-  , ( case evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing (Slot Person (\_ _ _ -> False) True)) engineWorld of
+  ,
+    ( case evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing (Slot Person (\_ _ _ -> False) True)) engineWorld of
         Just p -> not (M.member p (wEntities engineWorld))
         Nothing -> False
     , "Engine: resolveSlot mints a fresh entity when a required slot has no candidates"
     )
-  , ( let w' = execState (intelligentStep [schismSpec] engineWorld (StepRule schismSpec [Just engineSociety, Nothing])) engineWorld
+  ,
+    ( let w' = execState (intelligentStep [schismSpec] engineWorld (StepRule schismSpec [Just engineSociety, Nothing])) engineWorld
        in any ((== SplitFrom) . factPred) (wFacts w') && any ((== Leads) . factPred) (wFacts w')
     , "Engine: intelligentStep on StepRule schismSpec produces a schism, same as fireSchism directly"
     )
-  , ( case chooseRule [schismSpec] of
+  ,
+    ( case chooseRule [schismSpec] of
         Right rs -> rsName rs == "schism"
         Left _ -> False
     , "Engine: chooseRule accepts exactly one candidate"
     )
-  , ( case chooseRule [schismSpec, schismSpec] of
+  ,
+    ( case chooseRule [schismSpec, schismSpec] of
         Left (AmbiguousRule rss) -> length rss == 2
         Right _ -> False
     , "Engine: chooseRule rejects more than one candidate as ambiguous"
     )
-  , ( case queryEntity engineWorld [schismSpec] engineSociety of
+  ,
+    ( case queryEntity engineWorld [schismSpec] engineSociety of
         Just d -> edKind d == Society && "schism" `elem` edSatisfiesSlotOf d
         Nothing -> False
     , "Engine: queryEntity reports the society can fill schismSpec's own slot"
@@ -376,24 +413,30 @@ engineChecks =
     -- Its free slot is the mirror image of schism's — optional rather than
     -- required — so these checks exercise the omit path 'schismSpec' never
     -- did, plus the pick path once a real candidate site exists.
+
     ( runnable engineWorld sanctifySpec
     , "Engine: sanctifySpec is runnable with no sites at all (its only required slot is the society)"
     )
-  , ( isNothing (evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing siteSlot) engineWorld)
+  ,
+    ( isNothing (evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing siteSlot) engineWorld)
     , "Engine: resolveSlot omits an optional slot with no candidates rather than minting one"
     )
-  , ( candidatesFor engineWorldWithSite [] siteSlot == [engineSite]
+  ,
+    ( candidatesFor engineWorldWithSite [] siteSlot == [engineSite]
     , "Engine: candidatesFor finds the one existing unsanctified site"
     )
-  , ( evalState (resolveSlot engineWorldWithSite vaurethine [engineSociety] Nothing siteSlot) engineWorldWithSite
+  ,
+    ( evalState (resolveSlot engineWorldWithSite vaurethine [engineSociety] Nothing siteSlot) engineWorldWithSite
         == Just engineSite
     , "Engine: resolveSlot picks the existing unsanctified site over minting a fresh one"
     )
-  , ( let w' = execState (intelligentStep [sanctifySpec] engineWorld (StepRule sanctifySpec [Just engineSociety, Nothing])) engineWorld
+  ,
+    ( let w' = execState (intelligentStep [sanctifySpec] engineWorld (StepRule sanctifySpec [Just engineSociety, Nothing])) engineWorld
        in any ((== Sanctified) . factPred) (wFacts w') && any ((== Venerates) . factPred) (wFacts w')
     , "Engine: intelligentStep on StepRule sanctifySpec produces a sanctification, minting a site via fireSanctify's own fallback"
     )
-  , ( case queryEntity engineWorld [schismSpec, sanctifySpec] engineSociety of
+  ,
+    ( case queryEntity engineWorld [schismSpec, sanctifySpec] engineSociety of
         Just d -> "schism" `elem` edSatisfiesSlotOf d && "sanctify" `elem` edSatisfiesSlotOf d
         Nothing -> False
     , "Engine: queryEntity reports the society can fill both schismSpec's and sanctifySpec's slots"
@@ -440,7 +483,7 @@ buildRichWorld = do
   advanceEpoch
   w3 <- get
   let st0 = firstOrErr "buildRichWorld: sanctify produced no site" (entitiesOf Site w3)
-  (item, concept) <- newItem vaurethine
+  (item, concept) <- newItem vaurethine Nothing
   record
     "test-setup"
     ""
@@ -493,116 +536,143 @@ slotAt rs n = rsSlots rs !! n
 -- resolves and actually records the shape only that production makes.
 batchEngineChecks :: [(Bool, Text)]
 batchEngineChecks =
-  [ ( let cs = candidatesFor richWorld [rS0] (slotAt battleSpec 1)
+  [
+    ( let cs = candidatesFor richWorld [rS0] (slotAt battleSpec 1)
        in rS1 `elem` cs && rS2 `elem` cs
     , "Engine: battleSpec's second slot finds both real grievance partners of the first"
     )
-  , ( let cs = candidatesFor richWorld [] (slotAt defileSpec 0)
+  ,
+    ( let cs = candidatesFor richWorld [] (slotAt defileSpec 0)
        in rSt0 `elem` cs
     , "Engine: defileSpec's site slot finds the one sanctified site"
     )
-  , ( let cs = candidatesFor richWorld [rSt0] (slotAt defileSpec 1)
+  ,
+    ( let cs = candidatesFor richWorld [rSt0] (slotAt defileSpec 1)
        in rS1 `elem` cs && rS2 `elem` cs
     , "Engine: defileSpec's society slot finds both of the sanctified claimant's rivals"
     )
-  , ( let cs = candidatesFor richWorld [rS0, rSt0] (slotAt miracleSaintSpec 2)
+  ,
+    ( let cs = candidatesFor richWorld [rS0, rSt0] (slotAt miracleSaintSpec 2)
        in rP1 `elem` cs && rP2 `elem` cs && rP0 `notElem` cs
     , "Engine: miracleSaintSpec's saint slot finds both living members of the venerating society, not the heresiarch who left it"
     )
-  , ( rItem `elem` candidatesFor richWorld [rS0, rSt0] (slotAt miracleRelicSpec 2)
+  ,
+    ( rItem `elem` candidatesFor richWorld [rS0, rSt0] (slotAt miracleRelicSpec 2)
     , "Engine: miracleRelicSpec's relic slot finds the existing active item"
     )
-  , ( let cs = candidatesFor richWorld [rS0, rSt0, rP1] (slotAt miracleOnPersonSpec 3)
+  ,
+    ( let cs = candidatesFor richWorld [rS0, rSt0, rP1] (slotAt miracleOnPersonSpec 3)
        in rP2 `elem` cs && rP1 `notElem` cs
     , "Engine: miracleOnPersonSpec's target slot excludes the actor but allows another person"
     )
-  , ( rItem `elem` candidatesFor richWorld [rS0, rSt0, rP1] (slotAt miracleOnItemSpec 3)
+  ,
+    ( rItem `elem` candidatesFor richWorld [rS0, rSt0, rP1] (slotAt miracleOnItemSpec 3)
     , "Engine: miracleOnItemSpec's target slot finds the existing active item"
     )
-  , ( let cs = candidatesFor richWorld [rS1] (slotAt assassinateSpec 2)
+  ,
+    ( let cs = candidatesFor richWorld [rS1] (slotAt assassinateSpec 2)
        in rS0 `elem` cs && rS2 `notElem` cs
     , "Engine: assassinateSpec's killer-society slot finds only the society actually holding a grievance against the victim's own"
     )
-  , ( let cs = candidatesFor richWorld [rS1] (slotAt mergerSpec 1)
+  ,
+    ( let cs = candidatesFor richWorld [rS1] (slotAt mergerSpec 1)
        in rS2 `elem` cs && rS0 `notElem` cs
     , "Engine: mergerSpec's second slot finds the grievance-target-sharing peer, not the direct rival"
     )
-  , ( let cs = candidatesFor richWorld [] (slotAt dissolveSpec 0)
+  ,
+    ( let cs = candidatesFor richWorld [] (slotAt dissolveSpec 0)
        in rDissolvable `elem` cs && rDeadSoc `notElem` cs && rS0 `notElem` cs
     , "Engine: dissolveSpec's slot finds the unstaffed society, excluding one with members and one already terminated"
     )
-  , ( let cs = candidatesFor richWorld [rS0] (slotAt reviveSpec 1)
+  ,
+    ( let cs = candidatesFor richWorld [rS0] (slotAt reviveSpec 1)
        in rDeadSoc `elem` cs && rS1 `notElem` cs
     , "Engine: reviveSpec's defunct slot finds the terminated society, not an active one"
     )
-  , ( let cs = candidatesFor richWorld [rS0] (slotAt prophesySocietySpec 1)
+  ,
+    ( let cs = candidatesFor richWorld [rS0] (slotAt prophesySocietySpec 1)
        in rS1 `elem` cs && rS0 `notElem` cs
     , "Engine: prophesySocietySpec's target slot excludes the prophet itself"
     )
-  , ( rP0 `elem` candidatesFor richWorld [rS0] (slotAt prophesyPersonSpec 1)
+  ,
+    ( rP0 `elem` candidatesFor richWorld [rS0] (slotAt prophesyPersonSpec 1)
     , "Engine: prophesyPersonSpec's target slot finds an existing person"
     )
-  , ( rSt0 `elem` candidatesFor richWorld [rS0] (slotAt prophesySiteSpec 1)
+  ,
+    ( rSt0 `elem` candidatesFor richWorld [rS0] (slotAt prophesySiteSpec 1)
     , "Engine: prophesySiteSpec's target slot finds the existing site"
     )
-  , ( rItem `elem` candidatesFor richWorld [rS0] (slotAt prophesyItemSpec 1)
+  ,
+    ( rItem `elem` candidatesFor richWorld [rS0] (slotAt prophesyItemSpec 1)
     , "Engine: prophesyItemSpec's target slot finds the existing active item"
     )
-  , ( let itemCs = candidatesFor richWorld [] (slotAt theftSpec 0)
+  ,
+    ( let itemCs = candidatesFor richWorld [] (slotAt theftSpec 0)
           kCs = candidatesFor richWorld [rItem] (slotAt theftSpec 1)
           hCs = candidatesFor richWorld [rItem, rS1] (slotAt theftSpec 2)
        in rItem `elem` itemCs && kCs == [rS1] && rS0 `elem` hCs && rS2 `elem` hCs && rS1 `notElem` hCs
     , "Engine: theftSpec's chain finds the venerator as keeper and every other active society as a would-be thief"
     )
-  , ( let gCs = candidatesFor richWorld [rItem] (slotAt giftSpec 1)
+  ,
+    ( let gCs = candidatesFor richWorld [rItem] (slotAt giftSpec 1)
        in rS1 `elem` gCs && rS2 `elem` gCs
     , "Engine: giftSpec's giver slot allows either regard, unlike theftSpec's Venerated-only keeper"
     )
-  , ( let kCs = candidatesFor richWorld [rItem] (slotAt destroyRelicSpec 1)
+  ,
+    ( let kCs = candidatesFor richWorld [rItem] (slotAt destroyRelicSpec 1)
        in kCs == [rS2]
     , "Engine: destroyRelicSpec's keeper slot finds only the shunning society, not the venerating one"
     )
-  , ( let cs = candidatesFor richWorld [rS0] (slotAt coronationSpec 1)
+  ,
+    ( let cs = candidatesFor richWorld [rS0] (slotAt coronationSpec 1)
        in rP2 `elem` cs && rP1 `notElem` cs
     , "Engine: coronationSpec's candidate slot excludes the sitting leader"
     )
-  , ( let aCs = candidatesFor richWorld [rS0] (slotAt trialByCombatSpec 1)
+  ,
+    ( let aCs = candidatesFor richWorld [rS0] (slotAt trialByCombatSpec 1)
           bCs = candidatesFor richWorld [rS0, rP1] (slotAt trialByCombatSpec 2)
        in rP1 `elem` aCs && rP2 `elem` aCs && bCs == [rP2]
     , "Engine: trialByCombatSpec finds the one real rival pair within the society"
     )
-  , ( let leaderCs = candidatesFor richWorld [rS0] (slotAt coupSpec 1)
+  ,
+    ( let leaderCs = candidatesFor richWorld [rS0] (slotAt coupSpec 1)
           usurperCs = candidatesFor richWorld [rS0, rP1] (slotAt coupSpec 2)
        in leaderCs == [rP1] && usurperCs == [rP2]
     , "Engine: coupSpec finds the sitting leader and the one rival who could usurp them"
     )
-  , ( let w' = execState (intelligentStep [battleSpec] richWorld (StepRule battleSpec [Just rS0, Just rS1, Nothing])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [battleSpec] richWorld (StepRule battleSpec [Just rS0, Just rS1, Nothing])) richWorld
        in any ((== BattledAt) . factPred) (wFacts w')
     , "Engine: intelligentStep on StepRule battleSpec actually fires a battle"
     )
-  , ( let w' = execState (intelligentStep [defileSpec] richWorld (StepRule defileSpec [Just rSt0, Just rS1])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [defileSpec] richWorld (StepRule defileSpec [Just rSt0, Just rS1])) richWorld
           sanctifiedBefore = length (filter ((== Sanctified) . factPred) (wFacts richWorld))
           sanctifiedAfter = length (filter ((== Sanctified) . factPred) (wFacts w'))
        in sanctifiedAfter > sanctifiedBefore
     , "Engine: intelligentStep on StepRule defileSpec actually fires a purification"
     )
-  , ( let w' = execState (intelligentStep [theftSpec] richWorld (StepRule theftSpec [Just rItem, Just rS1, Just rS2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [theftSpec] richWorld (StepRule theftSpec [Just rItem, Just rS1, Just rS2])) richWorld
           grievanceBefore = length (filter ((== Grievance) . factPred) (wFacts richWorld))
           grievanceAfter = length (filter ((== Grievance) . factPred) (wFacts w'))
        in grievanceAfter > grievanceBefore
     , "Engine: intelligentStep on StepRule theftSpec actually fires a theft"
     )
-  , ( let w' = execState (intelligentStep [coupSpec] richWorld (StepRule coupSpec [Just rS0, Just rP1, Just rP2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [coupSpec] richWorld (StepRule coupSpec [Just rS0, Just rP1, Just rP2])) richWorld
           grievanceBefore = length (filter ((== Grievance) . factPred) (wFacts richWorld))
           grievanceAfter = length (filter ((== Grievance) . factPred) (wFacts w'))
        in grievanceAfter > grievanceBefore
     , "Engine: intelligentStep on StepRule coupSpec actually fires a coup"
     )
-  , ( let w' = execState (intelligentStep [prophesySocietySpec] richWorld (StepRule prophesySocietySpec [Just rS0, Just rS1])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [prophesySocietySpec] richWorld (StepRule prophesySocietySpec [Just rS0, Just rS1])) richWorld
        in any ((== Prophesied) . factPred) (wFacts w')
     , "Engine: intelligentStep on StepRule prophesySocietySpec actually fires a prophecy"
     )
-  , ( let w' = execState (intelligentStep [dissolveSpec] richWorld (StepRule dissolveSpec [Just rDissolvable])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [dissolveSpec] richWorld (StepRule dissolveSpec [Just rDissolvable])) richWorld
        in isTerminated w' rDissolvable && not (isTerminated richWorld rDissolvable)
     , "Engine: intelligentStep on StepRule dissolveSpec actually dissolves the unstaffed society"
     )
@@ -621,24 +691,30 @@ batchEngineChecks =
 -- equal — asserting equality here would be asserting something false.
 adapterChecks :: [(Bool, Text)]
 adapterChecks =
-  [ ( length (ruleCandidates (ruleFromSpec schismSpec) richWorld) == length (ruleCandidates ruleSchism richWorld)
+  [
+    ( length (ruleCandidates (ruleFromSpec schismSpec) richWorld) == length (ruleCandidates ruleSchism richWorld)
     , "Adapter: ruleFromSpec schismSpec matches ruleSchism's own candidate count exactly"
     )
-  , ( length (ruleCandidates (ruleFromSpec sanctifySpec) richWorld) == length (ruleCandidates ruleSanctify richWorld)
+  ,
+    ( length (ruleCandidates (ruleFromSpec sanctifySpec) richWorld) == length (ruleCandidates ruleSanctify richWorld)
     , "Adapter: ruleFromSpec sanctifySpec matches ruleSanctify's own candidate count exactly"
     )
-  , ( length (ruleCandidates (ruleFromSpec dissolveSpec) richWorld) == length (ruleCandidates ruleDissolve richWorld)
+  ,
+    ( length (ruleCandidates (ruleFromSpec dissolveSpec) richWorld) == length (ruleCandidates ruleDissolve richWorld)
     , "Adapter: ruleFromSpec dissolveSpec matches ruleDissolve's own candidate count exactly (the no-op-assignment filter earns its keep here — dissolveSpec's only slot is optional, so without it every world would carry one extra guaranteed-no-op candidate)"
     )
-  , ( length (ruleCandidates (ruleFromSpec battleSpec) richWorld) > length (ruleCandidates ruleBattle richWorld)
+  ,
+    ( length (ruleCandidates (ruleFromSpec battleSpec) richWorld) > length (ruleCandidates ruleBattle richWorld)
     , "Adapter: ruleFromSpec battleSpec's candidate count is strictly larger than ruleBattle's own, as expected from dropping the ordering dedup"
     )
-  , ( all
+  ,
+    ( all
         (\s -> chronicle (generateViaEngine s steps) == chronicle (generateViaEngine s steps))
         aggregateSeeds
     , "Adapter: generateViaEngine is deterministic, same as generate"
     )
-  , ( all
+  ,
+    ( all
         ( ( \w ->
               all (\f -> M.member (factSource f) (wEvents w)) (wFacts w)
                 && all (maybe True (`M.member` wEntities w) . factAttestedBy) (wFacts w)
@@ -649,7 +725,8 @@ adapterChecks =
         aggregateSeeds
     , "Adapter: generateViaEngine produces structurally valid worlds (sourced facts, resolving attestations, at least one society) across a real seed range"
     )
-  , ( any (\s -> any ((== SplitFrom) . factPred) (wFacts (generateViaEngine s longSteps))) aggregateSeeds
+  ,
+    ( any (\s -> any ((== SplitFrom) . factPred) (wFacts (generateViaEngine s longSteps))) aggregateSeeds
         && any (\s -> any ((== BattledAt) . factPred) (wFacts (generateViaEngine s longSteps))) aggregateSeeds
     , "Adapter: generateViaEngine actually produces schisms and battles for at least one seed each, driven entirely by rulesFromSpecs"
     )
@@ -671,27 +748,33 @@ directRuleChecks =
   , (any ((== Embodies) . factPred) (wFacts richWorld), "Direct: at least one item embodies a concept in richWorld")
   , (not (null (entitiesOf Concept richWorld)), "Direct: at least one Concept exists in richWorld")
   , (any ((== Leads) . factPred) (wFacts richWorld), "Direct: at least one society has a distinguished current leader in richWorld")
-  , ( let w' = execState (intelligentStep [defileSpec] richWorld (StepRule defileSpec [Just rSt0, Just rS1])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [defileSpec] richWorld (StepRule defileSpec [Just rSt0, Just rS1])) richWorld
        in any ((== "purification") . evKind) (M.elems (wEvents w'))
     , "Direct: firing defileSpec on richWorld records a purification event"
     )
-  , ( let w' = execState (intelligentStep [miracleSaintSpec] richWorld (StepRule miracleSaintSpec [Just rS0, Just rSt0, Nothing])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [miracleSaintSpec] richWorld (StepRule miracleSaintSpec [Just rS0, Just rSt0, Nothing])) richWorld
        in any ((== "miracle") . evKind) (M.elems (wEvents w'))
     , "Direct: firing miracleSaintSpec on richWorld records a miracle event"
     )
-  , ( let w' = execState (intelligentStep [mergerSpec] richWorld (StepRule mergerSpec [Just rS1, Just rS2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [mergerSpec] richWorld (StepRule mergerSpec [Just rS1, Just rS2])) richWorld
        in any ((== MergedInto) . factPred) (wFacts w')
     , "Direct: firing mergerSpec on richWorld's grievance-target-sharing pair records a merger"
     )
-  , ( let w' = execState (intelligentStep [dissolveSpec] richWorld (StepRule dissolveSpec [Just rDissolvable])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [dissolveSpec] richWorld (StepRule dissolveSpec [Just rDissolvable])) richWorld
        in any ((== "dissolution") . evKind) (M.elems (wEvents w'))
     , "Direct: firing dissolveSpec on richWorld's unstaffed society records a dissolution event"
     )
-  , ( let w' = execState (intelligentStep [reviveSpec] richWorld (StepRule reviveSpec [Just rS0, Just rDeadSoc])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [reviveSpec] richWorld (StepRule reviveSpec [Just rS0, Just rDeadSoc])) richWorld
        in any ((== Revives) . factPred) (wFacts w')
     , "Direct: firing reviveSpec on richWorld's defunct society records a Revives claim"
     )
-  , ( let richWorldWithProphecy =
+  ,
+    ( let richWorldWithProphecy =
             execState
               (record "test-setup" "" [Claim rS0 Prophesied (Just (ROmen rDissolvable (Just Terminated))) (Just rS0) Nothing])
               richWorld
@@ -699,31 +782,38 @@ directRuleChecks =
        in any ((== Fulfilled) . factPred) (wFacts w')
     , "Direct: an open prophecy about richWorld's unstaffed society is fulfilled when dissolveSpec actually fires"
     )
-  , ( let w' = execState (intelligentStep [destroyRelicSpec] richWorld (StepRule destroyRelicSpec [Just rItem, Just rS2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [destroyRelicSpec] richWorld (StepRule destroyRelicSpec [Just rItem, Just rS2])) richWorld
        in any ((== "destruction") . evKind) (M.elems (wEvents w'))
     , "Direct: firing destroyRelicSpec on richWorld's shunned item records a destruction event"
     )
-  , ( let w' = execState (intelligentStep [theftSpec] richWorld (StepRule theftSpec [Just rItem, Just rS1, Just rS2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [theftSpec] richWorld (StepRule theftSpec [Just rItem, Just rS1, Just rS2])) richWorld
        in any ((== "theft") . evKind) (M.elems (wEvents w'))
     , "Direct: firing theftSpec on richWorld's venerated item records a theft event"
     )
-  , ( let w' = execState (intelligentStep [giftSpec] richWorld (StepRule giftSpec [Just rItem, Just rS1, Just rS2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [giftSpec] richWorld (StepRule giftSpec [Just rItem, Just rS1, Just rS2])) richWorld
        in any ((== "gift") . evKind) (M.elems (wEvents w'))
     , "Direct: firing giftSpec on richWorld's regarded item records a gift event"
     )
-  , ( let w' = execState (intelligentStep [coronationSpec] richWorld (StepRule coronationSpec [Just rS0, Just rP2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [coronationSpec] richWorld (StepRule coronationSpec [Just rS0, Just rP2])) richWorld
        in any ((== "coronation") . evKind) (M.elems (wEvents w'))
     , "Direct: firing coronationSpec on richWorld's non-leader member records a coronation event"
     )
-  , ( let w' = execState (intelligentStep [coupSpec] richWorld (StepRule coupSpec [Just rS0, Just rP1, Just rP2])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [coupSpec] richWorld (StepRule coupSpec [Just rS0, Just rP1, Just rP2])) richWorld
        in any ((== Reconciled) . factPred) (wFacts w')
     , "Direct: firing coupSpec on richWorld's rival pair records the usurper's Reconciled claim"
     )
-  , ( let w' = execState (intelligentStep [assassinateSpec] richWorld (StepRule assassinateSpec [Just rS1, Just rP0, Just rS0])) richWorld
+  ,
+    ( let w' = execState (intelligentStep [assassinateSpec] richWorld (StepRule assassinateSpec [Just rS1, Just rP0, Just rS0])) richWorld
        in any ((== Heretic) . factPred) (wFacts w')
     , "Direct: firing assassinateSpec on richWorld's grievance-holding pair records the killers' Heretic claim"
     )
-  , ( any isJust [evalState (fireDispute richWorld rS0) (richWorld {wGen = mkStdGen i}) | i <- [1 .. 200]]
+  ,
+    ( any isJust [evalState (fireDispute richWorld rS0) (richWorld {wGen = mkStdGen i}) | i <- [1 .. 200]]
     , "Direct: fireDispute fires at least once for richWorld's own officiant across 200 independent RNG trials"
     )
   ]
@@ -755,23 +845,28 @@ backdatedTrials = map backdatedTrial [1 .. 2000]
 
 backdatedChecks :: [(Bool, Text)]
 backdatedChecks =
-  [ ( (1, 0) `elem` backdatedTrials
+  [
+    ( (1, 0) `elem` backdatedTrials
     , "Direct: mintBackdatedSaint sometimes omits the cult dependency entirely (one new entity, no new event)"
     )
-  , ( (1, 1) `elem` backdatedTrials
+  ,
+    ( (1, 1) `elem` backdatedTrials
     , "Direct: mintBackdatedSaint sometimes picks an existing cult (one new entity, one new event)"
     )
-  , ( (2, 1) `elem` backdatedTrials
+  ,
+    ( (2, 1) `elem` backdatedTrials
     , "Direct: mintBackdatedSaint sometimes generates a fresh cult (two new entities, one new event)"
     )
-  , ( let w0 = richWorld {wEpoch = Epoch 10}
+  ,
+    ( let w0 = richWorld {wEpoch = Epoch 10}
           trial i =
             let (mSaint, w1) = runState (mintBackdatedSaint defaultTuning w0) (w0 {wGen = mkStdGen i})
              in maybe True (\sid -> maybe False ((>= 0) . unEpoch . entBorn) (M.lookup sid (wEntities w1))) mSaint
        in all trial [1 .. 200]
     , "Direct: backdatedEpoch never goes negative even when wEpoch is far smaller than backstoryHeadroomDays"
     )
-  , ( case entitiesOf Society richWorld of
+  ,
+    ( case entitiesOf Society richWorld of
         (s : _) -> case entBorn <$> M.lookup s (wEntities richWorld) of
           Just (Epoch b) -> not (existedBy richWorld (Epoch (b - 1)) s) && existedBy richWorld (Epoch b) s
           Nothing -> False
@@ -791,27 +886,34 @@ sampleMiracleSaint = MiracleSaint (MiracleSaintOutcome rS0 rSt0 rP1 True Nothing
 
 voiceChecks :: [(Bool, Text)]
 voiceChecks =
-  [ ( renderWithVoice richWorld (Voice Fervent) sampleFounding /= renderNeutral richWorld sampleFounding
+  [
+    ( renderWithVoice richWorld (Voice Fervent) sampleFounding /= renderNeutral richWorld sampleFounding
     , "Direct: Founding renders differently under a Fervent voice than the neutral reading"
     )
-  , ( renderWithVoice richWorld (Voice Grim) sampleSchismFresh /= renderNeutral richWorld sampleSchismFresh
+  ,
+    ( renderWithVoice richWorld (Voice Grim) sampleSchismFresh /= renderNeutral richWorld sampleSchismFresh
     , "Direct: Schism renders differently under a Grim voice than the neutral reading"
     )
-  , ( renderWithVoice richWorld (Voice Fervent) sampleMiracleSaint /= renderNeutral richWorld sampleMiracleSaint
+  ,
+    ( renderWithVoice richWorld (Voice Fervent) sampleMiracleSaint /= renderNeutral richWorld sampleMiracleSaint
     , "Direct: MiracleSaint renders differently under a Fervent voice than the neutral reading"
     )
-  , ( render richWorld Nothing sampleFounding == renderNeutral richWorld sampleFounding
+  ,
+    ( render richWorld Nothing sampleFounding == renderNeutral richWorld sampleFounding
     , "Direct: render w Nothing is exactly the neutral reading"
     )
-  , ( case voiceOf richWorld rS0 of
+  ,
+    ( case voiceOf richWorld rS0 of
         Just v -> render richWorld (Just rS0) sampleFounding == renderWithVoice richWorld v sampleFounding
         Nothing -> render richWorld (Just rS0) sampleFounding == renderNeutral richWorld sampleFounding
     , "Direct: render w (Just sid) picks up that society's own VoiceRegister, independent of any stored narrator"
     )
-  , ( any (\i -> evalState (pickNarrator defaultTuning richWorld sampleFounding) (richWorld {wGen = mkStdGen i}) /= Just rS0) [1 .. 200]
+  ,
+    ( any (\i -> evalState (pickNarrator defaultTuning richWorld sampleFounding) (richWorld {wGen = mkStdGen i}) /= Just rS0) [1 .. 200]
     , "Direct: pickNarrator sometimes picks a society other than the attested one across 200 independent RNG trials"
     )
-  , ( isNothing (evalState (pickNarrator defaultTuning (emptyWorld 1) (Dissolve (DissolveOutcome rS0))) (emptyWorld 1))
+  ,
+    ( isNothing (evalState (pickNarrator defaultTuning (emptyWorld 1) (Dissolve (DissolveOutcome rS0))) (emptyWorld 1))
     , "Direct: pickNarrator falls back to Nothing only when no active society exists to pick from at all"
     )
     -- Deliberately 'Dissolve', not 'sampleFounding': attestedSociety reads
@@ -898,13 +1000,16 @@ patronTrials = map patronTrial [1 .. 500]
 
 patronChecks :: [(Bool, Text)]
 patronChecks =
-  [ ( (2, 0) `elem` patronTrials
+  [
+    ( (2, 0) `elem` patronTrials
     , "Direct: newSociety's backfillPatron sometimes omits a Ward entirely (no extra entity, no extra event)"
     )
-  , ( any (\(e, ev) -> e == 2 && ev >= 1) patronTrials
+  ,
+    ( any (\(e, ev) -> e == 2 && ev >= 1) patronTrials
     , "Direct: newSociety's backfillPatron sometimes binds an existing Ward (no extra entity, at least one extra event)"
     )
-  , ( any (\(e, _) -> e > 2) patronTrials
+  ,
+    ( any (\(e, _) -> e > 2) patronTrials
     , "Direct: newSociety's backfillPatron sometimes generates a fresh Ward (at least one extra entity)"
     )
   ]
@@ -920,19 +1025,24 @@ patronChecks =
 -- caught it.
 engineStepChecks :: [(Bool, Text)]
 engineStepChecks =
-  [ ( all (\s -> unEpoch (wEpoch (stepNTimes s 1)) > unEpoch (wEpoch (genesisWorld s))) [1 .. 20]
+  [
+    ( all (\s -> unEpoch (wEpoch (stepNTimes s 1)) > unEpoch (wEpoch (genesisWorld s))) [1 .. 20]
     , "Direct: stepAutonomous advances the epoch after exactly one call, for every seed — advanceEpoch always rolls at least one day, so this is unconditional, not luck"
     )
-  , ( unEpoch (wEpoch (stepNTimes 1 20)) > unEpoch (wEpoch (stepNTimes 1 1))
+  ,
+    ( unEpoch (wEpoch (stepNTimes 1 20)) > unEpoch (wEpoch (stepNTimes 1 1))
     , "Direct: stepAutonomous keeps advancing the epoch across repeated calls, not just the first one"
     )
-  , ( any (\s -> any ((== SplitFrom) . factPred) (wFacts (stepNTimes s 30))) [1 .. 20]
+  ,
+    ( any (\s -> any ((== SplitFrom) . factPred) (wFacts (stepNTimes s 30))) [1 .. 20]
     , "Direct: an age-gated rule (schism) can actually fire through repeated stepAutonomous calls — impossible before the advanceEpoch fix, since age could never pass 0"
     )
-  , ( all stepResultRoundTrips aggregateSeeds
+  ,
+    ( all stepResultRoundTrips aggregateSeeds
     , "Direct: encodeStepResult round-trips through a real JSON parser with new-entity/event/fact counts matching a direct World diff"
     )
-  , ( let w = genesisWorld 1
+  ,
+    ( let w = genesisWorld 1
           sid = firstOrErr "engineStepChecks: genesis produced no society" (entitiesOf Society w)
        in case Aeson.decode (encodeQueryResult w (queryEntity w ruleSpecs sid)) :: Maybe WireDossier of
             Just wd ->
@@ -942,7 +1052,8 @@ engineStepChecks =
             Nothing -> False
     , "Direct: encodeQueryResult round-trips a real entity's dossier through a JSON parser, including which RuleSpec slots it satisfies"
     )
-  , ( let w = genesisWorld 1
+  ,
+    ( let w = genesisWorld 1
        in (Aeson.decode (encodeQueryResult w (queryEntity w ruleSpecs (EntityId (-1)))) :: Maybe Aeson.Value) == Just Aeson.Null
     , "Direct: encodeQueryResult encodes an unresolved entity id as JSON null"
     )
