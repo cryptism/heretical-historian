@@ -33,6 +33,7 @@ import Historian.Rules
   , generateViaEngine
   , giftSpec
   , mergerSpec
+  , mintBackdatedSaint
   , miracleOnItemSpec
   , miracleOnPersonSpec
   , miracleRelicSpec
@@ -228,8 +229,11 @@ main = do
         , ( all (\s -> let (_, _, y0) = calendarParams s in y0 >= -500 && y0 <= 500) aggregateSeeds
           , "genesis year offset falls within the declared range for every seed"
           )
+        , ( any (\s -> any ((== "backstory") . evKind) (M.elems (wEvents (generate s longSteps)))) aggregateSeeds
+          , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
+          )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -385,34 +389,34 @@ buildRichWorld = do
   record
     "test-setup"
     ""
-    [ Claim item Embodies (Just (ROf concept)) Nothing
-    , Claim s1 Venerates (Just (ROf item)) (Just s1)
-    , Claim s2 Shuns (Just (ROf item)) (Just s2)
+    [ Claim item Embodies (Just (ROf concept)) Nothing Nothing
+    , Claim s1 Venerates (Just (ROf item)) (Just s1) Nothing
+    , Claim s2 Shuns (Just (ROf item)) (Just s2) Nothing
     ]
   p1 <- newPerson vaurethine
   p2 <- newPerson vaurethine
   record
     "test-setup"
     ""
-    [ Claim p1 LeaderOf (Just (ROf s0)) (Just s0)
-    , Claim p2 LeaderOf (Just (ROf s0)) (Just s0)
-    , Claim p1 Rivalry (Just (ROf p2)) (Just p1)
-    , Claim p2 Rivalry (Just (ROf p1)) (Just p2)
-    , Claim p1 Leads (Just (ROf s0)) (Just s0)
+    [ Claim p1 LeaderOf (Just (ROf s0)) (Just s0) Nothing
+    , Claim p2 LeaderOf (Just (ROf s0)) (Just s0) Nothing
+    , Claim p1 Rivalry (Just (ROf p2)) (Just p1) Nothing
+    , Claim p2 Rivalry (Just (ROf p1)) (Just p2) Nothing
+    , Claim p1 Leads (Just (ROf s0)) (Just s0) Nothing
     ]
   (deadSoc, deadConcept) <- newSociety vaurethine
   record
     "test-setup"
     ""
-    [ Claim deadSoc Embodies (Just (ROf deadConcept)) Nothing
-    , Claim deadSoc Terminated Nothing Nothing
+    [ Claim deadSoc Embodies (Just (ROf deadConcept)) Nothing Nothing
+    , Claim deadSoc Terminated Nothing Nothing Nothing
     ]
   (dissolvable, dissConcept) <- newSociety vaurethine
   record
     "test-setup"
     ""
-    [ Claim dissolvable Embodies (Just (ROf dissConcept)) Nothing
-    , Claim dissolvable Venerates (Just (ROf dissConcept)) (Just dissolvable)
+    [ Claim dissolvable Embodies (Just (ROf dissConcept)) Nothing Nothing
+    , Claim dissolvable Venerates (Just (ROf dissConcept)) (Just dissolvable) Nothing
     ]
   advanceEpoch
   pure (s0, s1, s2, st0, item, p0, p1, p2, deadSoc, dissolvable)
@@ -634,7 +638,7 @@ directRuleChecks =
     )
   , ( let richWorldWithProphecy =
             execState
-              (record "test-setup" "" [Claim rS0 Prophesied (Just (ROmen rDissolvable (Just Terminated))) (Just rS0)])
+              (record "test-setup" "" [Claim rS0 Prophesied (Just (ROmen rDissolvable (Just Terminated))) (Just rS0) Nothing])
               richWorld
           w' = execState (intelligentStep [dissolveSpec] richWorldWithProphecy (StepRule dissolveSpec [Just rDissolvable])) richWorldWithProphecy
        in any ((== Fulfilled) . factPred) (wFacts w')
@@ -666,6 +670,53 @@ directRuleChecks =
     )
   , ( any isJust [evalState (fireDispute richWorld rS0) (richWorld {wGen = mkStdGen i}) | i <- [1 .. 200]]
     , "Direct: fireDispute fires at least once for richWorld's own officiant across 200 independent RNG trials"
+    )
+  ]
+
+-- | Work item 14's standalone PoC (docs/plans/14-backdated-minting.md).
+-- Not wired into generate/step, so this is entirely hand-built-world
+-- checks, no seed scanning — the same "run it N times against one fixed
+-- world" technique 'fireDispute's own check above already uses.
+-- 'backdatedTrial' distinguishes the three outcomes by how many new
+-- entities/events a run produced, rather than by inspecting 'Fact'
+-- equality directly ('Fact' has no 'Eq' instance): omit mints only the
+-- saint and records no new event; picking an existing cult also mints
+-- only the saint (the cult already existed) but does record one new
+-- event; generating a fresh cult mints two new entities (cult and saint)
+-- plus one new event.
+backdatedTrial :: Int -> (Int, Int)
+backdatedTrial i =
+  let w0 = richWorld {wGen = mkStdGen i}
+      (_, w1) = runState (mintBackdatedSaint w0) w0
+   in (M.size (wEntities w1) - M.size (wEntities richWorld), M.size (wEvents w1) - M.size (wEvents richWorld))
+
+backdatedTrials :: [(Int, Int)]
+backdatedTrials = map backdatedTrial [1 .. 200]
+
+backdatedChecks :: [(Bool, Text)]
+backdatedChecks =
+  [ ( (1, 0) `elem` backdatedTrials
+    , "Direct: mintBackdatedSaint sometimes omits the cult dependency entirely (one new entity, no new event)"
+    )
+  , ( (1, 1) `elem` backdatedTrials
+    , "Direct: mintBackdatedSaint sometimes picks an existing cult (one new entity, one new event)"
+    )
+  , ( (2, 1) `elem` backdatedTrials
+    , "Direct: mintBackdatedSaint sometimes generates a fresh cult (two new entities, one new event)"
+    )
+  , ( let w0 = richWorld {wEpoch = Epoch 10}
+          trial i =
+            let (mSaint, w1) = runState (mintBackdatedSaint w0) (w0 {wGen = mkStdGen i})
+             in maybe True (\sid -> maybe False ((>= 0) . unEpoch . entBorn) (M.lookup sid (wEntities w1))) mSaint
+       in all trial [1 .. 200]
+    , "Direct: backdatedEpoch never goes negative even when wEpoch is far smaller than backstoryHeadroomDays"
+    )
+  , ( case entitiesOf Society richWorld of
+        (s : _) -> case entBorn <$> M.lookup s (wEntities richWorld) of
+          Just (Epoch b) -> not (existedBy richWorld (Epoch (b - 1)) s) && existedBy richWorld (Epoch b) s
+          Nothing -> False
+        [] -> False
+    , "Direct: existedBy excludes a society not yet born as of the target epoch, includes it from its own birth epoch on"
     )
   ]
 

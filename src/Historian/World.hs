@@ -25,6 +25,18 @@ import System.Random (StdGen, mkStdGen, randomR)
 -- its seed, which is what makes the whole thing replayable and testable.
 type Chronicle = State World
 
+-- | Backdated minting (see 'Historian.Rules.mintBackdatedSaint') needs
+-- room to subtract days from 'wEpoch' without going negative — 'dateOf'/
+-- 'findYear' walk forward accumulating day counts and have never handled
+-- a negative 'Epoch' (it wouldn't crash, but would render a garbled
+-- ordinal). Reserved at genesis rather than clamped per backdate, so a
+-- saint can get its full intended backstory age regardless of how early
+-- in the run it's minted — see docs/plans/14-backdated-minting.md §2.
+-- Sized for this PoC's single backdating level (100 years); expand if a
+-- future depth-2/3 recursive backdating pass needs more.
+backstoryHeadroomDays :: Int
+backstoryHeadroomDays = 100 * 365
+
 emptyWorld :: Int -> World
 emptyWorld seed =
   World
@@ -33,7 +45,7 @@ emptyWorld seed =
     , wEvents = M.empty
     , wChains = M.fromList [(c, buildChain 3 (corpusFor c)) | c <- allCultures]
     , wSeed = seed
-    , wEpoch = Epoch 0
+    , wEpoch = Epoch backstoryHeadroomDays
     , wNextEntity = 1
     , wNextEvent = 1
     , wGen = mkStdGen seed
@@ -93,6 +105,39 @@ weighted xs = do
       | n < w = x
       | otherwise = go (n - w) rest
     go _ [] = error "weighted: exhausted alternatives"
+
+data Resolution = Bound EntityId | Unbound
+  deriving stock (Eq, Show)
+
+data WeightedChoice = PickExisting | GenerateFresh | Omit
+
+-- | Pick an existing eligible entity, generate a fresh one, or leave the
+-- dependency genuinely unbound — 'Historian.Engine.Slot's pick/generate/
+-- omit shape, decided by explicit weights rather than a required/
+-- optional flag, so "leave this genuinely unbound" is a real, weighted
+-- possibility rather than only a fallback when nothing qualifies.
+-- 'candidates' is caller-filtered (eligibility is domain-specific);
+-- 'generate' is the caller's own minting action, run only on the
+-- 'GenerateFresh' branch.
+weightedResolve :: [EntityId] -> (Int, Int, Int) -> Chronicle EntityId -> Chronicle Resolution
+weightedResolve candidates (existingW, generateW, omitW) generate = do
+  choice <- weighted ([(existingW, PickExisting) | not (null candidates)] ++ [(generateW, GenerateFresh), (omitW, Omit)])
+  case choice of
+    Omit -> pure Unbound
+    GenerateFresh -> Bound <$> generate
+    PickExisting -> maybe Unbound Bound <$> pick candidates
+
+-- | Tunable by hand for now (work queue item 18: load this from a file
+-- instead, later). Depth 1's own weights prefer binding an existing cult
+-- over minting a fresh one.
+data BackfillConfig = BackfillConfig
+  { bfWeights :: (Int, Int, Int)
+  -- ^ existing, generate, omit
+  , bfMaxDepth :: Int
+  }
+
+defaultBackfillConfig :: BackfillConfig
+defaultBackfillConfig = BackfillConfig {bfWeights = (60, 15, 25), bfMaxDepth = 3}
 
 -- | Sample up to @n@ distinct elements from a list, without replacement —
 -- how 'Historian.Rules.regardReactions' draws a handful of spectator cults
@@ -311,14 +356,19 @@ freshEntityId = do
   put w {wNextEntity = wNextEntity w + 1}
   pure (EntityId (wNextEntity w))
 
--- | The last argument is relic data — 'Nothing' for every kind but 'Item'
--- — rolled here, at creation, rather than filled in later: entities are
+-- | The 'Maybe Int' is relic data — 'Nothing' for every kind but 'Item' —
+-- rolled here, at creation, rather than filled in later: entities are
 -- never mutated once minted anywhere in this codebase, and relic data is
--- no exception. See 'newItem'.
-mint :: Kind -> Culture -> Text -> Maybe Int -> Chronicle EntityId
-mint k c nm modifier = do
+-- no exception. See 'newItem'. The 'Maybe Epoch' is an explicit birth
+-- epoch override, 'Nothing' meaning "now" (every existing caller) —
+-- 'Just' is for backdated minting (see 'Historian.Rules.mintBackdatedSaint'),
+-- where the entity's own 'entBorn' must be the backdated moment, not
+-- whenever this function happens to run during generation.
+mint :: Kind -> Culture -> Text -> Maybe Int -> Maybe Epoch -> Chronicle EntityId
+mint k c nm modifier bornOverride = do
   i <- freshEntityId
-  ep <- gets wEpoch
+  now <- gets wEpoch
+  let ep = fromMaybe now bornOverride
   modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep modifier) (wEntities w)}
   pure i
 
@@ -358,23 +408,91 @@ generateSocietyName c = do
 newSociety :: Culture -> Chronicle (EntityId, EntityId)
 newSociety c = do
   name <- generateSocietyName c
-  s <- mint Society c name Nothing
+  s <- mint Society c name Nothing Nothing
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
   pure (s, concept)
+
+-- | 'newSociety', but backdated — and, deliberately, without a patron
+-- concept: the same "Society slot generation's auxiliary-claims shape is
+-- still unsettled" gap 'Historian.Engine.generateForKind' already has for
+-- ordinary slot-based generation (CLAUDE.md work queue item 15), not a
+-- new gap introduced here. See 'Historian.Rules.mintBackdatedSaint'.
+newSocietyAt :: Culture -> Epoch -> Chronicle EntityId
+newSocietyAt c epoch = do
+  name <- generateSocietyName c
+  mint Society c name Nothing (Just epoch)
+
+-- | Give a freshly-minted Ward (Person\/Item\/Site) a weighted chance to
+-- also be venerated by a cult — bind to an existing eligible one,
+-- generate a fresh one, or leave it genuinely uncared-for
+-- ('weightedResolve'). Recursive, bounded by 'bfMaxDepth': a generated
+-- cult isn't itself given a further chance this pass (there's no defined
+-- notion yet of what a cult's *own* recursive backfill would even be),
+-- so depth 2/3 exist in the mechanism but aren't reachable in practice
+-- until that's designed. Claims are dated to "now" (`Nothing` for
+-- 'clEpoch') — not backdated; see 'newPersonAt'/'newSocietyAt' for the
+-- separate, standalone backdated-minting capability this doesn't touch.
+backfillWard :: BackfillConfig -> Int -> EntityId -> Chronicle ()
+backfillWard cfg depth ward
+  | depth <= 0 = pure ()
+  | otherwise = do
+      w <- get
+      let candidates = entitiesOf Society w
+      resolution <- weightedResolve candidates (bfWeights cfg) (generateCultFor ward)
+      case resolution of
+        Unbound -> pure ()
+        Bound cult -> do
+          w' <- get
+          let text = nameIn w' cult <> " comes to venerate " <> nameIn w' ward <> "."
+          record "backstory" text [Claim cult Venerates (Just (ROf ward)) (Just cult) Nothing]
+
+-- | 'newSociety', but also records the patron-concept claims itself
+-- ('Historian.Rules.patronClaims' does the same thing for every other
+-- society-minting call site, but lives in 'Historian.Rules', which
+-- 'Historian.World' can't depend on — this is the same two-claim shape,
+-- duplicated rather than shared across the layering boundary). Without
+-- this, the freshly-minted patron 'Concept' would be minted but never
+-- mentioned by any 'Fact', failing "every entity is inspectable" — caught
+-- by 'cabal test' itself, not by review.
+generateCultFor :: EntityId -> Chronicle EntityId
+generateCultFor ward = do
+  w <- get
+  (cult, concept) <- newSociety (cultureOf w ward)
+  w' <- get
+  record
+    "backstory"
+    (nameIn w' cult <> " takes shape, bound to " <> nameIn w' concept <> ".")
+    [ Claim cult Embodies (Just (ROf concept)) Nothing Nothing
+    , Claim cult Venerates (Just (ROf concept)) (Just cult) Nothing
+    ]
+  pure cult
 
 newPerson :: Culture -> Chronicle EntityId
 newPerson c = do
   stem <- syllableName c
   bn <- pickOr "the Silent" bynames
   useByname <- coin
-  mint Person c (if useByname then stem <> " " <> bn else stem) Nothing
+  p <- mint Person c (if useByname then stem <> " " <> bn else stem) Nothing Nothing
+  backfillWard defaultBackfillConfig (bfMaxDepth defaultBackfillConfig) p
+  pure p
+
+-- | 'newPerson', but backdated to a given birth epoch instead of "now" —
+-- see 'Historian.Rules.mintBackdatedSaint'.
+newPersonAt :: Culture -> Epoch -> Chronicle EntityId
+newPersonAt c epoch = do
+  stem <- syllableName c
+  bn <- pickOr "the Silent" bynames
+  useByname <- coin
+  mint Person c (if useByname then stem <> " " <> bn else stem) Nothing (Just epoch)
 
 newSite :: Culture -> Chronicle EntityId
 newSite c = do
   stem <- markovWord c
   nn <- pickOr "Stair" siteNouns
-  mint Site c ("The " <> nn <> " of " <> stem) Nothing
+  st <- mint Site c ("The " <> nn <> " of " <> stem) Nothing Nothing
+  backfillWard defaultBackfillConfig (bfMaxDepth defaultBackfillConfig) st
+  pure st
 
 -- | Every item is "relic-eligible" from the moment it exists: a modifier
 -- (placeholder, no mechanical use yet) and a symbolic 'Concept' link are
@@ -389,7 +507,8 @@ newItem c = do
   modifier <- roll (-2, 4)
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
-  item <- mint Item c ("The " <> nn <> " of " <> stem) (Just modifier)
+  item <- mint Item c ("The " <> nn <> " of " <> stem) (Just modifier) Nothing
+  backfillWard defaultBackfillConfig (bfMaxDepth defaultBackfillConfig) item
   pure (item, concept)
 
 -- | Concepts are the one 'Kind' minted once per name and reused, not
@@ -402,7 +521,7 @@ conceptNamed c name = do
   w <- get
   case [i | (i, e) <- M.toList (wEntities w), entKind e == Concept, entName e == name] of
     (i : _) -> pure i
-    [] -> mint Concept c name Nothing
+    [] -> mint Concept c name Nothing Nothing
 
 -- | For an 'Item', the 'Concept' it symbolically embodies, read from its
 -- 'Embodies' fact — 'Nothing' for every other 'Kind'. Deliberately fact-
@@ -437,6 +556,21 @@ advanceEpoch = do
   gap <- roll (1, maxGap)
   modify' $ \w' -> w' {wEpoch = Epoch (unEpoch (wEpoch w') + gap)}
 
+-- | Rolls a birth epoch backdated by up to 'backstoryHeadroomDays' behind
+-- the current one. The full range is always available via ordinary
+-- generation (genesis reserves the headroom for exactly this, and
+-- 'advanceEpoch' only ever adds to 'wEpoch') — the @min@ below isn't a
+-- reintroduction of "clamp based on how far the world has run" for that
+-- normal case (it's a no-op there), it's a defensive floor so this stays
+-- total even if ever called on a hand-built 'World' whose 'wEpoch' is
+-- below the reserved headroom, rather than trusting every caller to
+-- uphold that invariant.
+backdatedEpoch :: Chronicle Epoch
+backdatedEpoch = do
+  w <- get
+  daysBack <- roll (0, min backstoryHeadroomDays (unEpoch (wEpoch w)))
+  pure (Epoch (unEpoch (wEpoch w) - daysBack))
+
 -- | Append one event and its facts. This is the only way facts enter the
 -- world, so every fact has a source event whose prose can be shown.
 record :: Text -> Text -> [Claim] -> Chronicle ()
@@ -445,7 +579,28 @@ record kind txt claims = do
   let eid = EventId (wNextEvent w)
       ep = wEpoch w
       ev = Event eid ep kind txt
-      fs = [Fact (clSubject c) (clPred c) (clObject c) ep eid (clAttestedBy c) | c <- claims]
+      fs = [Fact (clSubject c) (clPred c) (clObject c) (fromMaybe ep (clEpoch c)) eid (clAttestedBy c) | c <- claims]
+  put
+    w
+      { wNextEvent = wNextEvent w + 1
+      , wEvents = M.insert eid ev (wEvents w)
+      , wFacts = fs ++ wFacts w
+      }
+
+-- | Like 'record', but for backdated claims: the event itself is dated
+-- *now* (this is genuinely when the historian recorded/discovered it —
+-- 'chronicle' already reads as "order recorded," not "order it happened"),
+-- while every claim it produces is dated to the given, earlier 'Epoch'.
+-- Not a generalization of 'record' (e.g. per-claim epochs) — every caller
+-- so far only ever needs one backdated moment per backdating event. See
+-- 'Historian.Rules.mintBackdatedSaint'.
+recordBackdated :: Text -> Epoch -> [Claim] -> Chronicle ()
+recordBackdated kind factEp claims = do
+  w <- get
+  let eid = EventId (wNextEvent w)
+      now = wEpoch w
+      ev = Event eid now kind ("(backstory) " <> kind)
+      fs = [Fact (clSubject c) (clPred c) (clObject c) factEp eid (clAttestedBy c) | c <- claims]
   put
     w
       { wNextEvent = wNextEvent w + 1
@@ -534,8 +689,8 @@ data Regard = Venerated | Shunned
 -- that module and 'Historian.Render' need it, and 'Historian.Render'
 -- can't import 'Historian.Rules' without a cycle.
 regardClaim :: EntityId -> EntityId -> Regard -> Claim
-regardClaim cult thing Venerated = Claim cult Venerates (Just (ROf thing)) (Just cult)
-regardClaim cult thing Shunned = Claim cult Shuns (Just (ROf thing)) (Just cult)
+regardClaim cult thing Venerated = Claim cult Venerates (Just (ROf thing)) (Just cult) Nothing
+regardClaim cult thing Shunned = Claim cult Shuns (Just (ROf thing)) (Just cult) Nothing
 
 regardOf :: World -> EntityId -> EntityId -> Maybe Regard
 regardOf w subject thing =
@@ -614,6 +769,20 @@ alreadyMerged w s = any (\f -> factPred f == MergedInto && factSubject f == s) (
 -- predicate ('Terminated') — see the type's own Haddock for why.
 isTerminated :: World -> EntityId -> Bool
 isTerminated w i = any (\f -> factPred f == Terminated && factSubject f == i) (wFacts w)
+
+-- | Whether an entity already existed, and hadn't yet been terminated, as
+-- of a given epoch — the hard temporal-consistency check backdated
+-- minting needs before offering an existing entity as a candidate
+-- dependency (docs/DESIGN.md Decision 27's own hard-invariant list; see
+-- 'Historian.Rules.mintBackdatedSaint'). 'isTerminated'/'isDefunct' only
+-- ever ask about *now*, not an arbitrary past epoch, so this is genuinely
+-- new rather than a restriction of either.
+existedBy :: World -> Epoch -> EntityId -> Bool
+existedBy w epoch i = case M.lookup i (wEntities w) of
+  Nothing -> False
+  Just e -> entBorn e <= epoch && not (any terminatedByThen (wFacts w))
+  where
+    terminatedByThen f = factPred f == Terminated && factSubject f == i && factEpoch f <= epoch
 
 -- | A society that can no longer act: dissolved, or already merged away.
 -- Every rule that lets a society *act* — schism, battle, sanctify, defile,
@@ -729,7 +898,7 @@ fulfillProphecies :: World -> [Claim] -> [Claim]
 fulfillProphecies w claims =
   nubBy
     (\a b -> clSubject a == clSubject b && clObject a == clObject b)
-    [ Claim target Fulfilled (Just (REvent eid)) (clAttestedBy c)
+    [ Claim target Fulfilled (Just (REvent eid)) (clAttestedBy c) Nothing
     | c <- claims
     , Just (p, target) <- [omenOf c]
     , (eid, omen) <- openProphecies w target

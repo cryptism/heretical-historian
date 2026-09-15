@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (187 checks — seeds 1/7/13/42/99 for
+Builds and passes `cabal test` (193 checks — seeds 1/7/13/42/99 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-6000, precomputed once as `veryWideWorlds`) for the two rarest —
@@ -49,7 +49,12 @@ generator and seven cultures; the `Terminated` predicate unifying
 scales with world activity instead of a flat roll (work queue item 16);
 and a generic declarative rule engine, `Historian.Engine` — every rule
 but the old reinterpretation rule now has a `RuleSpec` (work queue item
-15, `docs/DESIGN.md` Decision 23 and its follow-ups).
+15, `docs/DESIGN.md` Decision 23 and its follow-ups); a standalone
+backdated-minting PoC (work queue item 14, `docs/DESIGN.md` Decision 27);
+and, hooked live into ordinary `newPerson`/`newSite`/`newItem`, a
+recursive, weighted free-variable backfill (`weightedResolve`/
+`backfillWard` — a freshly-minted Ward's chance to already be venerated
+by a cult, work queue item 19, `docs/DESIGN.md` Decision 28).
 
 **`docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
@@ -300,22 +305,21 @@ unbuilt rule.
     deliberately *not* folded in — a dead person stays a valid, actively-
     referenced object, unlike a terminated society/item. Full account,
     including a dormant `omenOf` bug this fixed for free: `docs/HISTORY.md`.
-14. **Research only, not scoped work:** minting named sites/persons/relics
-    with an implied backstory, and backpropagating history to make that
-    backstory real — plus whatever else falls out of investigating it.
-    Raised in conversation as an idea explicitly kept out of scope for now.
-    The real tension to research before designing anything: everything in
-    this model is append-only at the *current* epoch (`record` always
-    stamps `wEpoch`; nothing ever inserts a fact dated earlier than the
-    latest one). A minted entity with a real backstory would need facts
-    *before* its own `entBorn`, which nothing today can produce — this
-    isn't a small extension of `mint`, it's a question of whether
-    backdated facts break `historyOf`/`chronicle`'s ordering assumptions,
-    `generate`'s determinism story, or invariant 8's "the calendar never
-    touches `wGen`" (a backdated fact would need a date *and* an epoch
-    number consistent with history already generated ahead of it). Don't
-    start designing this without a research pass dedicated to that
-    question first.
+14. ~~Backdated minting PoC.~~ Done — `Historian.Rules.mintBackdatedSaint`
+    mints a person with a backdated birth, optionally an existing or
+    freshly-generated cult behind them (or neither). Deliberately
+    standalone — not a `RuleSpec`, not wired into `generate`/`step` — so
+    building it cost zero seed re-verification against the existing 187
+    checks; 5 new hand-built-world checks (192 total). Genesis now
+    reserves `backstoryHeadroomDays` (100 years) instead of starting at
+    `Epoch 0`, so a backdated epoch never goes negative — a real, visible
+    shift in every rendered date, confirmed harmless to every existing
+    check. Full account, including a correction found while planning
+    (reserve headroom, don't clamp) and a bug the test suite itself
+    caught (a defensive floor `backdatedEpoch` needed): `docs/DESIGN.md`
+    Decision 27's follow-up, `docs/plans/14-backdated-minting.md`.
+    Depth 2/3 recursive backdating and promoting this to a real `RuleSpec`
+    are explicitly deferred, not built.
 15. **In progress: a generic, declarative rule engine.** Every rule but
     the old `ruleReinterpret` (removed — see item 2) now has a `RuleSpec`,
     collected in `ruleSpecs :: [RuleSpec]`; `ruleFromSpec`/`rulesFromSpecs`/
@@ -339,49 +343,42 @@ unbuilt rule.
     = active society count plus their total `livingMembers`. Still draws
     from `Chronicle`'s ordinary RNG stream; invariant 8 untouched
     (`docs/DESIGN.md` Decision 26).
-17. **Cult voice — approved plan, not yet built.** At the user's request:
-    each cult should be able to tell an event in its own words, with a
-    kept, unmodified neutral reading still available for the wasm FFI.
-    Full plan (four rounds of correction, all settled) written to
-    `/home/joe/.claude/plans/tingly-chasing-hellman.md` — read that before
-    starting, it has the concrete function shapes, not just this summary.
-    In short: `Voice`/`VoiceRegister` minted once per `Society` at
-    founding (invariant 2's own "minted once" treatment); `Outcome` (and
-    `Regard`/`RelicMoment`/`DyingWords`/`LeadershipChange`) relocate from
-    `Historian.Render` down into `Historian.Types` so `Event` can hold one;
-    `Event` gains `evOutcome`, `evNarrator :: Maybe EntityId`, and two
-    frozen readings (`evNarratedText`, `evNeutralText`) computed *once*,
-    inside `commitOutcomes`, against the commit-time `World` — not lazily
-    re-rendered later, since several outcomes read time-varying facts
-    (`isDead`, in `MiracleSaint`) that would otherwise retroactively reword
-    an old event once *later* history changes them. `render :: World ->
-    Maybe EntityId -> Outcome -> Text` becomes the one entry point
-    (`Nothing` = neutral, `Just sid` = that society's voice, for any
-    society, not just the one who actually narrated it). The default
-    narrator (`pickNarrator`) is a weighted, RNG-consuming pick at commit
-    time — heavily favors whoever attested the event's primary claim, but
-    must almost never fall back to neutral: only when literally no active
-    society exists to tell it at all. `chronicle` keeps its existing
-    `World -> Text` signature and just reads `evNarratedText`; `dossier`
-    doesn't change (it never rendered event prose to begin with). Three
-    outcome types migrate as proof of concept — `Founding`, `Schism`,
-    `MiracleSaint` — everything else keeps today's neutral wording until a
-    later batch. Explicitly deferred, named in the plan rather than
-    dropped: abstracting `pickNarrator`'s weights into something tunable
-    (the user wants to tune this by feel — do this as part of the same
-    pass, not a separate later item); migrating the remaining ~17 outcome
-    types; voice reaching how a cult refers to *other* entities, not just
-    its own reporting phrases; a CLI flag for an explicit narrator
-    override; and making the on-demand explicit-voice path (`render w
-    (Just sid) (evOutcome ev)` for an event other than the one it was
-    committed with) historically accurate against renames — it reads live
-    `World` state, a known limitation, not silently wrong. Also queued:
-    write the CLAUDE.md invariant 3 rewrite and the new `docs/DESIGN.md`
-    Decision as part of actually doing this work (with real verification
-    details), not before. Per the user's own explicit instruction: do all
-    RNG/seed-cascade re-verification as one batched pass at the very end,
-    not interleaved with the structural work — see the plan's own
-    Verification section for the exact ordering.
+17. **Approved plan, not yet built.** Cult voice — each cult should be
+    able to tell an event in its own words, with an unmodified neutral
+    reading kept available for the wasm FFI. Full plan (four rounds of
+    correction, all settled): `docs/plans/17-cult-voice.md` — read that
+    before starting, it has the concrete function shapes (`Voice`/
+    `VoiceRegister`, the `Outcome`-relocation-into-`Types` mechanics,
+    `pickNarrator`, `render`'s new `Maybe EntityId` signature), not just
+    this summary. Per the user's own explicit instruction: do all RNG/
+    seed-cascade re-verification as one batched pass at the very end, not
+    interleaved with the structural work.
+18. **Abstract probabilistic-weight constants into something tunable.**
+    `Historian.Rules.mintBackdatedSaint`'s pick/generate/omit weights
+    (60/15/25, item 14) are a first cut, not finalized — the user wants to
+    tune them by feel once there's something to tune. Item 17's own
+    `pickNarrator` weights (once built), and item 19's `BackfillConfig`
+    (already explicitly named as "hand-edit code for now, file later" in
+    its own doc comment), are the same status — one shared item covering
+    all three, not three separate ones. Not started.
+19. ~~Recursive, weighted free-variable backfill on ordinary minting.~~
+    Done — `Historian.World.weightedResolve` (general pick/generate/omit,
+    weighted rather than required/optional) hooked into `newPerson`/
+    `newSite`/`newItem` via `backfillWard`: every freshly-minted `Ward`
+    gets a chance to be venerated by an existing cult, a freshly-generated
+    one, or left alone. Recursive in the type (`BackfillConfig`'s
+    `bfMaxDepth`, capped at 3) but not yet in practice — a generated
+    cult isn't given its own further backfill this pass, since "what
+    would a cult's own recursive backfill even target" is still an open
+    question. Deliberately **not** the same as backdated minting (item
+    14) — separate mechanism, `Claim`'s new `clEpoch` field stays
+    `Nothing` throughout this one — and **not** a new `Outcome`/rule; it
+    fires inline during ordinary minting, so it carries the same
+    RNG-cascade cost every such change does, paid here with zero witness
+    replacements needed (the wide seed pools already absorbed it). Full
+    account, including three rejected designs before landing here and a
+    real inspectability bug `cabal test` itself caught: `docs/DESIGN.md`
+    Decision 28.
 
 ## Things not to do
 

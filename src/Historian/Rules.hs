@@ -89,8 +89,8 @@ genesis = do
 -- adds these alongside its own claims. See Decision 19 in docs/DESIGN.md.
 patronClaims :: EntityId -> EntityId -> [Claim]
 patronClaims society concept =
-  [ Claim society Embodies (Just (ROf concept)) Nothing
-  , Claim society Venerates (Just (ROf concept)) (Just society)
+  [ Claim society Embodies (Just (ROf concept)) Nothing Nothing
+  , Claim society Venerates (Just (ROf concept)) (Just society) Nothing
   ]
 
 -- Schism ---------------------------------------------------------------
@@ -404,7 +404,7 @@ fireMiracleRelic w s site mrelic = do
     Just it -> pure (it, False, [])
     Nothing -> do
       (it, concept) <- newItem (cultureOf w s)
-      pure (it, True, [Claim it Embodies (Just (ROf concept)) Nothing])
+      pure (it, True, [Claim it Embodies (Just (ROf concept)) Nothing Nothing])
   reactions <- regardReactions s [site, relic]
   let outcome = MiracleRelicOutcome s site relic relicFresh (embodiesClaim ++ reactions)
   disputes <- maybeDispute s
@@ -532,7 +532,7 @@ reactAsPrincipal w officiant participants (cult, anchor, r) = do
   case outcome of
     Reinforce -> pure (regardClaim cult anchor r)
     Flip -> pure (regardClaim cult anchor (flipRegard r))
-    GoNeutral -> pure (Claim cult Disavows (Just (ROf anchor)) (Just cult))
+    GoNeutral -> pure (Claim cult Disavows (Just (ROf anchor)) (Just cult) Nothing)
     Redirect -> do
       target <- pickOr anchor (filter (/= anchor) participants)
       newR <- weighted (polarityWeights w cult target (if hostile then [(70, Shunned), (30, Venerated)] else [(70, Venerated), (30, Shunned)]))
@@ -588,7 +588,7 @@ optionalRelicFor w cult cults = do
         Just i -> pure (Just (i, False), [])
         Nothing -> do
           (i, concept) <- newItem cult
-          pure (Just (i, True), [Claim i Embodies (Just (ROf concept)) Nothing])
+          pure (Just (i, True), [Claim i Embodies (Just (ROf concept)) Nothing Nothing])
 
 -- | The optional-relic sequence shared by battle and assassination: draw
 -- an item via 'optionalRelicFor', roll reactions via 'regardReactions'
@@ -630,11 +630,11 @@ fireDyingWords w speaker killerSociety mRelic allowCurse = do
           -- ('Nothing'). Only a curse landing on the relic, when present,
           -- is fulfillable.
           let omen = if target == killerSociety then Nothing else Just Shuns
-          pure (Just (DyingWords speaker target framing True [Claim speaker Prophesied (Just (ROmen target omen)) (Just speaker)]))
+          pure (Just (DyingWords speaker target framing True [Claim speaker Prophesied (Just (ROmen target omen)) (Just speaker) Nothing]))
         else do
           let kind = fromMaybe Person (kindOf w target)
           (momen, framing) <- pickOr defaultFraming (prophecyFramings kind)
-          pure (Just (DyingWords speaker target framing False [Claim speaker Prophesied (Just (ROmen target momen)) (Just speaker)]))
+          pure (Just (DyingWords speaker target framing False [Claim speaker Prophesied (Just (ROmen target momen)) (Just speaker) Nothing]))
 
 -- | Any relic currently hallowed by some keeper can be stolen by any other
 -- active society — no grievance required, "covetousness alone" mirrors
@@ -804,7 +804,7 @@ fireLeadershipChange :: World -> EntityId -> EntityId -> Chronicle LeadershipCha
 fireLeadershipChange w society newLeader = do
   let oldLeader = currentLeader w society
       societyName = nameIn w society
-      leadsClaim = Claim newLeader Leads (Just (ROf society)) (Just society)
+      leadsClaim = Claim newLeader Leads (Just (ROf society)) (Just society) Nothing
   case propertyOf w society of
     Nothing -> pure (LeadershipChange society societyName oldLeader newLeader Nothing [leadsClaim])
     Just concept -> do
@@ -820,7 +820,7 @@ fireLeadershipChange w society newLeader = do
           newName <- generateSocietyName (cultureOf w society)
           let renameClaims =
                 [ regardClaim society concept newRegard
-                , Claim society Named (Just (RName newName)) (Just society)
+                , Claim society Named (Just (RName newName)) (Just society) Nothing
                 ]
           pure (LeadershipChange society societyName oldLeader newLeader (Just newName) (leadsClaim : renameClaims))
 
@@ -1357,3 +1357,47 @@ rulesFromSpecs = map ruleFromSpec ruleSpecs
 generateViaEngine :: Int -> Int -> World
 generateViaEngine seed steps =
   execState (genesis >>= commitOutcomes >> replicateM_ steps (stepWith rulesFromSpecs)) (emptyWorld seed)
+
+-- Backdated minting (work queue item 14) -----------------------------------
+--
+-- A proof of concept, deliberately standalone: not a 'RuleSpec', not
+-- wired into 'rules'\/'ruleSpecs'\/'step'\/'generate'. Reusing the shared
+-- 'commitOutcomes'\/'record' pipeline would need it to support a claim
+-- dated earlier than the event that produced it, which nothing else in
+-- this codebase needs — so this calls 'Historian.World.recordBackdated'
+-- directly instead. Reachable only by calling it directly (from tests, or
+-- a future explicit hook), never from ordinary autonomous generation — see
+-- docs/plans/14-backdated-minting.md §1 and docs/DESIGN.md Decision 27.
+
+-- | Mints a person with a backdated birth (up to
+-- 'Historian.World.backstoryHeadroomDays' behind "now"), optionally an
+-- existing or freshly-generated cult behind them, with a real chance of
+-- neither — 'Historian.World.weightedResolve', the same general pick\/
+-- generate\/omit primitive 'Historian.World.backfillWard' now also uses.
+-- Weights are a first cut, not finalized (docs/plans/14-backdated-
+-- minting.md §5).
+mintBackdatedSaint :: World -> Chronicle (Maybe EntityId)
+mintBackdatedSaint w = do
+  epoch <- backdatedEpoch
+  -- The one hard invariant this needs beyond what 'Slot' already gives
+  -- ordinary rules: a candidate cult must have already existed, and not
+  -- yet been terminated, as of the backdated epoch (docs/DESIGN.md
+  -- Decision 27's hard-invariant list) — 'existedBy' is genuinely new,
+  -- since 'isTerminated'/'activeSocieties' only ever ask about *now*.
+  let candidates = [s | s <- entitiesOf Society w, existedBy w epoch s]
+  -- Depth 1 only: a freshly-generated cult does not itself recurse into
+  -- another backdated dependency (depth 2/3 are explicitly deferred).
+  -- Deliberately no patron concept either — the same "Society slot
+  -- generation's auxiliary-claims shape is still unsettled" gap
+  -- 'Historian.Engine.generateForKind' already has, not a new one
+  -- introduced here.
+  resolution <- weightedResolve candidates (60, 15, 25) (newSocietyAt vaurethine epoch)
+  w' <- get
+  let culture = case resolution of
+        Bound cult -> cultureOf w' cult
+        Unbound -> vaurethine
+  saint <- newPersonAt culture epoch
+  case resolution of
+    Unbound -> pure ()
+    Bound cult -> recordBackdated "backstory" epoch [Claim cult Venerates (Just (ROf saint)) (Just cult) (Just epoch)]
+  pure (Just saint)

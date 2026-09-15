@@ -641,97 +641,97 @@ render w = \case
 
 foundingClaims :: FoundingOutcome -> [Claim]
 foundingClaims o =
-  [ Claim (fdSociety o) Founded Nothing (Just (fdSociety o))
-  , Claim (fdFounder o) LeaderOf (Just (ROf (fdSociety o))) (Just (fdSociety o))
-  , Claim (fdFounder o) Leads (Just (ROf (fdSociety o))) (Just (fdSociety o))
+  [ Claim (fdSociety o) Founded Nothing (Just (fdSociety o)) Nothing
+  , Claim (fdFounder o) LeaderOf (Just (ROf (fdSociety o))) (Just (fdSociety o)) Nothing
+  , Claim (fdFounder o) Leads (Just (ROf (fdSociety o))) (Just (fdSociety o)) Nothing
   ]
     ++ fdExtraClaims o
 
 schismClaims :: SchismOutcome -> [Claim]
 schismClaims o =
-  [ Claim (scSplinter o) SplitFrom (Just (ROf (scParent o))) (Just (scSplinter o))
-  , Claim (scHeresiarch o) LeaderOf (Just (ROf (scSplinter o))) (Just (scSplinter o))
-  , Claim (scHeresiarch o) Leads (Just (ROf (scSplinter o))) (Just (scSplinter o))
-  , Claim (scSplinter o) Grievance (Just (ROf (scParent o))) (Just (scSplinter o))
-  , Claim (scParent o) Grievance (Just (ROf (scSplinter o))) (Just (scParent o))
+  [ Claim (scSplinter o) SplitFrom (Just (ROf (scParent o))) (Just (scSplinter o)) Nothing
+  , Claim (scHeresiarch o) LeaderOf (Just (ROf (scSplinter o))) (Just (scSplinter o)) Nothing
+  , Claim (scHeresiarch o) Leads (Just (ROf (scSplinter o))) (Just (scSplinter o)) Nothing
+  , Claim (scSplinter o) Grievance (Just (ROf (scParent o))) (Just (scSplinter o)) Nothing
+  , Claim (scParent o) Grievance (Just (ROf (scSplinter o))) (Just (scParent o)) Nothing
   ]
     ++ scExtraClaims o
 
 battleClaims :: BattleOutcome -> [Claim]
 battleClaims o =
-  [ Claim (btVictor o) BattledAt (Just (ROf (btSite o))) (Just (btVictor o))
-  , Claim (btVanquished o) BattledAt (Just (ROf (btSite o))) (Just (btVanquished o))
+  [ Claim (btVictor o) BattledAt (Just (ROf (btSite o))) (Just (btVictor o)) Nothing
+  , Claim (btVanquished o) BattledAt (Just (ROf (btSite o))) (Just (btVanquished o)) Nothing
   , -- The loser seeks a rematch; the winner considers the matter settled,
     -- at least from their own side. This is what lets 'grievancePairs'
     -- eventually stop recurring for a pair instead of scanning an
     -- ever-growing, never-pruned log.
-    Claim (btVanquished o) Grievance (Just (ROf (btVictor o))) (Just (btVanquished o))
-  , Claim (btVictor o) Reconciled (Just (ROf (btVanquished o))) (Just (btVictor o))
+    Claim (btVanquished o) Grievance (Just (ROf (btVictor o))) (Just (btVanquished o)) Nothing
+  , Claim (btVictor o) Reconciled (Just (ROf (btVanquished o))) (Just (btVictor o)) Nothing
   ]
-    ++ [Claim p Slain (Just (ROf (btVictor o))) (Just (btVanquished o)) | Just p <- [btVictim o]]
+    ++ [Claim p Slain (Just (ROf (btVictor o))) (Just (btVanquished o)) Nothing | Just p <- [btVictim o]]
     ++ maybe [] rmClaims (btRelic o)
     ++ maybe [] dwClaims (btDyingWords o)
 
 disputeClaims :: DisputeOutcome -> [Claim]
-disputeClaims o = [Claim (dsDisputant o) Disputes (Just (REvent (evId (dsDisputed o)))) (Just (dsDisputant o))]
+disputeClaims o = [Claim (dsDisputant o) Disputes (Just (REvent (evId (dsDisputed o)))) (Just (dsDisputant o)) Nothing]
 
 sanctifyClaims :: SanctifyOutcome -> [Claim]
 sanctifyClaims o =
-  [ Claim (sySite o) Sanctified (Just (ROf (syClaimant o))) (Just (syClaimant o))
-  , Claim (syClaimant o) Venerates (Just (ROf (sySite o))) (Just (syClaimant o))
+  [ Claim (sySite o) Sanctified (Just (ROf (syClaimant o))) (Just (syClaimant o)) Nothing
+  , Claim (syClaimant o) Venerates (Just (ROf (sySite o))) (Just (syClaimant o)) Nothing
   ]
 
 defileClaims :: DefileOutcome -> [Claim]
 defileClaims o =
-  [ Claim (dfSite o) Sanctified (Just (ROf (dfClaimant o))) (Just (dfClaimant o))
-  , Claim (dfClaimant o) Venerates (Just (ROf (dfSite o))) (Just (dfClaimant o))
-  , Claim (dfDeposed o) Grievance (Just (ROf (dfClaimant o))) (Just (dfDeposed o))
+  [ Claim (dfSite o) Sanctified (Just (ROf (dfClaimant o))) (Just (dfClaimant o)) Nothing
+  , Claim (dfClaimant o) Venerates (Just (ROf (dfSite o))) (Just (dfClaimant o)) Nothing
+  , Claim (dfDeposed o) Grievance (Just (ROf (dfClaimant o))) (Just (dfDeposed o)) Nothing
   ]
 
 miracleSaintClaims :: MiracleSaintOutcome -> [Claim]
 miracleSaintClaims o =
-  [ Claim (msSite o) Sanctified (Just (ROf (msSociety o))) (Just (msSociety o))
-  , Claim (msSociety o) Venerates (Just (ROf (msSaint o))) (Just (msSociety o))
+  [ Claim (msSite o) Sanctified (Just (ROf (msSociety o))) (Just (msSociety o)) Nothing
+  , Claim (msSociety o) Venerates (Just (ROf (msSaint o))) (Just (msSociety o)) Nothing
   ]
     ++ msExtraClaims o
 
 miracleRelicClaims :: MiracleRelicOutcome -> [Claim]
 miracleRelicClaims o =
-  [ Claim (mrSite o) Sanctified (Just (ROf (mrSociety o))) (Just (mrSociety o))
-  , Claim (mrSociety o) Venerates (Just (ROf (mrRelic o))) (Just (mrSociety o))
+  [ Claim (mrSite o) Sanctified (Just (ROf (mrSociety o))) (Just (mrSociety o)) Nothing
+  , Claim (mrSociety o) Venerates (Just (ROf (mrRelic o))) (Just (mrSociety o)) Nothing
   ]
     ++ mrExtraClaims o
 
 miracleOnClaims :: MiracleOnOutcome -> [Claim]
 miracleOnClaims o =
-  [ Claim (moSite o) Sanctified (Just (ROf (moSociety o))) (Just (moSociety o))
-  , Claim (moSociety o) Venerates (Just (ROf (moActor o))) (Just (moSociety o))
-  , Claim (moSociety o) Venerates (Just (ROf (moTarget o))) (Just (moSociety o))
+  [ Claim (moSite o) Sanctified (Just (ROf (moSociety o))) (Just (moSociety o)) Nothing
+  , Claim (moSociety o) Venerates (Just (ROf (moActor o))) (Just (moSociety o)) Nothing
+  , Claim (moSociety o) Venerates (Just (ROf (moTarget o))) (Just (moSociety o)) Nothing
   ]
     ++ moExtraClaims o
 
 theftClaims :: TheftOutcome -> [Claim]
 theftClaims o =
   [ regardClaim (thThief o) (thItem o) (thRegard o)
-  , Claim (thKeeper o) Grievance (Just (ROf (thThief o))) (Just (thKeeper o))
+  , Claim (thKeeper o) Grievance (Just (ROf (thThief o))) (Just (thKeeper o)) Nothing
   ]
 
 giftClaims :: GiftOutcome -> [Claim]
 giftClaims o =
   regardClaim (giReceiver o) (giItem o) (giRegard o)
-    : [Claim (giReceiver o) Reconciled (Just (ROf (giGiver o))) (Just (giReceiver o)) | giReconciled o]
+    : [Claim (giReceiver o) Reconciled (Just (ROf (giGiver o))) (Just (giReceiver o)) Nothing | giReconciled o]
 
 destroyRelicClaims :: DestroyRelicOutcome -> [Claim]
 destroyRelicClaims o =
-  Claim (drItem o) Terminated Nothing (Just (drKeeper o))
-    : [Claim v Grievance (Just (ROf (drKeeper o))) (Just v) | v <- drMourners o]
+  Claim (drItem o) Terminated Nothing (Just (drKeeper o)) Nothing
+    : [Claim v Grievance (Just (ROf (drKeeper o))) (Just v) Nothing | v <- drMourners o]
 
 assassinateClaims :: AssassinateOutcome -> [Claim]
 assassinateClaims o =
-  [ Claim (asFigure o) Slain (Just (ROf (asKillers o))) (Just (asSociety o))
-  , Claim (asSociety o) Grievance (Just (ROf (asKillers o))) (Just (asSociety o))
-  , Claim (asSociety o) Venerates (Just (ROf (asFigure o))) (Just (asSociety o))
-  , Claim (asKillers o) Heretic (Just (ROf (asFigure o))) (Just (asKillers o))
+  [ Claim (asFigure o) Slain (Just (ROf (asKillers o))) (Just (asSociety o)) Nothing
+  , Claim (asSociety o) Grievance (Just (ROf (asKillers o))) (Just (asSociety o)) Nothing
+  , Claim (asSociety o) Venerates (Just (ROf (asFigure o))) (Just (asSociety o)) Nothing
+  , Claim (asKillers o) Heretic (Just (ROf (asFigure o))) (Just (asKillers o)) Nothing
   ]
     ++ maybe [] rmClaims (asRelic o)
     ++ maybe [] dwClaims (asDyingWords o)
@@ -741,14 +741,14 @@ assassinateClaims o =
 -- (latest-fact-wins via 'allegiances'), so this is the whole mechanism.
 transferClaims :: World -> EntityId -> EntityId -> [Claim]
 transferClaims w from to =
-  [Claim p LeaderOf (Just (ROf to)) (Just to) | p <- livingMembers w from]
+  [Claim p LeaderOf (Just (ROf to)) (Just to) Nothing | p <- livingMembers w from]
 
 -- | Every grievance @from@ currently holds against a third party is
 -- re-asserted from @to@, attested by @to@ — the survivor inherits the
 -- grudge, not just the members.
 inheritedGrievanceClaims :: World -> EntityId -> EntityId -> [Claim]
 inheritedGrievanceClaims w from to =
-  [ Claim to Grievance (Just (ROf c)) (Just to)
+  [ Claim to Grievance (Just (ROf c)) (Just to) Nothing
   | c <- entitiesOf Society w
   , c /= from
   , c /= to
@@ -757,8 +757,8 @@ inheritedGrievanceClaims w from to =
 
 mergerClaims :: World -> MergerOutcome -> [Claim]
 mergerClaims w (MergerFounding a b new extra) =
-  [ Claim a MergedInto (Just (ROf new)) (Just a)
-  , Claim b MergedInto (Just (ROf new)) (Just b)
+  [ Claim a MergedInto (Just (ROf new)) (Just a) Nothing
+  , Claim b MergedInto (Just (ROf new)) (Just b) Nothing
   ]
     ++ transferClaims w a new
     ++ transferClaims w b new
@@ -766,32 +766,32 @@ mergerClaims w (MergerFounding a b new extra) =
     ++ inheritedGrievanceClaims w b new
     ++ extra
 mergerClaims w (MergerAbsorption absorbed survivor) =
-  Claim absorbed MergedInto (Just (ROf survivor)) (Just absorbed)
+  Claim absorbed MergedInto (Just (ROf survivor)) (Just absorbed) Nothing
     : transferClaims w absorbed survivor
     ++ inheritedGrievanceClaims w absorbed survivor
 
 dissolveClaims :: DissolveOutcome -> [Claim]
-dissolveClaims o = [Claim (dsSociety o) Terminated Nothing Nothing]
+dissolveClaims o = [Claim (dsSociety o) Terminated Nothing Nothing Nothing]
 
 reviveClaims :: ReviveOutcome -> [Claim]
-reviveClaims o = [Claim (rvReviver o) Revives (Just (ROf (rvDefunct o))) (Just (rvReviver o))]
+reviveClaims o = [Claim (rvReviver o) Revives (Just (ROf (rvDefunct o))) (Just (rvReviver o)) Nothing]
 
 prophesyClaims :: ProphesyOutcome -> [Claim]
-prophesyClaims o = [Claim (pyProphet o) Prophesied (Just (ROmen (pyTarget o) (pyOmen o))) (Just (pyProphet o))]
+prophesyClaims o = [Claim (pyProphet o) Prophesied (Just (ROmen (pyTarget o) (pyOmen o))) (Just (pyProphet o)) Nothing]
 
 coronationClaims :: CoronationOutcome -> [Claim]
 coronationClaims o =
   lcClaims (crLeadership o)
-    ++ [Claim r Rivalry (Just (ROf (lcNewLeader (crLeadership o)))) (Just r) | r <- crRivals o]
+    ++ [Claim r Rivalry (Just (ROf (lcNewLeader (crLeadership o)))) (Just r) Nothing | r <- crRivals o]
 
 -- | Which combatant killed which is reconstructed from 'tcSlain' plus
 -- whichever of 'tcChallenger'\/'tcRival' isn't the slain one, since
 -- that's all the outcome itself carries.
 trialByCombatClaims :: TrialByCombatOutcome -> [Claim]
 trialByCombatClaims o =
-  [Claim p Slain (Just (ROf (theOther p))) (Just (tcSociety o)) | p <- tcSlain o]
-    ++ [ Claim (tcChallenger o) Reconciled (Just (ROf (tcRival o))) (Just (tcSociety o))
-       , Claim (tcRival o) Reconciled (Just (ROf (tcChallenger o))) (Just (tcSociety o))
+  [Claim p Slain (Just (ROf (theOther p))) (Just (tcSociety o)) Nothing | p <- tcSlain o]
+    ++ [ Claim (tcChallenger o) Reconciled (Just (ROf (tcRival o))) (Just (tcSociety o)) Nothing
+       , Claim (tcRival o) Reconciled (Just (ROf (tcChallenger o))) (Just (tcSociety o)) Nothing
        ]
     ++ maybe [] lcClaims (tcLeadership o)
   where
@@ -800,8 +800,8 @@ trialByCombatClaims o =
 coupClaims :: CoupOutcome -> [Claim]
 coupClaims o =
   lcClaims (cpLeadership o)
-    ++ [ Claim (cpDeposed o) Grievance (Just (ROf (lcNewLeader (cpLeadership o)))) (Just (cpDeposed o))
-       , Claim (lcNewLeader (cpLeadership o)) Reconciled (Just (ROf (cpDeposed o))) (Just (lcNewLeader (cpLeadership o)))
+    ++ [ Claim (cpDeposed o) Grievance (Just (ROf (lcNewLeader (cpLeadership o)))) (Just (cpDeposed o)) Nothing
+       , Claim (lcNewLeader (cpLeadership o)) Reconciled (Just (ROf (cpDeposed o))) (Just (lcNewLeader (cpLeadership o))) Nothing
        ]
 
 -- | The event-kind tag for each 'record' call, as a total function of

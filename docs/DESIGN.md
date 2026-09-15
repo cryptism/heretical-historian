@@ -1845,3 +1845,421 @@ existing aggregate check's witness the way every *RNG-consumption-count*
 change in this project's history has. This change doesn't add or remove
 a roll, only reshapes the bounds of the one Decision 22 already made, so
 that's the expected outcome, not a surprise.
+
+## Decision 27 (research only — nothing built): backdated minting, its invariants, and a shared shape with prophecy fulfillment
+
+**Needed for:** work queue item 14's own explicit condition — "don't start
+designing this without a research pass first." This is that pass, not an
+implementation. Nothing in this section is built; no code changed as a
+result of it. It exists to be read *before* item 14 ever gets scoped as
+real work, so the reasoning below doesn't have to be rediscovered.
+
+**The core tension, stated precisely: every `Fact` already carries two
+timestamps that mean different things, and they've only ever coincided by
+accident.** `factEpoch` is *valid time* — when a fact is true in the
+story. `factSource :: EventId` is *transaction time* — when it was
+asserted, during generation; `EventId`s are minted monotonically, so this
+is exactly generation order. `record` has always stamped `wEpoch` (the
+current epoch) on every fact, so `wFacts`'s cons-ordering has always been
+sorted by both at once, which is *why* every "latest fact wins" query
+(`nameIn`, `holdsGrievance`, `regardOf`, …) can safely just take `head`
+after filtering. Backdating is the first thing that can make these two
+orderings diverge — a backstory fact minted late (high `EventId`) but
+dated early (low `Epoch`).
+
+**Scale reality check, so "performance" doesn't get over-designed for:**
+even `veryWideSeeds` at `longSteps` only produces low thousands of
+`Fact`s. A linear scan over that is microseconds. The actual pressure
+backdating puts on the fact store isn't throughput, it's *insertion
+correctness* — finding the right position isn't free the way `cons` is,
+and it's easy to get subtly wrong once the two orderings above no longer
+coincide. Any future stateful, long-running wasm host (item 15's still-
+open remaining work) is the one scenario where raw scale might eventually
+matter; today's one-shot `generate` runs don't need to be designed around
+it.
+
+**Three scoping choices, settled in conversation, that shrink this from
+"backpropagate an arbitrary consistent history" to something a PoC could
+actually attempt:**
+
+1. **A hard age cap** ("no cult older than 100 years") bounds every
+   backdated insert to a small trailing window behind the earliest
+   already-recorded epoch, rather than letting it land arbitrarily far
+   back into settled history.
+2. **Recursion depth capped at 3.** A backdated entity's own optional
+   dependency (a saint's cult) may itself be freshly backdated rather than
+   picked from existing history, but that dependency's own dependencies
+   bottom out after 3 levels. Combined with the age cap, worst case is
+   3 × 100 years ≈ 300 years (roughly 110,000 days) behind wherever the
+   window's own anchor sits — reserve headroom comfortably above that
+   (150,000 days is the working number), not a tight bound.
+3. **Prefer omitting the optional dependency over generating or picking
+   one, reusing `Historian.Engine.Slot`'s existing pick/generate/omit
+   shape as-is.** A saint minted with no cult attached asserts *no*
+   relational fact at all — nothing to backdate, nothing to reconcile,
+   and any later, ordinarily-forward-generated rule can pick them up
+   exactly like any other person today. Picking an existing cult costs
+   exactly one backdated fact, tightly coupled to the new entity's own
+   mint. The actual mutation footprint per backdated entity is small by
+   construction, not by luck — the "backpropagate a whole history" framing
+   in item 14's own original wording is scarier than what this policy
+   actually requires.
+
+**The epoch-zero floor doesn't need `Epoch` to go negative.** `dateOf`/
+`findYear` walks forward from `y0` accumulating day counts and has never
+expected a negative `Epoch`; teaching it to walk backward is unnecessary
+once backdating is bounded (above). Simpler: start `wEpoch` at genesis
+with the reserved headroom baked in (`Epoch 150000`, say) instead of
+literally `0`. `Epoch 0` was never semantically special — `calendarParams`
+already treats genesis as landing at an arbitrary point in the fictional
+calendar via its own `y0` offset — so this extends an arbitrariness the
+calendar layer already has, rather than introducing a new one.
+`dateOf`/`yearMonths`/`ordinal` need zero changes.
+
+**Whether `wFacts`/`record` themselves need to change at all depends on
+one precise boundary, worth stating exactly so nobody crosses it by
+accident later:** within the scope above — new entities only, existing
+entities referenced read-only, never given a *new* fact about their *own*
+past — a backdated fact's `(subject, predicate, object)` triple never
+already has a prior entry in the store, because the entity on at least
+one end of it didn't exist a moment ago. "Latest fact wins" trivially
+resolves to the only fact there is, regardless of where in the list it
+lands. **Plain `cons`, exactly as `record` does today, is correct for
+this scope — no sorted structure is needed.** The one real wrinkle is
+display order, not correctness: `historyOf`/`dossier` would show an
+entity's facts in generation order rather than story order once
+backdating exists (a saint's own birth-epoch fact could print after facts
+from decades later). `chronicle` already has exactly this property today
+(sorted by `evId`, not `evEpoch` — arguably the more in-genre reading,
+"the order the historian recorded things," not a bug). If `dossier`
+specifically should read chronologically, that's a `sortOn factEpoch` at
+display time over the small per-entity filtered list — not a storage
+change. **The boundary:** the moment backdating scope ever grows to
+assert a *new* fact about an *already-existing* entity's *own* past — not
+just referencing it read-only — the original hazard is back for real,
+since that entity could already have more recent, forward-generated facts
+about the same predicate sitting elsewhere in the list, and naive `cons`
+would make the newly-inserted old fact incorrectly look latest. That case
+needs a structural fix (a valid-time-ordered index); this scope doesn't
+reach it, and shouldn't be assumed to without revisiting this section.
+
+**Hard invariants versus permissible-but-contested, and why that split is
+the right one for this codebase specifically:** invariant 4 already means
+there was never a single authoritative timeline here — contradictory
+attested claims are first-class, existing data, not something that needs
+reconciling. That means only genuinely *structural* impossibilities need
+to be hard invariants; everything about which claim is "true" can stay
+permissible and simply get attested like anything else.
+
+- *Hard (filter candidates out; never weight around these):*
+  existence-window containment — any entity a backdated fact references,
+  subject or object, must satisfy `entBorn <= targetEpoch` and must not
+  already be `Terminated`/`Slain` strictly before it (one more clause on
+  `slotConstraint`, the same shape `activeSocieties`/`isDefunct` already
+  gate ordinary rules with); the age cap and depth cap above, once chosen,
+  enforced as hard limits since they're the mechanism the whole feature's
+  boundedness depends on; `EventId` staying strictly monotonic regardless
+  of `Epoch`, so `generate`'s determinism story (invariant 5) is never
+  implicated by any of this.
+- *Permissible (weight via the same `weighted` primitive `pickNarrator`
+  already established — see Decision 26's own work-queue neighbor, item
+  17 — rather than forbid):* a backdated fact contradicting an existing
+  latest-fact-wins predicate's value as of that epoch (e.g. a "new" `Leads`
+  claim earlier than an already-recorded sequence) — allowed precisely
+  because attestation already exists to carry the contest; picking an
+  existing entity whose current disposition doesn't obviously fit the
+  backdated relationship; generating a fresh dependency instead of picking
+  an existing one, weighted lower to keep the tree shallow in practice
+  even though depth 3 is the hard ceiling.
+
+**A real structural parallel to `Historian.Rules.fulfillProphecies`,
+worth naming even though nothing is built from it yet.** `Prophesied`/
+`ROmen`/`fulfillProphecies` already implement "a fact asserted now
+constrains what may validly be asserted later" — a partially-instantiated
+constraint (a `Predicate` plus a subject, no concrete fulfilling event
+yet) sits in the store, and every subsequent commit is checked against
+every open one until something matches or nothing ever does. Backdating-
+consistency is the mirror: checking a *new but early-dated* fact against
+the *closed*, already-recorded set of facts for the entities it touches,
+instead of checking a *new* fact against *open, forward-looking*
+constraints. Same shape — "check a candidate claim against constraints
+derived from the existing store" — opposite direction. The design target
+worth keeping in mind, not built now: a shared primitive (something like
+`World -> Claim -> [Violation]`, plus the separate weighting hook above)
+that `fulfillProphecies` could eventually be expressed as one consumer of
+and backdating-consistency-checking could be another, rather than two
+independently-invented mechanisms that happen to rhyme.
+
+**Constraint *propagation* specifically — considered, and deliberately
+not reached for at PoC scope.** `Historian.Engine.Slot`'s existing model
+(resolve variables in a fixed declaration order; each slot's constraint
+sees only *earlier* resolved bindings) is already documented as a
+conservative approximation, not a full solver (`runnable`'s own Haddock).
+That's sufficient here: the domain is tiny (pick the backdated entity's
+epoch, then filter candidate existing entities by it — one dependency,
+one direction). True propagation — letting a constraint narrow domains in
+*either* direction, e.g. "I want this specific existing cult involved,
+now tell me what birth-epoch range that implies" — is a real jump toward
+arc-consistency and isn't needed to prove this out. Recorded here
+explicitly so `Slot`'s one-directional model is understood as a
+deliberate scope boundary for this use case, not something to "fix"
+without knowing why.
+
+**Explicitly not built, not scoped, still research:** everything above.
+No code changed. `Voice`\/`entVoice`-style "mint once, store on the
+`Entity`" precedent (Decision 23, item 17) is the right shape for however
+a backdated entity's own new fields eventually get minted, once this
+moves from research to a real work-queue item — but deciding *that* is
+also not done here.
+
+## Decision 27 follow-up: a real, standalone PoC built from the research above
+
+**Needed for:** turning Decision 27's research into an actual plan — the
+user asked for this directly, separately noting it was "just as sweeping"
+as work item 17, which prompted a small documentation restructuring
+alongside it (a `docs/plans/` directory now holds both large efforts'
+approved plans; `CLAUDE.md`'s own bullets for both are now short pointers
+rather than full inlined plans — see `docs/plans/14-backdated-minting.md`
+for the plan itself).
+
+**Chosen: the PoC stays completely standalone — not a `RuleSpec`, not
+wired into `rules`\/`ruleSpecs`\/`step`\/`generate`.** `Historian.Rules.
+mintBackdatedSaint :: World -> Chronicle (Maybe EntityId)` is a plain
+function, reachable only by calling it directly, using the same
+primitives `Slot`\/`resolveSlot` are built from (`pickOr`\/`weighted`\/
+`entitiesOf`) rather than going through `Slot`\/`RuleSpec` as an
+abstraction — there's exactly one optional dependency here, no cross-slot
+ordering to generalize for. The reason, found while turning the research
+into a concrete plan rather than assumed up front: every `Outcome` fired
+through the shared `commitOutcomes` → `record` pipeline gets its event
+*and* every one of its claims stamped with the same current `wEpoch` —
+there's no path through that shared machinery for "this claim is dated
+earlier than now" without changing infrastructure every other rule also
+depends on. A standalone function sidesteps that entirely, and — the
+practical payoff — means zero existing seeds are affected and zero
+RNG-cascade re-verification was needed building this, the exact cost this
+session was trying to avoid throughout (see the cult-voice plan, item 17,
+for the same concern raised independently there).
+
+**One real correction found while planning, before any code was
+written: reserve headroom, don't clamp.** The first draft tried to avoid
+touching `emptyWorld` at all, by clamping how far back a backdate could
+reach to whatever `wEpoch` had already accumulated. Wrong — the user
+caught it directly: that shrinks a saint's achievable backstory age early
+in a run instead of letting them be minted with the *intended* age
+regardless of when in the run they're minted, which is the actual point
+of the feature. `Historian.World.emptyWorld` now starts `wEpoch` at
+`backstoryHeadroomDays` (100 years, in days — one level's worth, not the
+full depth-3 worst case, which stays future work) instead of `Epoch 0`;
+`dateOf`/`yearMonths`/`ordinal` needed zero changes, since they already
+only assumed a non-negative `Epoch`, never specifically zero. Checked,
+not assumed, that this is free: grepped `test/Spec.hs` for any exact
+epoch number or rendered date string assertion — the only date-related
+check is a liveness check (`dateOf w (factEpoch f) /= "an unrecorded
+day"`), so none of the 187 pre-existing checks were affected. It does
+shift every rendered calendar date across the whole project by 100
+years' worth of days (confirmed live: seed 1's genesis, which used to
+render as "Year 1 After the Reckoning"-ish, now renders as "Year 205
+After the Reckoning") — a real, visible, accepted cosmetic consequence.
+
+**A second bug, this one caught by the test suite itself, not by
+review:** `backdatedEpoch`'s first cut trusted every caller to already
+have `wEpoch >= backstoryHeadroomDays` (true for any world reached via
+ordinary `emptyWorld` + `advanceEpoch`, since the latter only ever adds
+to `wEpoch`) and rolled the full range unconditionally. A test
+constructing a hand-built world with a deliberately small `wEpoch` (to
+prove the "never goes negative" property, per the plan's own verification
+section) immediately produced a negative epoch — the exact garbled-date
+failure mode this whole section exists to prevent, just reached from an
+artificial rather than an organic path. Fixed with a defensive floor,
+`roll (0, min backstoryHeadroomDays (unEpoch (wEpoch w)))` — a no-op for
+every reachable world (where `wEpoch` is always at least
+`backstoryHeadroomDays`), so it isn't a reintroduction of the rejected
+clamping behavior for real generation; it only ever engages for a
+hand-built world that violates the invariant, making the function
+genuinely total rather than merely "total in practice, if every caller
+behaves."
+
+**New plumbing, both minimal, mirroring existing precedent rather than
+inventing new shapes:** `Historian.World.mint` gained a fifth parameter,
+`Maybe Epoch` (`Nothing` everywhere existing, the same "one targeted
+optional field" shape `entModifier` already established for `Item`);
+`newPersonAt`/`newSocietyAt` are epoch-aware siblings of `newPerson`/
+`newSociety`, reusing `syllableName`/`generateSocietyName` unchanged
+rather than duplicating name-generation logic. `recordBackdated` sits
+beside `record`: the event itself is still dated *now* (consistent with
+`chronicle` already reading as "order recorded," not "order it
+happened"), but every claim it produces is dated to the given, earlier
+`Epoch` — not a generalization of `record` (no per-claim epochs), since
+every call site so far only ever needs one backdated moment per
+backdating event. `Historian.World.existedBy` is the one genuinely new
+hard-invariant check this needed beyond what `Slot` already gives
+ordinary rules (`isTerminated`/`isDefunct`/`activeSocieties` all only
+ever ask about *now*): whether an entity had already been born, and not
+yet terminated, as of a specific past epoch.
+
+**Weights are a first cut, matching item 17's `pickNarrator` in status —
+one shared future work-queue item to abstract both, not two.** Pick an
+existing eligible cult 60, generate a fresh one 15, omit entirely 25 —
+generating deliberately never recurses into its own further backdated
+dependency for this pass (depth 1 only; the agreed cap is 3, mechanical
+to add later by calling the same function on the freshly-generated cult
+instead of stopping, deferred to keep the first, hardest-to-verify
+version smaller). The freshly-generated cult also gets no patron concept
+— the same "`Society`\/`Item` slot generation's auxiliary-claims shape is
+still unsettled" gap `Historian.Engine.generateForKind` already has for
+ordinary slot-based generation (work queue item 15), not a new gap
+introduced here.
+
+**Verified against a real run, not just the test suite:** `cabal test`
+went from 187 to 192 checks, all passing — the five new checks (built
+entirely from hand-built worlds and the same "run N times against one
+fixed world" technique `fireDispute`'s own check already uses, no seed
+scanning at all, confirming zero RNG-cascade risk was really zero) cover
+all three outcomes occurring across 200 trials, the epoch-floor fix
+actually holding, and `existedBy`'s hard invariant actually filtering,
+not just compiling. Beyond the suite: `runghc` against a real seed-1,
+5-step `generate` world, calling `mintBackdatedSaint` directly across
+several RNG states, shows all three shapes for real — a saint minted
+alone; a saint bound to a freshly-generated cult ("The Veiled Bleeding
+Greaves Lantern of Arcantine"), with a `Venerates` fact dated to the same
+backdated moment as the saint's own birth (Year 96 After the Reckoning,
+well before genesis's Year 205) — composing correctly with `dateOf`'s
+rendering, `nameIn`, and every other query path with no special-casing
+anywhere for a backdated entity.
+
+**Explicitly deferred, named rather than dropped, unchanged from the
+plan:** depth 2/3 recursive backdating; promoting this to a real
+`RuleSpec` participating in ordinary `generate`/`step` pooling (would need
+`commitOutcomes`/`record` itself to support divergent event/claim
+epochs, which this PoC's one-off `recordBackdated` deliberately doesn't
+generalize to); the shared `fulfillProphecies`-style consistency-checking
+primitive this decision's research half named; `historyOf`/`dossier`'s
+chronological display sort; any dynamic/negotiated sizing of
+`backstoryHeadroomDays` or real constraint propagation for resolving free
+variables — explicitly out of scope per the user's own framing, not a gap
+found late.
+
+## Decision 28: recursive, weighted free-variable backfill on ordinary minting
+
+**Needed for:** the user asking to "fully integrate" work item 14 — but
+after several rounds of correction, what actually shipped is a genuinely
+separate mechanism from backdating, not backdated minting wired into
+`generate`. Worth recording precisely, since the path here matters as much
+as the destination for whoever reads this next: three successive designs
+were proposed and rejected — a standalone `ruleBackstory` added to
+`rules` (rejected: "there is no need for ruleBackstory"), a bespoke
+`Outcome`/`commitOutcomes` special case (rejected twice, even after being
+generalized), before the user specified the actual shape directly: no new
+`Outcome`, no autonomous rule, and the mechanism hooked into *ordinary
+entity minting itself* — broader than either rejected draft, recursive,
+but explicitly bounded ("I am not calling for things to just infinitely
+cascade outwards").
+
+**Chosen: `Historian.World.weightedResolve`, a general pick/generate/omit
+primitive, hooked directly into `newPerson`/`newSite`/`newItem`.**
+
+```haskell
+data Resolution = Bound EntityId | Unbound
+weightedResolve :: [EntityId] -> (Int, Int, Int) -> Chronicle EntityId -> Chronicle Resolution
+```
+
+Same shape `Historian.Engine.Slot` already gives ordinary `RuleSpec`
+resolution (pick an existing candidate, generate a fresh one, or — new
+here — leave the dependency genuinely unbound), but decided by explicit
+weights rather than a required/optional flag, so "leave it unbound" is a
+real possibility, not just what happens when nothing qualifies. Every
+freshly-minted `Ward` (`Person`/`Item`/`Site` — reusing the existing
+concept from `Historian.Types` rather than inventing a new relationship
+shape) gets one call to `Historian.World.backfillWard`, which resolves
+whether some cult already cares about it: bind to an existing eligible
+society, generate a fresh one, or leave it alone — weighted 60/15/25,
+confirmed directly with the user as preferring existing-binding over
+minting new cults. Reuses `Venerates`, no new predicate.
+
+**Recursive, but only in the mechanism, not (yet) in practice.**
+`backfillWard :: BackfillConfig -> Int -> EntityId -> Chronicle ()` takes a
+real depth parameter, decrementing from `bfMaxDepth` (3, the same cap
+Decision 27 already agreed and never implemented past depth 1) — but a
+freshly-*generated* cult isn't itself given a further backfill chance this
+pass, since "what would a cult's own recursive backfill even target" is a
+real, separate, unanswered design question (patron concept? an immediate
+Ward of its own?). So depth 2/3 exist in the type signature and are
+genuinely wired, but nothing reaches them yet — named explicitly as a
+known, deliberate gap rather than a silent one.
+
+**`Claim` gained `clEpoch :: Maybe Epoch`, general capability, unused by
+this mechanism's own claims.** `Nothing` everywhere, including every claim
+this decision's own code produces (ordinary "as of now" claims, not
+backdated ones) — the field exists because item 14 already established
+the need for a *general* backdated-claim capability, and it costs nothing
+to add now while the ~30 call sites across `Historian.Render`'s `xClaims`
+functions were already being touched for other reasons. `Historian.World.
+record` reads it per-claim: `fromMaybe ep (clEpoch c)`.
+
+**`BackfillConfig` is hand-edited code for now, a file later.** `docs/
+plans`'s own item 18 already covers moving `pickNarrator`'s (item 17) and
+this mechanism's weights to an external config file — not built here,
+named as the explicit target for "configurable... via file later."
+
+**Item 14's own backdated-minting pieces are untouched, not reused, not
+deleted.** `backdatedEpoch`/`existedBy`/`backstoryHeadroomDays`/
+`mintBackdatedSaint` remain exactly as built — standalone, not
+autonomously wired anywhere — the user's own framing kept them as a
+separate, later capability (explicit user-driven binding, or backdated
+free-variable resolution specifically) rather than folding them into this
+more general, "as of now" mechanism. `mintBackdatedSaint`'s own internal
+pick/generate/omit logic *was* unified onto `weightedResolve` — not by
+choice, but forced by a real naming collision once both types existed
+(`Historian.Rules`'s own private `BackstoryChoice` and `Historian.World`'s
+new `WeightedChoice` shared all three constructor names) — the least
+invasive fix was deleting the now-redundant private type and calling the
+general primitive directly, which the plan itself flagged as "real,
+sensible future work" happening sooner than expected, not a scope
+expansion.
+
+**A real bug, caught by `cabal test` itself, not by review.** First cut of
+`backfillWard`'s `GenerateFresh` branch was `fst <$> newSociety (cultureOf
+w ward)` — discarding the patron `Concept` `newSociety` also returns.
+Every *other* `newSociety` call site (`genesis`, `fireSchism`, merger's
+new-society branch) adds `Historian.Rules.patronClaims` for exactly this
+reason; this one didn't, because `Historian.World` can't import
+`Historian.Rules` to reuse it. Result: a `Concept` entity minted but never
+mentioned by any `Fact` — "every entity is inspectable" failed for seeds
+13 and 99 the first time `cabal test` ran after wiring this in. Fixed with
+`generateCultFor`, a small `Historian.World`-local function that mints the
+society *and* records the same two-claim shape `patronClaims` would have
+(duplicated rather than shared across the layering boundary, since it's
+two lines and moving `patronClaims` itself wasn't asked for) — same
+Decision 16 lesson `Historian.Types`'s own comment on `entModifier`
+already names, re-encountered from a new direction: a relationship to
+another entity needs a `Fact`, and nothing catches a missing one except
+actually running the suite.
+
+**Verified against a real run, not just the test suite.** `cabal test`
+went from 192 to 193 checks (only one new: a `backstory`-kind event
+occurs for at least one `aggregateSeeds` seed at `longSteps`) — and,
+notably, **zero existing checks needed a witness replacement**, despite
+this hooking into `newPerson`/`newSite`/`newItem`, called throughout
+nearly every existing rule. The wide seed pools (`aggregateSeeds`/
+`wideSeeds`/`veryWideSeeds`) already existed specifically to absorb this
+kind of cascade reshuffle without hand-picking new witnesses, and did —
+the batched-re-scan cost flagged repeatedly through planning turned out
+to be zero in practice, not because the cascade didn't happen (it
+certainly did — genesis itself now lands at a different date on every
+seed) but because the existing check design was already robust to it.
+Live, beyond the suite: seed 1 shows the founding society's own founder
+backfilled with a venerating-cult claim in the same step as the founding
+itself; seed 3 at 20 steps shows both the `GenerateFresh` path (paired
+"takes shape, bound to `<concept>`" / "comes to venerate `<ward>`" events)
+and organic composition with the *unrelated*, pre-existing dispute
+mechanism — a `backstory` event gets disputed by another society, with no
+special-casing needed anywhere, since `fireDispute` already treats any
+non-reinterpretation event as a valid target.
+
+**Explicitly deferred, named rather than dropped:** depth 2/3 actually
+firing (needs a Society-side backfill target designed first); `newSociety`
+gaining its own hook; backdated claims from this mechanism; file-based
+`BackfillConfig`; the eventual `Outcome`/narrated-backstory version and
+explicit user-driven variable binding — both real, both named by the user
+as wanted eventually, neither part of this decision.

@@ -194,6 +194,11 @@ data Claim = Claim
   , clPred :: Predicate
   , clObject :: Maybe Referent
   , clAttestedBy :: Maybe EntityId
+  , clEpoch :: Maybe Epoch
+  -- ^ 'Nothing' (every claim until now): the fact is dated to the event's
+  -- own epoch, same as today. 'Just': a genuinely backdated claim, dated
+  -- earlier than the event that asserts it — see
+  -- 'Historian.World.record'.
   }
 
 -- | Prose is rendered once, when the event fires, and stored. The chronicle
