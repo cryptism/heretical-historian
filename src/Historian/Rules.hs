@@ -9,7 +9,7 @@ module Historian.Rules where
 
 import Control.Monad (replicateM_)
 import Control.Monad.State.Strict (execState, get)
-import Data.List (nub, nubBy)
+import Data.List (nub)
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Historian.Corpus (allCultures, curseFramings, defaultFraming, disputedFramings, prophecyFramings, vaurethine)
@@ -26,19 +26,19 @@ import Historian.World
 data Rule = Rule
   { ruleName :: Text
   , ruleWeight :: Int
-  , ruleCandidates :: World -> [Chronicle ()]
+  , ruleCandidates :: World -> [Chronicle [Outcome]]
   }
 
 -- | The default: every rule counts once per candidate, exactly the
 -- behavior before 'ruleWeight' existed.
-rule :: Text -> (World -> [Chronicle ()]) -> Rule
+rule :: Text -> (World -> [Chronicle [Outcome]]) -> Rule
 rule name = Rule name 1
 
 -- | Same as 'rule', but with authorial control over how much a rule's
 -- candidates count relative to everyone else's. A weight of 0 disables a
 -- rule entirely without deleting it; negative weights aren't validated
 -- against, the same trust-the-author stance the rest of this module takes.
-weightedRule :: Int -> Text -> (World -> [Chronicle ()]) -> Rule
+weightedRule :: Int -> Text -> (World -> [Chronicle [Outcome]]) -> Rule
 weightedRule w name = Rule name w
 
 rules :: [Rule]
@@ -80,21 +80,13 @@ ruleSpecs =
 
 -- Genesis --------------------------------------------------------------
 
-genesis :: Chronicle ()
+genesis :: Chronicle [Outcome]
 genesis = do
   cult <- pickOr vaurethine allCultures
   (s, concept) <- newSociety cult
   p <- newPerson cult
-  w <- get
-  let outcome = FoundingOutcome s p
-  record "founding" (render w (Founding outcome)) (foundingClaims outcome ++ patronClaims s concept)
-
-foundingClaims :: FoundingOutcome -> [Claim]
-foundingClaims o =
-  [ Claim (fdSociety o) Founded Nothing (Just (fdSociety o))
-  , Claim (fdFounder o) LeaderOf (Just (ROf (fdSociety o))) (Just (fdSociety o))
-  , Claim (fdFounder o) Leads (Just (ROf (fdSociety o))) (Just (fdSociety o))
-  ]
+  let outcome = FoundingOutcome s p (patronClaims s concept)
+  pure [Founding outcome]
 
 -- | Every society's two intrinsic patron-concept claims — 'Embodies'
 -- (unattested, like a fresh item's own) and an initial 'Venerates' (self-
@@ -123,7 +115,7 @@ ruleSchism = rule "schism" $ \w ->
   , h <- Nothing : map Just (livingMembers w s)
   ]
 
-fireSchism :: World -> EntityId -> Maybe EntityId -> Chronicle ()
+fireSchism :: World -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
 fireSchism w s mh = do
   let cult = cultureOf w s
   (h, fresh) <- case mh of
@@ -132,20 +124,9 @@ fireSchism w s mh = do
       p <- newPerson cult
       pure (p, True)
   (c, concept) <- newSociety cult
-  w' <- get
-  let outcome = SchismOutcome s h fresh c
-      claims = schismClaims outcome ++ patronClaims c concept
-  record "schism" (render w' (Schism outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
-
-schismClaims :: SchismOutcome -> [Claim]
-schismClaims o =
-  [ Claim (scSplinter o) SplitFrom (Just (ROf (scParent o))) (Just (scSplinter o))
-  , Claim (scHeresiarch o) LeaderOf (Just (ROf (scSplinter o))) (Just (scSplinter o))
-  , Claim (scHeresiarch o) Leads (Just (ROf (scSplinter o))) (Just (scSplinter o))
-  , Claim (scSplinter o) Grievance (Just (ROf (scParent o))) (Just (scSplinter o))
-  , Claim (scParent o) Grievance (Just (ROf (scSplinter o))) (Just (scParent o))
-  ]
+  let outcome = SchismOutcome s h fresh c (patronClaims c concept)
+  disputes <- maybeDispute s
+  pure (Schism outcome : disputes)
 
 -- | 'Historian.Engine' proof of concept (Phase 1, see docs/DESIGN.md
 -- Decision 23): the same two inputs 'ruleSchism' hand-writes above,
@@ -176,7 +157,7 @@ schismSpec =
     -- input 'Historian.Engine.intelligentStep' can actually produce.
     fire w assignment = case assignment of
       [Just s, mh] -> fireSchism w s mh
-      _ -> pure ()
+      _ -> pure []
 
 -- Battle ---------------------------------------------------------------
 
@@ -193,7 +174,7 @@ ruleBattle = rule "battle" $ \w ->
   , site <- Nothing : map Just (entitiesOf Site w)
   ]
 
-fireBattle :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle ()
+fireBattle :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
 fireBattle w a b msite = do
   site <- case msite of
     Just s -> pure s
@@ -206,25 +187,8 @@ fireBattle w a b msite = do
     Just p -> fireDyingWords w p victor (rmItem <$> relicMoment) False
     Nothing -> pure Nothing
   let outcome = BattleOutcome victor vanquished site victim relicMoment dyingWords
-      claims = battleClaims outcome
-  w' <- get
-  record "battle" (render w' (Battle outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute victor
-
-battleClaims :: BattleOutcome -> [Claim]
-battleClaims o =
-  [ Claim (btVictor o) BattledAt (Just (ROf (btSite o))) (Just (btVictor o))
-  , Claim (btVanquished o) BattledAt (Just (ROf (btSite o))) (Just (btVanquished o))
-  , -- The loser seeks a rematch; the winner considers the matter settled,
-    -- at least from their own side. This is what lets 'grievancePairs'
-    -- eventually stop recurring for a pair instead of scanning an
-    -- ever-growing, never-pruned log.
-    Claim (btVanquished o) Grievance (Just (ROf (btVictor o))) (Just (btVanquished o))
-  , Claim (btVictor o) Reconciled (Just (ROf (btVanquished o))) (Just (btVictor o))
-  ]
-    ++ [Claim p Slain (Just (ROf (btVictor o))) (Just (btVanquished o)) | Just p <- [btVictim o]]
-    ++ maybe [] rmClaims (btRelic o)
-    ++ maybe [] dwClaims (btDyingWords o)
+  disputes <- maybeDispute victor
+  pure (Battle outcome : disputes)
 
 -- | 'Historian.Engine' migration (docs/DESIGN.md Decision 23 follow-up).
 -- Two societies rather than one free variable, which is why the second
@@ -254,7 +218,7 @@ battleSpec =
       [] -> False
     fire w assignment = case assignment of
       [Just a, Just b, msite] -> fireBattle w a b msite
-      _ -> pure ()
+      _ -> pure []
 
 -- Dispute -----------------------------------------------------------------
 
@@ -306,27 +270,21 @@ fireDispute w disputant = do
           framing <- pick1 (disputedFramings (evKind ev))
           pure (Just (DisputeOutcome disputant ev framing))
 
-disputeClaims :: DisputeOutcome -> [Claim]
-disputeClaims o = [Claim (dsDisputant o) Disputes (Just (REvent (evId (dsDisputed o)))) (Just (dsDisputant o))]
-
--- | Called at the end of a rule's effect, right after its own primary
--- 'record', with whichever active society is already in scope as the
--- potential disputant. A no-op most of the time ('fireDispute' rolls its
--- own probability); when it does trigger, records its own second,
--- independent 'Event' rather than appending anything to the triggering
--- rule's own text. Every rule that already has one clearly active
--- society in scope calls this; 'fireDissolve' is the one deliberate
--- exception — its only party is the society that just lost its last
--- living member, which is no voice to lend an opinion to.
-maybeDispute :: EntityId -> Chronicle ()
+-- | Called at the end of a rule's effect, right after building its own
+-- primary 'Outcome', with whichever active society is already in scope as
+-- the potential disputant — its result is appended to that outcome's own
+-- returned list, so the primary outcome always commits first. A no-op
+-- most of the time ('fireDispute' rolls its own probability); when it does
+-- trigger, it's still its own independent 'Event' once committed, not
+-- folded into the triggering rule's own text. Every rule that already has
+-- one clearly active society in scope calls this; 'fireDissolve' is the
+-- one deliberate exception — its only party is the society that just lost
+-- its last living member, which is no voice to lend an opinion to.
+maybeDispute :: EntityId -> Chronicle [Outcome]
 maybeDispute disputant = do
   w <- get
   md <- fireDispute w disputant
-  case md of
-    Nothing -> pure ()
-    Just o -> do
-      w' <- get
-      record "reinterpretation" (render w' (Dispute o)) (disputeClaims o)
+  pure (maybe [] (pure . Dispute) md)
 
 -- Sanctification ----------------------------------------------------------
 
@@ -344,22 +302,14 @@ ruleSanctify = rule "sanctify" $ \w ->
   , msite <- Nothing : [Just st | st <- entitiesOf Site w, not (isSanctified w st)]
   ]
 
-fireSanctify :: World -> EntityId -> Maybe EntityId -> Chronicle ()
+fireSanctify :: World -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
 fireSanctify w s msite = do
   site <- case msite of
     Just st -> pure st
     Nothing -> newSite (cultureOf w s)
-  w' <- get
   let outcome = SanctifyOutcome s site (isNothing msite)
-      claims = sanctifyClaims outcome
-  record "sanctification" (render w' (Sanctify outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
-
-sanctifyClaims :: SanctifyOutcome -> [Claim]
-sanctifyClaims o =
-  [ Claim (sySite o) Sanctified (Just (ROf (syClaimant o))) (Just (syClaimant o))
-  , Claim (syClaimant o) Venerates (Just (ROf (sySite o))) (Just (syClaimant o))
-  ]
+  disputes <- maybeDispute s
+  pure (Sanctify outcome : disputes)
 
 -- | Second 'Historian.Engine' migration (see docs/DESIGN.md Decision 23
 -- and 'schismSpec' above), alongside the completely untouched
@@ -386,7 +336,7 @@ sanctifySpec =
     -- exactly two long.
     fire w assignment = case assignment of
       [Just s, msite] -> fireSanctify w s msite
-      _ -> pure ()
+      _ -> pure []
 
 -- Defilement / purification ------------------------------------------------
 
@@ -414,20 +364,11 @@ ruleDefile = rule "defile" $ \w ->
   , holdsGrievance w h s || holdsGrievance w s h
   ]
 
-fireDefile :: EntityId -> EntityId -> EntityId -> Chronicle ()
+fireDefile :: EntityId -> EntityId -> EntityId -> Chronicle [Outcome]
 fireDefile site s h = do
-  w <- get
   let outcome = DefileOutcome site s h
-      claims = defileClaims outcome
-  record "purification" (render w (Defile outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute h
-
-defileClaims :: DefileOutcome -> [Claim]
-defileClaims o =
-  [ Claim (dfSite o) Sanctified (Just (ROf (dfClaimant o))) (Just (dfClaimant o))
-  , Claim (dfClaimant o) Venerates (Just (ROf (dfSite o))) (Just (dfClaimant o))
-  , Claim (dfDeposed o) Grievance (Just (ROf (dfClaimant o))) (Just (dfDeposed o))
-  ]
+  disputes <- maybeDispute h
+  pure (Defile outcome : disputes)
 
 -- | 'Historian.Engine' migration. Both slots are optional (never minted
 -- by the engine): a site must already be sanctified to be a candidate at
@@ -456,8 +397,8 @@ defileSpec =
     fire w assignment = case assignment of
       [Just site, Just h] -> case sanctifiedBy w site of
         Just s -> fireDefile site s h
-        Nothing -> pure ()
-      _ -> pure ()
+        Nothing -> pure []
+      _ -> pure []
 
 -- Miracle -------------------------------------------------------------------
 
@@ -498,7 +439,7 @@ ruleMiracle = rule "miracle" $ \w ->
        , target <- filter (/= actor) (entitiesOf Person w ++ activeItems w)
        ]
 
-fireMiracleSaint :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle ()
+fireMiracleSaint :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
 fireMiracleSaint w s site msaint = do
   (saint, saintFresh) <- case msaint of
     Just p -> pure (p, False)
@@ -509,19 +450,10 @@ fireMiracleSaint w s site msaint = do
   let extraClaims = embodiesClaims ++ reactions
       relicMoment = (\(item, fresh) -> RelicMoment item fresh extraClaims (Just site)) <$> mrelicItem
       outcome = MiracleSaintOutcome s site saint saintFresh relicMoment extraClaims
-      claims = miracleSaintClaims outcome
-  w' <- get
-  record "miracle" (render w' (MiracleSaint outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
+  disputes <- maybeDispute s
+  pure (MiracleSaint outcome : disputes)
 
-miracleSaintClaims :: MiracleSaintOutcome -> [Claim]
-miracleSaintClaims o =
-  [ Claim (msSite o) Sanctified (Just (ROf (msSociety o))) (Just (msSociety o))
-  , Claim (msSociety o) Venerates (Just (ROf (msSaint o))) (Just (msSociety o))
-  ]
-    ++ msExtraClaims o
-
-fireMiracleRelic :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle ()
+fireMiracleRelic :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
 fireMiracleRelic w s site mrelic = do
   (relic, relicFresh, embodiesClaim) <- case mrelic of
     Just it -> pure (it, False, [])
@@ -530,33 +462,15 @@ fireMiracleRelic w s site mrelic = do
       pure (it, True, [Claim it Embodies (Just (ROf concept)) Nothing])
   reactions <- regardReactions s [site, relic]
   let outcome = MiracleRelicOutcome s site relic relicFresh (embodiesClaim ++ reactions)
-      claims = miracleRelicClaims outcome
-  w' <- get
-  record "miracle" (render w' (MiracleRelic outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
+  disputes <- maybeDispute s
+  pure (MiracleRelic outcome : disputes)
 
-miracleRelicClaims :: MiracleRelicOutcome -> [Claim]
-miracleRelicClaims o =
-  [ Claim (mrSite o) Sanctified (Just (ROf (mrSociety o))) (Just (mrSociety o))
-  , Claim (mrSociety o) Venerates (Just (ROf (mrRelic o))) (Just (mrSociety o))
-  ]
-    ++ mrExtraClaims o
-
-fireMiracleOn :: World -> EntityId -> EntityId -> EntityId -> EntityId -> Chronicle ()
-fireMiracleOn w s site actor target = do
+fireMiracleOn :: World -> EntityId -> EntityId -> EntityId -> EntityId -> Chronicle [Outcome]
+fireMiracleOn _w s site actor target = do
   reactions <- regardReactions s [site, actor, target]
   let outcome = MiracleOnOutcome s site actor target reactions
-      claims = miracleOnClaims outcome
-  record "miracle" (render w (MiracleOn outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
-
-miracleOnClaims :: MiracleOnOutcome -> [Claim]
-miracleOnClaims o =
-  [ Claim (moSite o) Sanctified (Just (ROf (moSociety o))) (Just (moSociety o))
-  , Claim (moSociety o) Venerates (Just (ROf (moActor o))) (Just (moSociety o))
-  , Claim (moSociety o) Venerates (Just (ROf (moTarget o))) (Just (moSociety o))
-  ]
-    ++ moExtraClaims o
+  disputes <- maybeDispute s
+  pure (MiracleOn outcome : disputes)
 
 -- | 'Historian.Engine' migrations for all three 'ruleMiracle' productions.
 -- Every one shares the same first two slots (an active society, a site it
@@ -599,7 +513,7 @@ miracleSaintSpec =
       [] -> False
     fire w assignment = case assignment of
       [Just s, Just site, msaint] -> fireMiracleSaint w s site msaint
-      _ -> pure ()
+      _ -> pure []
 
 miracleRelicSpec :: RuleSpec
 miracleRelicSpec =
@@ -611,7 +525,7 @@ miracleRelicSpec =
   where
     fire w assignment = case assignment of
       [Just s, Just site, mrelic] -> fireMiracleRelic w s site mrelic
-      _ -> pure ()
+      _ -> pure []
 
 miracleOnPersonSpec :: RuleSpec
 miracleOnPersonSpec =
@@ -626,7 +540,7 @@ miracleOnPersonSpec =
       _ -> False
     fire w assignment = case assignment of
       [Just s, Just site, Just actor, Just target] -> fireMiracleOn w s site actor target
-      _ -> pure ()
+      _ -> pure []
 
 miracleOnItemSpec :: RuleSpec
 miracleOnItemSpec =
@@ -638,7 +552,7 @@ miracleOnItemSpec =
   where
     fire w assignment = case assignment of
       [Just s, Just site, Just actor, Just target] -> fireMiracleOn w s site actor target
-      _ -> pure ()
+      _ -> pure []
 
 -- | How a cult already regarding one of a miracle's Wards reacts to it, or
 -- how an uninvolved cult drawn in as a spectator does. Shared by all three
@@ -707,10 +621,6 @@ polarityWeights w cult thing base =
     Just Venerated -> [(80, Venerated), (20, Shunned)]
     Just Shunned -> [(20, Venerated), (80, Shunned)]
     Nothing -> base
-
-regardClaim :: EntityId -> EntityId -> Regard -> Claim
-regardClaim cult thing Venerated = Claim cult Venerates (Just (ROf thing)) (Just cult)
-regardClaim cult thing Shunned = Claim cult Shuns (Just (ROf thing)) (Just cult)
 
 flipRegard :: Regard -> Regard
 flipRegard Venerated = Shunned
@@ -819,19 +729,12 @@ ruleTheft = rule "theft" $ \w ->
   , h /= k
   ]
 
-fireTheft :: World -> EntityId -> EntityId -> EntityId -> Chronicle ()
+fireTheft :: World -> EntityId -> EntityId -> EntityId -> Chronicle [Outcome]
 fireTheft w item k h = do
   newR <- weighted (polarityWeights w h item [(75, Venerated), (25, Shunned)])
   let outcome = TheftOutcome h k item newR
-      claims = theftClaims outcome
-  record "theft" (render w (Theft outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute h
-
-theftClaims :: TheftOutcome -> [Claim]
-theftClaims o =
-  [ regardClaim (thThief o) (thItem o) (thRegard o)
-  , Claim (thKeeper o) Grievance (Just (ROf (thThief o))) (Just (thKeeper o))
-  ]
+  disputes <- maybeDispute h
+  pure (Theft outcome : disputes)
 
 -- | 'Historian.Engine' migration. All three slots optional: an item pool
 -- with a current venerator, and a hostile-free thief, are both real
@@ -856,7 +759,7 @@ theftSpec =
       _ -> False
     fire w assignment = case assignment of
       [Just item, Just k, Just h] -> fireTheft w item k h
-      _ -> pure ()
+      _ -> pure []
 
 -- | Theft's peaceful counterpart, at the user's request: a relic changing
 -- hands willingly — no grievance, no hostility precondition, unlike theft.
@@ -881,7 +784,7 @@ ruleGift = rule "gift" $ \w ->
   , r /= g
   ]
 
-fireGift :: World -> EntityId -> EntityId -> Regard -> EntityId -> Chronicle ()
+fireGift :: World -> EntityId -> EntityId -> Regard -> EntityId -> Chronicle [Outcome]
 fireGift w item g giverRegard r = do
   newR <- weighted (polarityWeights w r item (matchGiverWeights giverRegard))
   reconciled <-
@@ -889,17 +792,11 @@ fireGift w item g giverRegard r = do
       then weighted [(60, True), (40, False)]
       else pure False
   let outcome = GiftOutcome g r item newR reconciled
-      claims = giftClaims outcome
-  record "gift" (render w (Gift outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute g
+  disputes <- maybeDispute g
+  pure (Gift outcome : disputes)
   where
     matchGiverWeights Venerated = [(85, Venerated), (15, Shunned)]
     matchGiverWeights Shunned = [(15, Venerated), (85, Shunned)]
-
-giftClaims :: GiftOutcome -> [Claim]
-giftClaims o =
-  regardClaim (giReceiver o) (giItem o) (giRegard o)
-    : [Claim (giReceiver o) Reconciled (Just (ROf (giGiver o))) (Just (giReceiver o)) | giReconciled o]
 
 -- | 'Historian.Engine' migration, the mirror image of 'theftSpec': any
 -- current regard qualifies the giver, not just 'Venerated'. @giverRegard@
@@ -927,8 +824,8 @@ giftSpec =
     fire w assignment = case assignment of
       [Just item, Just g, Just r] -> case lookup g (currentRegardants w item) of
         Just giverRegard -> fireGift w item g giverRegard r
-        Nothing -> pure ()
-      _ -> pure ()
+        Nothing -> pure []
+      _ -> pure []
 
 -- | A relic currently cursed to its own keeper can be destroyed by that
 -- same keeper — the cult that already considers it cursed is who rids
@@ -946,19 +843,13 @@ ruleDestroyRelic = rule "destroy-relic" $ \w ->
   , (k, Shunned) <- currentRegardants w item
   ]
 
-fireDestroyRelic :: EntityId -> EntityId -> Chronicle ()
+fireDestroyRelic :: EntityId -> EntityId -> Chronicle [Outcome]
 fireDestroyRelic item k = do
   w <- get
   let mourners = [v | (v, Venerated) <- currentRegardants w item, v /= k]
       outcome = DestroyRelicOutcome k item mourners
-      claims = destroyRelicClaims outcome
-  record "destruction" (render w (DestroyRelic outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute k
-
-destroyRelicClaims :: DestroyRelicOutcome -> [Claim]
-destroyRelicClaims o =
-  Claim (drItem o) Terminated Nothing (Just (drKeeper o))
-    : [Claim v Grievance (Just (ROf (drKeeper o))) (Just v) | v <- drMourners o]
+  disputes <- maybeDispute k
+  pure (DestroyRelic outcome : disputes)
 
 -- | 'Historian.Engine' migration. Same shape as 'theftSpec', just keyed
 -- on 'Shunned' instead of 'Venerated'.
@@ -978,7 +869,7 @@ destroyRelicSpec =
       [] -> False
     fire _ assignment = case assignment of
       [Just item, Just k] -> fireDestroyRelic item k
-      _ -> pure ()
+      _ -> pure []
 
 -- Leadership --------------------------------------------------------------
 
@@ -996,9 +887,10 @@ destroyRelicSpec =
 fireLeadershipChange :: World -> EntityId -> EntityId -> Chronicle LeadershipChange
 fireLeadershipChange w society newLeader = do
   let oldLeader = currentLeader w society
+      societyName = nameIn w society
       leadsClaim = Claim newLeader Leads (Just (ROf society)) (Just society)
   case propertyOf w society of
-    Nothing -> pure (LeadershipChange society oldLeader newLeader Nothing [leadsClaim])
+    Nothing -> pure (LeadershipChange society societyName oldLeader newLeader Nothing [leadsClaim])
     Just concept -> do
       let currentRegard = regardOf w society concept
           weights = case currentRegard of
@@ -1007,14 +899,14 @@ fireLeadershipChange w society newLeader = do
             Nothing -> [(50, Venerated), (50 :: Int, Shunned)]
       newRegard <- weighted weights
       if Just newRegard == currentRegard
-        then pure (LeadershipChange society oldLeader newLeader Nothing [leadsClaim])
+        then pure (LeadershipChange society societyName oldLeader newLeader Nothing [leadsClaim])
         else do
           newName <- generateSocietyName (cultureOf w society)
           let renameClaims =
                 [ regardClaim society concept newRegard
                 , Claim society Named (Just (RName newName)) (Just society)
                 ]
-          pure (LeadershipChange society oldLeader newLeader (Just newName) (leadsClaim : renameClaims))
+          pure (LeadershipChange society societyName oldLeader newLeader (Just newName) (leadsClaim : renameClaims))
 
 -- | Any active society with at least one living member who isn't already
 -- 'currentLeader' can ceremonially crown one — including the very first
@@ -1028,17 +920,15 @@ ruleCoronation = rule "coronation" $ \w ->
   , currentLeader w s /= Just candidate
   ]
 
-fireCoronation :: World -> EntityId -> EntityId -> Chronicle ()
+fireCoronation :: World -> EntityId -> EntityId -> Chronicle [Outcome]
 fireCoronation w s candidate = do
   leadership <- fireLeadershipChange w s candidate
   let others = [p | p <- livingMembers w s, p /= candidate, Just p /= lcOldLeader leadership]
   nRivals <- weighted [(60, 0 :: Int), (30, 1), (10, 2)]
   rivals <- sampleUpTo nRivals others
   let outcome = CoronationOutcome leadership rivals
-      claims = lcClaims leadership ++ [Claim r Rivalry (Just (ROf candidate)) (Just r) | r <- rivals]
-  w' <- get
-  record "coronation" (render w' (Coronation outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
+  disputes <- maybeDispute s
+  pure (Coronation outcome : disputes)
 
 -- | 'Historian.Engine' migration. The candidate slot deliberately doesn't
 -- mint: an invented person crowned leader of a society they never
@@ -1062,7 +952,7 @@ coronationSpec =
       [] -> False
     fire w assignment = case assignment of
       [Just s, Just candidate] -> fireCoronation w s candidate
-      _ -> pure ()
+      _ -> pure []
 
 -- | Restricted to two living members of the *same* active society —
 -- mirrors 'ruleBattle's own 'grievancePairs'-restricted-to-active-parties
@@ -1078,20 +968,17 @@ ruleTrialByCombat = rule "trial-by-combat" $ \w ->
   , b `elem` livingMembers w s
   ]
 
-fireTrialByCombat :: World -> EntityId -> EntityId -> EntityId -> Chronicle ()
+fireTrialByCombat :: World -> EntityId -> EntityId -> EntityId -> Chronicle [Outcome]
 fireTrialByCombat w s a b = do
   outcome <- weighted [(45, ADies), (45, BDies), (10, BothDie)]
-  let (slain, victor, slainClaims) = case outcome of
-        ADies -> ([a], Just b, [Claim a Slain (Just (ROf b)) (Just s)])
-        BDies -> ([b], Just a, [Claim b Slain (Just (ROf a)) (Just s)])
-        BothDie -> ([a, b], Nothing, [Claim a Slain (Just (ROf b)) (Just s), Claim b Slain (Just (ROf a)) (Just s)])
-      resolveClaims = [Claim a Reconciled (Just (ROf b)) (Just s), Claim b Reconciled (Just (ROf a)) (Just s)]
+  let (slain, victor) = case outcome of
+        ADies -> ([a], Just b)
+        BDies -> ([b], Just a)
+        BothDie -> ([a, b], Nothing)
   leadership <- traverse (fireLeadershipChange w s) victor
   let tc = TrialByCombatOutcome s a b slain leadership
-      claims = slainClaims ++ resolveClaims ++ maybe [] lcClaims leadership
-  w' <- get
-  record "trial-by-combat" (render w' (TrialByCombat tc)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
+  disputes <- maybeDispute s
+  pure (TrialByCombat tc : disputes)
 
 data TrialOutcome = ADies | BDies | BothDie
 
@@ -1121,7 +1008,7 @@ trialByCombatSpec =
       _ -> False
     fire w assignment = case assignment of
       [Just s, Just a, Just b] -> fireTrialByCombat w s a b
-      _ -> pure ()
+      _ -> pure []
 
 -- | A rivalry specifically against the *current* leader — unlike trial by
 -- combat, which is symmetric between any two rivals, a coup only makes
@@ -1136,18 +1023,12 @@ ruleCoup = rule "coup" $ \w ->
   , hasRivalry w usurper leader
   ]
 
-fireCoup :: World -> EntityId -> EntityId -> EntityId -> Chronicle ()
+fireCoup :: World -> EntityId -> EntityId -> EntityId -> Chronicle [Outcome]
 fireCoup w s usurper leader = do
   leadership <- fireLeadershipChange w s usurper
   let outcome = CoupOutcome leader leadership
-      claims =
-        lcClaims leadership
-          ++ [ Claim leader Grievance (Just (ROf usurper)) (Just leader)
-             , Claim usurper Reconciled (Just (ROf leader)) (Just usurper)
-             ]
-  w' <- get
-  record "coup" (render w' (Coup outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute s
+  disputes <- maybeDispute s
+  pure (Coup outcome : disputes)
 
 -- | 'Historian.Engine' migration. @leader@ is deterministic given @s@
 -- ('currentLeader'), but still gets its own slot rather than being
@@ -1178,7 +1059,7 @@ coupSpec =
       _ -> False
     fire w assignment = case assignment of
       [Just s, Just leader, Just usurper] -> fireCoup w s usurper leader
-      _ -> pure ()
+      _ -> pure []
 
 -- Assassination ---------------------------------------------------------
 
@@ -1206,26 +1087,14 @@ ruleAssassinate = rule "assassinate" $ \w ->
   , holdsGrievance w h s
   ]
 
-fireAssassinate :: EntityId -> EntityId -> EntityId -> Chronicle ()
+fireAssassinate :: EntityId -> EntityId -> EntityId -> Chronicle [Outcome]
 fireAssassinate figure s h = do
   w <- get
   relicMoment <- fireRelicMoment w h [s, h] Nothing
   dyingWords <- fireDyingWords w figure h (rmItem <$> relicMoment) True
   let outcome = AssassinateOutcome figure s h relicMoment dyingWords
-      claims = assassinateClaims outcome
-  w' <- get
-  record "assassination" (render w' (Assassinate outcome)) (claims ++ fulfillProphecies w claims)
-  maybeDispute h
-
-assassinateClaims :: AssassinateOutcome -> [Claim]
-assassinateClaims o =
-  [ Claim (asFigure o) Slain (Just (ROf (asKillers o))) (Just (asSociety o))
-  , Claim (asSociety o) Grievance (Just (ROf (asKillers o))) (Just (asSociety o))
-  , Claim (asSociety o) Venerates (Just (ROf (asFigure o))) (Just (asSociety o))
-  , Claim (asKillers o) Heretic (Just (ROf (asFigure o))) (Just (asKillers o))
-  ]
-    ++ maybe [] rmClaims (asRelic o)
-    ++ maybe [] dwClaims (asDyingWords o)
+  disputes <- maybeDispute h
+  pure (Assassinate outcome : disputes)
 
 -- | 'Historian.Engine' migration. @s@'s own slot has no active-society
 -- constraint, matching the legacy comment above almost verbatim: a
@@ -1251,7 +1120,7 @@ assassinateSpec =
       [] -> False
     fire _ assignment = case assignment of
       [Just s, Just figure, Just h] -> fireAssassinate figure s h
-      _ -> pure ()
+      _ -> pure []
 
 -- Merger ------------------------------------------------------------------
 
@@ -1281,58 +1150,22 @@ ruleMerger = rule "merger" $ \w ->
   , sharesGrievanceTarget w a b || sharesVeneration w a b
   ]
 
--- | Every living member of @from@ transfers to @to@: a fresh 'LeaderOf',
--- attested by @to@, is what "current member" already means everywhere else
--- (latest-fact-wins via 'allegiances'), so this is the whole mechanism.
-transferClaims :: World -> EntityId -> EntityId -> [Claim]
-transferClaims w from to =
-  [Claim p LeaderOf (Just (ROf to)) (Just to) | p <- livingMembers w from]
-
--- | Every grievance @from@ currently holds against a third party is
--- re-asserted from @to@, attested by @to@ — the survivor inherits the
--- grudge, not just the members.
-inheritedGrievanceClaims :: World -> EntityId -> EntityId -> [Claim]
-inheritedGrievanceClaims w from to =
-  [ Claim to Grievance (Just (ROf c)) (Just to)
-  | c <- entitiesOf Society w
-  , c /= from
-  , c /= to
-  , holdsGrievance w from c
-  ]
-
-fireMerger :: World -> EntityId -> EntityId -> Chronicle ()
+fireMerger :: World -> EntityId -> EntityId -> Chronicle [Outcome]
 fireMerger w a b = do
   formNew <- coin
   if formNew
     then do
       cultFromA <- coin
       (new, concept) <- newSociety (if cultFromA then cultureOf w a else cultureOf w b)
-      let outcome = MergerFounding a b new
-          claims = mergerClaims w outcome ++ patronClaims new concept
-      w' <- get
-      record "merger" (render w' (Merger outcome)) (claims ++ fulfillProphecies w claims)
-      maybeDispute a
+      let outcome = MergerFounding a b new (patronClaims new concept)
+      disputes <- maybeDispute a
+      pure (Merger outcome : disputes)
     else do
       survivorIsA <- coin
       let (survivor, absorbed) = if survivorIsA then (a, b) else (b, a)
           outcome = MergerAbsorption absorbed survivor
-          claims = mergerClaims w outcome
-      record "merger" (render w (Merger outcome)) (claims ++ fulfillProphecies w claims)
-      maybeDispute survivor
-
-mergerClaims :: World -> MergerOutcome -> [Claim]
-mergerClaims w (MergerFounding a b new) =
-  [ Claim a MergedInto (Just (ROf new)) (Just a)
-  , Claim b MergedInto (Just (ROf new)) (Just b)
-  ]
-    ++ transferClaims w a new
-    ++ transferClaims w b new
-    ++ inheritedGrievanceClaims w a new
-    ++ inheritedGrievanceClaims w b new
-mergerClaims w (MergerAbsorption absorbed survivor) =
-  Claim absorbed MergedInto (Just (ROf survivor)) (Just absorbed)
-    : transferClaims w absorbed survivor
-    ++ inheritedGrievanceClaims w absorbed survivor
+      disputes <- maybeDispute survivor
+      pure (Merger outcome : disputes)
 
 -- | 'Historian.Engine' migration. No @a < b@ ordering constraint, unlike
 -- the legacy list comprehension — that ordering only exists there to
@@ -1361,7 +1194,7 @@ mergerSpec =
       [] -> False
     fire w assignment = case assignment of
       [Just a, Just b] -> fireMerger w a b
-      _ -> pure ()
+      _ -> pure []
 
 -- Dissolution ---------------------------------------------------------------
 
@@ -1396,15 +1229,8 @@ ruleDissolve = rule "dissolve" $ \w ->
 -- rule could offer isn't an active society with an opinion to lend,
 -- it's the account that no longer has anyone left to hold it (the same
 -- reasoning behind 'Terminated's own attestor-less claim just below).
-fireDissolve :: EntityId -> Chronicle ()
-fireDissolve s = do
-  w <- get
-  let outcome = DissolveOutcome s
-      claims = dissolveClaims outcome
-  record "dissolution" (render w (Dissolve outcome)) (claims ++ fulfillProphecies w claims)
-
-dissolveClaims :: DissolveOutcome -> [Claim]
-dissolveClaims o = [Claim (dsSociety o) Terminated Nothing Nothing]
+fireDissolve :: EntityId -> Chronicle [Outcome]
+fireDissolve s = pure [Dissolve (DissolveOutcome s)]
 
 -- | 'Historian.Engine' migration. The one slot is optional even though
 -- it's the rule's only slot — never required — precisely to avoid
@@ -1439,7 +1265,7 @@ dissolveSpec =
   where
     fire _ assignment = case assignment of
       [Just s] -> fireDissolve s
-      _ -> pure ()
+      _ -> pure []
 
 -- Revival -------------------------------------------------------------------
 
@@ -1462,15 +1288,11 @@ ruleRevive = rule "revive" $ \w ->
   , not (hasClaimedRevival w reviver defunct)
   ]
 
-fireRevive :: EntityId -> EntityId -> Chronicle ()
+fireRevive :: EntityId -> EntityId -> Chronicle [Outcome]
 fireRevive reviver defunct = do
-  w <- get
   let outcome = ReviveOutcome reviver defunct
-  record "revival" (render w (Revive outcome)) (reviveClaims outcome)
-  maybeDispute reviver
-
-reviveClaims :: ReviveOutcome -> [Claim]
-reviveClaims o = [Claim (rvReviver o) Revives (Just (ROf (rvDefunct o))) (Just (rvReviver o))]
+  disputes <- maybeDispute reviver
+  pure (Revive outcome : disputes)
 
 -- | 'Historian.Engine' migration. @defunct@ stays optional (never
 -- minted) for the same reason 'dissolveSpec's own slot is: a freshly
@@ -1493,7 +1315,7 @@ reviveSpec =
       [] -> False
     fire _ assignment = case assignment of
       [Just reviver, Just defunct] -> fireRevive reviver defunct
-      _ -> pure ()
+      _ -> pure []
 
 -- Prophecy ------------------------------------------------------------------
 
@@ -1517,17 +1339,14 @@ ruleProphesy = rule "prophesy" $ \w ->
   , not (hasProphesied w prophet target)
   ]
 
-fireProphesy :: EntityId -> EntityId -> Chronicle ()
+fireProphesy :: EntityId -> EntityId -> Chronicle [Outcome]
 fireProphesy target prophet = do
   w <- get
   let kind = fromMaybe Person (kindOf w target)
   (momen, framing) <- pickOr defaultFraming (prophecyFramings kind)
   let outcome = ProphesyOutcome prophet target framing momen
-  record "prophecy" (render w (Prophesy outcome)) (prophesyClaims outcome)
-  maybeDispute prophet
-
-prophesyClaims :: ProphesyOutcome -> [Claim]
-prophesyClaims o = [Claim (pyProphet o) Prophesied (Just (ROmen (pyTarget o) (pyOmen o))) (Just (pyProphet o))]
+  disputes <- maybeDispute prophet
+  pure (Prophesy outcome : disputes)
 
 -- | 'Historian.Engine' migration. The legacy rule's @target@ ranges over
 -- four different 'Kind's at once (@entitiesOf Society w ++ entitiesOf
@@ -1561,7 +1380,7 @@ prophesySpecFor kind tag =
       [] -> False
     fire _ assignment = case assignment of
       [Just prophet, Just target] -> fireProphesy target prophet
-      _ -> pure ()
+      _ -> pure []
 
 prophesySocietySpec, prophesyPersonSpec, prophesySiteSpec, prophesyItemSpec :: RuleSpec
 prophesySocietySpec = prophesySpecFor Society "society"
@@ -1573,65 +1392,6 @@ prophesyItemSpec = prophesySpecFor Item "item"
 -- purposes, and only for the closed set of predicates 'prophecyFramings'
 -- actually offers as omens — everything else is 'Nothing', so a predicate
 -- nobody ever foretells can never accidentally fulfill anything.
--- Predicates don't agree on which slot names the affected party:
--- 'Terminated'\/'MergedInto'\/'Slain'\/'Sanctified' put it in the subject
--- (the dissolving society or destroyed relic, the society merging away,
--- the slain person, the site itself), while
--- 'SplitFrom'\/'BattledAt'\/'Heretic'\/'Shuns' put it in the object.
---
--- 'Terminated' covering *both* dissolution and destruction here is what
--- the Dissolved\/Destroyed unification (work queue item 13) actually fixed
--- in passing: before it, this function had a 'Dissolved' case but no
--- 'Destroyed' one, so an item's destruction silently never fulfilled the
--- "will be shattered"\/"will be melted down" prophecies
--- 'Historian.Corpus.prophecyFramings' had already been offering for
--- 'Item' since the relics work — a dormant bug, caught only by unifying
--- the two predicates into one that this function couldn't help but cover.
-omenOf :: Claim -> Maybe (Predicate, EntityId)
-omenOf c = case clPred c of
-  Terminated -> Just (Terminated, clSubject c)
-  MergedInto -> Just (MergedInto, clSubject c)
-  Slain -> Just (Slain, clSubject c)
-  Sanctified -> Just (Sanctified, clSubject c)
-  SplitFrom -> (,) SplitFrom <$> objectEntity
-  BattledAt -> (,) BattledAt <$> objectEntity
-  Heretic -> (,) Heretic <$> objectEntity
-  Shuns -> (,) Shuns <$> objectEntity
-  _ -> Nothing
-  where
-    objectEntity = case clObject c of
-      Just (ROf e) -> Just e
-      _ -> Nothing
-
--- | Checks every claim a rule is about to record against every open
--- prophecy, and returns a 'Fulfilled' claim for each match — subject the
--- target the prophecy was about, object 'REvent' pointing back at the
--- prophecy's own event (the same shape 'Disputes' points at a disputed
--- one), attestor whatever the *fulfilling* claim's own attestor was, so
--- e.g. a dissolved society's attestor-less 'Terminated' convention flows
--- through unchanged. Pure and safe to call with the pre-firing 'World':
--- minting entities doesn't
--- touch 'wFacts', so a rule that mints something earlier in its own effect
--- before building its claims doesn't invalidate this snapshot.
---
--- 'nubBy' guards the one real duplicate-emission risk: a single firing
--- like 'fireBattle' emits two 'BattledAt' claims sharing the same site
--- object, which would otherwise double-fulfill the same prophecy. No loop
--- risk either way: 'omenOf' never recognizes 'Prophesied', 'Disputes',
--- 'Revives', or 'Fulfilled' itself, so a fulfillment can never cascade into
--- fulfilling anything else — the same care that avoided reinterpretation's
--- original meta-loop bug (CLAUDE.md bug #3).
-fulfillProphecies :: World -> [Claim] -> [Claim]
-fulfillProphecies w claims =
-  nubBy
-    (\a b -> clSubject a == clSubject b && clObject a == clObject b)
-    [ Claim target Fulfilled (Just (REvent eid)) (clAttestedBy c)
-    | c <- claims
-    , Just (p, target) <- [omenOf c]
-    , (eid, omen) <- openProphecies w target
-    , omen == p
-    ]
-
 -- Driver ---------------------------------------------------------------
 
 -- | One historical step. Every satisfying binding across every rule is an
@@ -1662,7 +1422,8 @@ stepWith rs = do
     [] -> pure False
     _ -> do
       i <- roll (0, length cands - 1)
-      cands !! i
+      outcomes <- cands !! i
+      commitOutcomes outcomes
       pure True
 
 step :: Chronicle Bool
@@ -1670,7 +1431,7 @@ step = stepWith rules
 
 generate :: Int -> Int -> World
 generate seed steps =
-  execState (genesis >> replicateM_ steps step) (emptyWorld seed)
+  execState (genesis >>= commitOutcomes >> replicateM_ steps step) (emptyWorld seed)
 
 -- | The adapter promised by CLAUDE.md's work queue item 15: turns a
 -- 'RuleSpec' into an ordinary 'Rule' by enumerating every satisfying
@@ -1683,7 +1444,7 @@ generate seed steps =
 -- (right now, only 'dissolveSpec'), since it's a legitimate answer to
 -- "every satisfying assignment, including omitting an optional slot" —
 -- but firing it can only ever be a no-op ('dissolveSpec's own 'rsFire'
--- pattern-matches it straight to @pure ()@), and counting a guaranteed
+-- pattern-matches it straight to @pure []@), and counting a guaranteed
 -- no-op as if it were a real candidate would dilute 'step's pool with a
 -- wasted pick for no reason. This is a property of 'ruleFromSpec' alone,
 -- not a fix to 'Historian.Engine' itself — 'intelligentStep's own
@@ -1717,4 +1478,4 @@ rulesFromSpecs = map ruleFromSpec ruleSpecs
 -- reasoning for staying separate rather than replacing anything.
 generateViaEngine :: Int -> Int -> World
 generateViaEngine seed steps =
-  execState (genesis >> replicateM_ steps (stepWith rulesFromSpecs)) (emptyWorld seed)
+  execState (genesis >>= commitOutcomes >> replicateM_ steps (stepWith rulesFromSpecs)) (emptyWorld seed)

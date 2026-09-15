@@ -529,6 +529,16 @@ venerates w subject obj =
 data Regard = Venerated | Shunned
   deriving stock (Eq, Show)
 
+-- | The 'Claim' a cult's regard toward a Ward actually asserts — shared by
+-- every rule that rolls a regard reaction and by 'Historian.Render's
+-- claims-building for 'Historian.Render.TheftOutcome'\/'GiftOutcome',
+-- which is why this lives here rather than in 'Historian.Rules': both
+-- that module and 'Historian.Render' need it, and 'Historian.Render'
+-- can't import 'Historian.Rules' without a cycle.
+regardClaim :: EntityId -> EntityId -> Regard -> Claim
+regardClaim cult thing Venerated = Claim cult Venerates (Just (ROf thing)) (Just cult)
+regardClaim cult thing Shunned = Claim cult Shuns (Just (ROf thing)) (Just cult)
+
 regardOf :: World -> EntityId -> EntityId -> Maybe Regard
 regardOf w subject thing =
   case [ f | f <- wFacts w, factSubject f == subject, factObject f == Just (ROf thing), factPred f `elem` [Venerates, Shuns, Disavows] ] of
@@ -658,10 +668,10 @@ hasProphesied w prophet target =
 -- | Every currently-open (unfulfilled) prophecy about @target@ that is
 -- mechanically checkable at all — paired with the predicate whose future
 -- assertion about @target@ would fulfill it, and the prophecy's own event
--- id (what a 'Historian.Rules.fulfillProphecies' claim needs to point
--- back at). "Open" means no existing 'Fulfilled' fact already points at
--- that prophecy's event — mirrors 'sanctifiedBy'\/'holdsGrievance's style
--- of scanning 'wFacts' with a predicate filter.
+-- id (what a 'fulfillProphecies' claim needs to point back at). "Open"
+-- means no existing 'Fulfilled' fact already points at that prophecy's
+-- event — mirrors 'sanctifiedBy'\/'holdsGrievance's style of scanning
+-- 'wFacts' with a predicate filter.
 openProphecies :: World -> EntityId -> [(EventId, Predicate)]
 openProphecies w target =
   [ (factSource f, omen)
@@ -671,6 +681,70 @@ openProphecies w target =
   , t == target
   , not (any (\g -> factPred g == Fulfilled && factObject g == Just (REvent (factSource f))) (wFacts w))
   ]
+
+-- | Which entity a claim's predicate is "about", for prophecy-fulfillment
+-- purposes, and only for the closed set of predicates
+-- 'Historian.Corpus.prophecyFramings' actually offers as omens —
+-- everything else is 'Nothing', so a predicate nobody ever foretells can
+-- never accidentally fulfill anything. Predicates don't agree on which
+-- slot names the affected party: 'Terminated'\/'MergedInto'\/'Slain'\/
+-- 'Sanctified' put it in the subject (the dissolving society or destroyed
+-- relic, the society merging away, the slain person, the site itself),
+-- while 'SplitFrom'\/'BattledAt'\/'Heretic'\/'Shuns' put it in the object.
+--
+-- 'Terminated' covering *both* dissolution and destruction here is what
+-- the Dissolved\/Destroyed unification (CLAUDE.md work queue item 13)
+-- actually fixed in passing: before it, this function had a 'Dissolved'
+-- case but no 'Destroyed' one, so an item's destruction silently never
+-- fulfilled the "will be shattered"\/"will be melted down" prophecies
+-- 'Historian.Corpus.prophecyFramings' had already been offering for
+-- 'Item' since the relics work — a dormant bug, caught only by unifying
+-- the two predicates into one that this function couldn't help but cover.
+omenOf :: Claim -> Maybe (Predicate, EntityId)
+omenOf c = case clPred c of
+  Terminated -> Just (Terminated, clSubject c)
+  MergedInto -> Just (MergedInto, clSubject c)
+  Slain -> Just (Slain, clSubject c)
+  Sanctified -> Just (Sanctified, clSubject c)
+  SplitFrom -> (,) SplitFrom <$> objectEntity
+  BattledAt -> (,) BattledAt <$> objectEntity
+  Heretic -> (,) Heretic <$> objectEntity
+  Shuns -> (,) Shuns <$> objectEntity
+  _ -> Nothing
+  where
+    objectEntity = case clObject c of
+      Just (ROf e) -> Just e
+      _ -> Nothing
+
+-- | Checks every claim a rule is about to record against every open
+-- prophecy, and returns a 'Fulfilled' claim for each match — subject the
+-- target the prophecy was about, object 'REvent' pointing back at the
+-- prophecy's own event (the same shape 'Disputes' points at a disputed
+-- one), attestor whatever the *fulfilling* claim's own attestor was, so
+-- e.g. a dissolved society's attestor-less 'Terminated' convention flows
+-- through unchanged. Pure and safe to call with the pre-firing 'World':
+-- minting entities doesn't touch 'wFacts', so a rule that mints something
+-- earlier in its own effect before building its claims doesn't invalidate
+-- this snapshot.
+--
+-- 'nubBy' guards the one real duplicate-emission risk: a single firing
+-- like 'Historian.Rules.fireBattle' emits two 'BattledAt' claims sharing
+-- the same site object, which would otherwise double-fulfill the same
+-- prophecy. No loop risk either way: 'omenOf' never recognizes
+-- 'Prophesied', 'Disputes', 'Revives', or 'Fulfilled' itself, so a
+-- fulfillment can never cascade into fulfilling anything else — the same
+-- care that avoided reinterpretation's original meta-loop bug (CLAUDE.md
+-- bug #3).
+fulfillProphecies :: World -> [Claim] -> [Claim]
+fulfillProphecies w claims =
+  nubBy
+    (\a b -> clSubject a == clSubject b && clObject a == clObject b)
+    [ Claim target Fulfilled (Just (REvent eid)) (clAttestedBy c)
+    | c <- claims
+    , Just (p, target) <- [omenOf c]
+    , (eid, omen) <- openProphecies w target
+    , omen == p
+    ]
 
 -- | Whether @a@ currently holds a grievance against @b@: facts are
 -- newest-first, so the head of the (Grievance-or-Reconciled) facts running

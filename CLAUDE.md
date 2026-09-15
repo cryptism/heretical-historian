@@ -735,6 +735,31 @@ outcome here, not a regression — each surviving `aggregate` entry (and
 each new `directRuleChecks` one) now earns its keep for a reason named
 in the code, not by inertia.
 
+**Rendering moved out of `Historian.Rules` entirely, at the user's
+explicit request for a clean separation between deciding what happened
+and recording it.** Every `fireX` used to end with its own `record kind
+(render w outcome) claims` call; now every `fireX` returns `Chronicle
+[Outcome]` — plain data, no `record`, no `render` — and one function,
+`Historian.Render.commitOutcomes`, is the only place `record` and
+`render` are ever called together, invoked by `Historian.Rules.stepWith`/
+`generate`/`generateViaEngine` and by `Historian.Engine.intelligentStep`
+at the point each actually commits a result. This is a bigger move than
+it sounds: `outcomeKind`/`outcomeClaims` (and every `xClaims` function)
+moved from `Historian.Rules` into `Historian.Render` alongside `render`,
+since `commitOutcomes` has to be reachable from `Historian.Engine`,
+which cannot import `Historian.Rules` — `Historian.Render` is now
+genuinely "`Outcome` → anything," `Historian.Rules` is purely "`World` →
+`Outcome`." See docs/DESIGN.md Decision 24 for the full account,
+including a real rename-ordering bug this refactor would have baked in
+permanently if not caught first (fixed by adding `lcSocietyName :: Text`
+to `LeadershipChange`, captured before any rename decision, so
+`Coronation`/`TrialByCombat`/`Coup` no longer rely on `render`'s timing
+relative to `record` to show a society's pre-rename name correctly).
+Verified against a real run, not just written: `--json` output for five
+seeds — including one found by scanning specifically because it hits a
+coronation — is byte-for-byte identical before and after, and `cabal
+test` stayed at exactly 187 checks throughout.
+
 Bugs found along the way, fixed, and noted here so nobody reintroduces them:
 
 1. **`markovWord`'s local `go` had no type signature.** Without one, GHC
@@ -795,6 +820,17 @@ Bugs found along the way, fixed, and noted here so nobody reintroduces them:
    `Historian.World` accordingly. Mentioned here only so nobody re-derives
    the fixed-12-month version from first principles; there was never a
    published version of it to contradict.
+8. **A missed call site after `fireX`'s return type changed to `Chronicle
+   [Outcome]` is a silent runtime failure, not a compile error.**
+   `execState`/`evalState` are polymorphic in their action's result type,
+   so `execState (fireSchism w s mh) w` still type-checks even when the
+   returned `[Outcome]` is simply discarded — it just never reaches
+   `commitOutcomes`, so nothing gets recorded. Caught `test/Spec.hs`'s
+   `engineWorld` and three direct `fireSchism`/`fireSanctify` calls
+   building `richWorld` this way (all fixed with `>>= commitOutcomes`).
+   If you add a new direct `fireX`/`genesis`/`intelligentStep` call
+   anywhere, check it's actually wired to `commitOutcomes` — the compiler
+   will not tell you if it isn't.
 
 Run before adding features:
 
@@ -850,26 +886,33 @@ Break any of these and the project stops being what it is:
 
 ## Architecture in one paragraph
 
-A `Rule` is `World -> [Chronicle ()]`: the precondition returns one
+A `Rule` is `World -> [Chronicle [Outcome]]`: the precondition returns one
 *already-applied* effect per satisfying assignment of its variables, so the
-binding lives in the closure and never needs to be stored or typed. The list
-monad does the unification. `step` pools candidates across all rules, picks one
-uniformly, advances the epoch, and fires it — which means rules self-weight by
-how much of the current world they match. `Chronicle = State World`; `World`
-holds entities, a newest-first fact list, events, per-culture Markov chains,
-and the RNG.
+binding lives in the closure and never needs to be stored or typed, and each
+effect hands back the `Outcome`(s) it decided on as plain data — it never
+calls `record` itself. The list monad does the unification. `step` pools
+candidates across all rules, picks one uniformly, advances the epoch, fires
+it, and commits whatever `Outcome`s came back — which means rules self-weight
+by how much of the current world they match. `Chronicle = State World`;
+`World` holds entities, a newest-first fact list, events, per-culture Markov
+chains, and the RNG.
 
-Layers: `Historian.Types` + `Historian.World` (store and queries) → `Historian.Rules`
-(preconditions and effects) → `Historian.Markov` + `Historian.Corpus` +
-`Historian.Render` (surface). `Historian.Render` is also where a fired
-rule's prose gets built, not just where the stored chronicle/dossier gets
-displayed afterward — `Historian.Rules` imports it for that. Every
-`renderX` function there is pure (`World` plus a small outcome record in,
-`Text` out); a rule's effect still does every RNG/minting/fact-building
-step and hands the *resolved* result across as data, once, right before
-its one `record` call. This doesn't change when prose is computed (still
-exactly once, at fire time — invariant 3) or what it says, only where the
-code deciding the wording lives.
+Layers: `Historian.Types` + `Historian.World` (store and queries) →
+`Historian.Render` (`Outcome` → text, claims, and event-kind tag) →
+`Historian.Engine` (the declarative rule-matching layer, which needs
+`Outcome`/`commitOutcomes` from `Render` but not `Rules`) → `Historian.Rules`
+(preconditions and effects, deciding *what happened* as an `Outcome` value
+and nothing more) → `Historian.Markov` + `Historian.Corpus` (surface
+vocabulary). Rendering a fired rule's prose used to happen inline inside
+each rule's own effect; it doesn't any more (see docs/DESIGN.md Decision
+24) — every `fireX` ends by returning `Chronicle [Outcome]`, and
+`Historian.Render.commitOutcomes` is the *only* place `record` and
+`render` are ever called together, invoked from `step`/`generate`
+(`Historian.Rules`) and from `intelligentStep` (`Historian.Engine`) at the
+point each actually commits a result. This doesn't change when prose is
+computed (still exactly once, at fire time — invariant 3) or what it
+says, only which module decides the wording and where the commit itself
+happens.
 
 ## Conventions
 

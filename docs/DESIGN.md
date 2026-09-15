@@ -1641,3 +1641,95 @@ free reads off `richWorld`, 12 real firings via `intelligentStep`, 1
 RNG-trial check), all passing on the first real run. Fewer checks doing
 a more precise job is the intended outcome of this item, not a
 regression to explain away.
+
+## Decision 24: rendering moved out of `Historian.Rules` entirely
+
+**Needed for:** the user's explicit request, after the render-unification
+work that produced `Historian.Render.Outcome`/`render`, to go further —
+a *clean separation* between deciding what a rule did and turning that
+into a permanent record. Every `fireX` still ended by calling `record
+kind (render w outcome) claims` itself; deciding, wording, and committing
+were three different concerns living in the same function call.
+
+**Chosen: every `fireX` returns `Chronicle [Outcome]` — plain data, no
+`record`, no `render` — and one function, `Historian.Render.
+commitOutcomes`, is the only place `record` and `render` are ever called
+together, at the point an evaluation step actually commits a result.**
+`Historian.Rules.stepWith`/`generate`/`generateViaEngine` call it right
+where they used to call `record`; `Historian.Engine.intelligentStep`
+calls it too, immediately after `rsFire`, since it's an evaluation step
+in its own right (the engine's single-rule/single-entity counterpart) —
+kept there rather than lifted into `stepWith` itself, which is why almost
+none of `test/Spec.hs`'s existing `intelligentStep`-based checks needed
+to change. `maybeDispute` — previously calling `record` for its own
+second event — now just returns `[Dispute o]` or `[]`, appended to the
+caller's own returned list (`(Schism outcome :) <$> maybeDispute s`),
+preserving primary-then-dispute `EventId` ordering.
+
+**A structural consequence, not a side detail: `outcomeKind`/
+`outcomeClaims` (and the claims-building `xClaims` functions they
+dispatch to) moved from `Historian.Rules` into `Historian.Render`
+alongside `render`.** `commitOutcomes` needs all three (`outcomeKind`,
+`outcomeClaims`, `render`) to turn an `Outcome` into a `record` call, and
+it has to be reachable from `Historian.Engine`, which cannot import
+`Historian.Rules` (Decision 23's own stated reason: `Rules` references
+specific `fireX` functions `Engine` must not depend on) — so
+`commitOutcomes` had to live somewhere `Engine` *can* reach.
+`Historian.Render` already only imports `Historian.Types`/
+`Historian.World`, so `Engine` importing it for `Outcome`/`commitOutcomes`
+adds no cycle; `Historian.Rules` still sits above both. The practical
+effect: `Historian.Render` is now "`Outcome` → anything" (text *and*
+claims *and* the event-kind tag), and `Historian.Rules` is purely
+"`World` → `Outcome`" — decide, mint, roll dice, never touch a `record`
+call. `grep -c "render " src/Historian/Rules.hs` is `0`. Two small pure
+helpers moved to `Historian.World` for the same reachability reason:
+`regardClaim` (needed by `Historian.Render`'s `theftClaims`/`giftClaims`,
+also still used by `Historian.Rules`'s own regard-reaction logic) and
+`omenOf`/`fulfillProphecies` (needed by `commitOutcomes`, and already
+pure `World`/`Claim` functions with no `Rules`-specific dependency —
+`openProphecies`, which they already call, already lived in `World`).
+
+**A real ordering bug this refactor would otherwise have baked in
+permanently, caught before it shipped rather than after.**
+`Coronation`/`TrialByCombat`/`Coup` used to render a society's *old* name
+correctly only because `render` happened to be called on a `World`
+snapshot taken *before* that same event's own `Named` claim was
+committed — a timing accident, not a design. Once rendering is deferred
+to `commitOutcomes` (which runs after minting but has no reason to run
+before or after any particular claim), every `nameIn` lookup on that
+society would see the *new* name instead everywhere the old reading was
+wanted, silently turning "Old Name is renamed New Name" into "New Name is
+renamed New Name." Fixed by adding `lcSocietyName :: Text` to
+`LeadershipChange`, captured once in `fireLeadershipChange` from the
+`World` it's given before anything about the transition is decided —
+correctness no longer depends on *when* `render` runs relative to
+`record` at all, which is what actually makes the deferral safe rather
+than merely convenient.
+
+**One more consequence of the same "`Outcome` is exactly the recordable
+set" discipline: `RelicRecognition`/`DyingWordsSpoken`/`Renaming`, folded
+into `Outcome` earlier in the same conversation, came back out.**
+`RelicMoment`/`DyingWords`/`LeadershipChange` are text fragments spliced
+into a *parent* outcome's own prose (`relicRecognitionText`/
+`dyingWordsText`/`renameText`, three small standalone functions again) —
+they're never themselves returned by a `fireX` or passed to
+`commitOutcomes`, so keeping them as `Outcome` constructors would have
+left `outcomeKind`/`outcomeClaims` needing meaningless cases for values
+that can never actually reach them.
+
+**Verified as a true refactor, not just asserted:** captured `--json`
+output for five seeds before touching anything (including seed 77 at 200
+steps, found by scanning specifically because it hits a coronation, the
+sharpest exercise of the rename-ordering fix) and confirmed byte-for-byte
+identical output after every change — same facts, same events, same
+prose, in the same order. `cabal test` stayed at exactly 187 checks
+throughout. One real regression caught and fixed during the work, not
+after: `test/Spec.hs`'s `engineWorld` and three direct `fireSchism`/
+`fireSanctify` calls building `richWorld` relied on those functions
+self-recording; missing the fix (`>>= commitOutcomes` at each site) is a
+silent runtime failure, not a compile error — `execState` is polymorphic
+in its action's result type, so a `Chronicle [Outcome]` action whose
+result is simply discarded still type-checks, it just never calls
+`record`. Caught immediately by `cabal test` itself (a check failure,
+then a crash from a downstream `firstOrErr` finding nothing), not by
+inspection.

@@ -19,6 +19,8 @@
 -- how to say it.
 module Historian.Render where
 
+import Control.Monad (forM_)
+import Control.Monad.State.Strict (get)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
@@ -156,6 +158,13 @@ dossier w i =
 data FoundingOutcome = FoundingOutcome
   { fdSociety :: EntityId
   , fdFounder :: EntityId
+  , fdExtraClaims :: [Claim]
+  -- ^ The founding society's own 'patronClaims' — claims-only, 'render'
+  -- never reads it. Carried on the outcome itself (the same idiom as
+  -- 'msExtraClaims'/'mrExtraClaims'/…) rather than re-derived from a
+  -- concept id at commit time, since nothing about the freshly-minted
+  -- patron concept is looked-up-able via 'World' before its own claims
+  -- are recorded.
   }
 
 data SchismOutcome = SchismOutcome
@@ -166,6 +175,9 @@ data SchismOutcome = SchismOutcome
   -- member — the free variable 'Historian.Rules.ruleSchism' fills in
   -- itself.
   , scSplinter :: EntityId
+  , scExtraClaims :: [Claim]
+  -- ^ The splinter society's own 'patronClaims' — see 'fdExtraClaims' for
+  -- why this lives on the outcome rather than being re-derived later.
   }
 
 -- | Shared by battle, assassination, and the plain ("saint") miracle
@@ -189,23 +201,33 @@ data RelicMoment = RelicMoment
 -- fray.", "was found at the scene.", "was witnessed there.", one per
 -- calling rule) followed by its recognition clause, if this is the
 -- moment it's first recognized at all.
--- | Only fires for a freshly-minted item ('rmFresh'): an already-established
--- relic reacting via 'regardReactions' already had its recognition moment
--- whenever *it* was first minted, so this isn't repeated for it. The
--- recognition clause itself is now 'render's own 'RelicRecognition' case —
--- see that for the user's explicit enshrine\/safeguard wording.
 relicMomentText :: World -> Text -> RelicMoment -> Text
 relicMomentText w presenceClause rm =
-  T.concat [" ", nameIn w (rmItem rm), " ", presenceClause, render w (RelicRecognition rm)]
+  T.concat [" ", nameIn w (rmItem rm), " ", presenceClause, relicRecognitionText w rm]
+
+-- | The user's explicit wording for a relic gaining its first-ever regard:
+-- hallowed relics are enshrined, cursed ones kept safe from rival cults —
+-- at any site the reacting cult already venerates, falling back to
+-- 'rmFallbackSite' (the event's own site, where it has one). Only fires
+-- for a freshly-minted item ('rmFresh'): an already-established relic
+-- reacting via 'regardReactions' already had its recognition moment
+-- whenever *it* was first minted, so this isn't repeated for it. A plain
+-- function, not an 'Outcome' case: this is a text fragment spliced into a
+-- *parent* outcome's own prose, never independently recorded on its own.
+relicRecognitionText :: World -> RelicMoment -> Text
+relicRecognitionText w rm
+  | not (rmFresh rm) = ""
+  | otherwise = case [c | c <- rmClaims rm, clObject c == Just (ROf (rmItem rm)), clPred c `elem` [Venerates, Shuns]] of
+      (c : _) -> enshrineOrSafeguard w (clSubject c) (rmItem rm) (if clPred c == Venerates then Venerated else Shunned) (rmFallbackSite rm)
+      [] -> ""
 
 -- | The user's explicit wording for a cult's regard toward a relic:
 -- hallowed relics are enshrined, cursed ones kept safe from rival cults —
 -- at any site the cult already venerates, falling back to @fallbackSite@
 -- if it venerates none yet, or narrating nothing at all if neither
 -- exists. Shared by a freshly-minted item's first recognition
--- ('render's own 'RelicRecognition' case) and theft ('render's own
--- 'Theft' case), where the relic is already established but changing
--- hands.
+-- ('relicRecognitionText') and theft (the 'Theft' case of 'render'),
+-- where the relic is already established but changing hands.
 enshrineOrSafeguard :: World -> EntityId -> EntityId -> Regard -> Maybe EntityId -> Text
 enshrineOrSafeguard w cult item regard fallbackSite =
   case [st | st <- entitiesOf Site w, venerates w cult st] ++ maybe [] pure fallbackSite of
@@ -233,6 +255,18 @@ data DyingWords = DyingWords
   , dwClaims :: [Claim]
   }
 
+dyingWordsText :: World -> DyingWords -> Text
+dyingWordsText w dw =
+  T.concat
+    [ " With their last breath, "
+    , nameIn w (dwSpeaker dw)
+    , if dwCurse dw
+        then T.concat [" cursed ", nameIn w (dwTarget dw), ", that they "]
+        else T.concat [" prophesied that ", nameIn w (dwTarget dw), " "]
+    , dwFraming dw
+    , "."
+    ]
+
 -- | Shared by all three leadership-transition rules
 -- ('Historian.Rules.fireCoronation'\/'fireTrialByCombat'\/'fireCoup', via
 -- 'Historian.Rules.fireLeadershipChange') — the same "one sub-term, many
@@ -242,18 +276,33 @@ data DyingWords = DyingWords
 -- rule triggered it.
 data LeadershipChange = LeadershipChange
   { lcSociety :: EntityId
+  , lcSocietyName :: Text
+  -- ^ The society's name as it stood going into this transition, captured
+  -- once by 'Historian.Rules.fireLeadershipChange' from the 'World' it's
+  -- given before anything about this transition is decided. Deliberately
+  -- *not* left to be looked up later via 'nameIn' at render time: once
+  -- rendering happens after this event's own claims (including a possible
+  -- 'Named' claim) are committed, 'nameIn' on 'lcSociety' would return the
+  -- *new* name instead, breaking the "Old Name is renamed New Name"
+  -- reading every caller wants. Storing it as plain data instead of
+  -- deriving it from timing is what makes 'render' safe to call whenever a
+  -- caller likes, not just in the narrow window before commit.
   , lcOldLeader :: Maybe EntityId
   , lcNewLeader :: EntityId
   , lcRenamed :: Maybe Text
   -- ^ The freshly generated name, only when the new leader's own rolled
   -- disposition toward the patron concept differed from the society's
-  -- prior one. Raw 'Text', not looked up via 'nameIn': the 'Named' claim
-  -- this describes hasn't been recorded into the 'World' yet at render
-  -- time, so 'nameIn' on 'lcSociety' still returns its *old* name here —
-  -- which is exactly the "Old Name is renamed New Name" reading 'render's
-  -- own 'Renaming' case wants.
+  -- prior one.
   , lcClaims :: [Claim]
   }
+
+-- | The rename clause alone, if any — spliced into each calling rule's own
+-- "so-and-so takes power" sentence rather than returned as a full one,
+-- since the three rules frame the transition itself quite differently.
+renameText :: LeadershipChange -> Text
+renameText lc = case lcRenamed lc of
+  Nothing -> ""
+  Just newName -> T.concat [" In token of the change, ", lcSocietyName lc, " takes a new name: ", newName, "."]
 
 data BattleOutcome = BattleOutcome
   { btVictor :: EntityId
@@ -377,7 +426,10 @@ data AssassinateOutcome = AssassinateOutcome
 -- other. A sum type rather than one record with a spare field: the two
 -- shapes genuinely have different arity, not just different values.
 data MergerOutcome
-  = MergerFounding EntityId EntityId EntityId
+  = MergerFounding EntityId EntityId EntityId [Claim]
+  -- ^ Parent A, parent B, the brand-new society, and its own
+  -- 'patronClaims' — see 'fdExtraClaims' for why the claims travel on the
+  -- outcome itself.
   | MergerAbsorption EntityId EntityId
 
 newtype DissolveOutcome = DissolveOutcome
@@ -423,22 +475,19 @@ data CoupOutcome = CoupOutcome
   , cpLeadership :: LeadershipChange
   }
 
--- | Every outcome record above, wrapped as one sum type — what a fired
--- rule actually hands to 'record' has always been "one of these twenty
--- shapes", so this makes that closed set explicit rather than leaving it
+-- | Every outcome a rule can hand to 'Historian.Rules.commitOutcomes' to
+-- become a permanent 'Event', wrapped as one sum type — this is the
+-- closed set 'record' ever gets called against, made explicit rather than
 -- implicit in "one @renderX@ per rule". 'MergerOutcome' nests rather than
 -- flattens: it was already its own two-constructor sum (a brand-new
 -- society absorbing both parents, or one parent absorbing the other), and
 -- that distinction belongs to the merger outcome itself, not to this type.
 --
--- 'RelicRecognition'\/'DyingWordsSpoken'\/'Renaming' are the three
--- sub-terms ('RelicMoment'\/'DyingWords'\/'LeadershipChange') that used to
--- have their own standalone @World -> T -> Text@ renderer
--- ('relicRecognitionText'\/'dyingWordsText'\/'renameText') outside this
--- type — exactly the same shape as the twenty rule outcomes above, just
--- one level down (each is shared by more than one rule's outcome rather
--- than belonging to a single one), so they belong in the same closed set
--- rather than sitting apart from it.
+-- Deliberately *not* included here: 'RelicMoment'\/'DyingWords'\/
+-- 'LeadershipChange' are sub-terms spliced into a *parent* outcome's own
+-- prose ('relicRecognitionText'\/'dyingWordsText'\/'renameText', plain
+-- functions below) — they're never independently recorded, so they don't
+-- belong in "the set of things a rule can hand to commit."
 data Outcome
   = Founding FoundingOutcome
   | Schism SchismOutcome
@@ -460,9 +509,6 @@ data Outcome
   | Coronation CoronationOutcome
   | TrialByCombat TrialByCombatOutcome
   | Coup CoupOutcome
-  | RelicRecognition RelicMoment
-  | DyingWordsSpoken DyingWords
-  | Renaming LeadershipChange
 
 -- | The one generic renderer every fired rule's effect calls, replacing
 -- the twenty separate @renderX@ functions that used to sit one per
@@ -492,7 +538,7 @@ render w = \case
           Nothing -> "."
           Just p -> T.concat ["; ", nameIn w p, " was left among the dead."]
       , maybe "" (relicMomentText w "was borne into the fray.") (btRelic o)
-      , maybe "" (render w . DyingWordsSpoken) (btDyingWords o)
+      , maybe "" (dyingWordsText w) (btDyingWords o)
       ]
   Dispute o ->
     T.concat
@@ -555,12 +601,12 @@ render w = \case
     T.concat
       [ core
       , maybe "" (relicMomentText w "was found at the scene.") (asRelic o)
-      , maybe "" (render w . DyingWordsSpoken) (asDyingWords o)
+      , maybe "" (dyingWordsText w) (asDyingWords o)
       ]
     where
       core = T.concat [nameIn w (asKillers o), "'s knives found ", nameIn w (asFigure o), " of ", sN, " in the dark, and left ", sN, " a body to bury."]
       sN = nameIn w (asSociety o)
-  Merger (MergerFounding a b new) ->
+  Merger (MergerFounding a b new _) ->
     T.concat [nameIn w a, " and ", nameIn w b, " dissolved into a single body, taking the name ", nameIn w new, "."]
   Merger (MergerAbsorption absorbed survivor) ->
     T.concat [nameIn w absorbed, " was absorbed into ", nameIn w survivor, ", and ceased to speak with its own voice."]
@@ -569,11 +615,11 @@ render w = \case
   Prophesy o -> T.concat [nameIn w (pyProphet o), " prophesies that ", nameIn w (pyTarget o), " ", pyFraming o, "."]
   Coronation o ->
     T.concat
-      [ nameIn w (lcSociety (crLeadership o))
+      [ lcSocietyName (crLeadership o)
       , " coronates "
       , nameIn w (lcNewLeader (crLeadership o))
       , " as its leader."
-      , render w (Renaming (crLeadership o))
+      , renameText (crLeadership o)
       , case crRivals o of
           [] -> ""
           rivals ->
@@ -589,40 +635,281 @@ render w = \case
       , " and "
       , nameIn w (tcRival o)
       , " settle their rivalry in trial by combat before "
-      , nameIn w (tcSociety o)
+      , tcSocietyName
       , "."
       , case tcSlain o of
           [d] -> T.concat [" ", nameIn w d, " is left dead on the ground."]
           [d1, d2] -> T.concat [" ", nameIn w d1, " and ", nameIn w d2, " fall together, and neither is left to claim victory."]
           _ -> ""
-      , maybe "" (\lc -> T.concat [" ", nameIn w (lcNewLeader lc), " is proclaimed leader of ", nameIn w (tcSociety o), " in the aftermath."]) (tcLeadership o)
-      , maybe "" (render w . Renaming) (tcLeadership o)
+      , maybe "" (\lc -> T.concat [" ", nameIn w (lcNewLeader lc), " is proclaimed leader of ", tcSocietyName, " in the aftermath."]) (tcLeadership o)
+      , maybe "" renameText (tcLeadership o)
       ]
+    where
+      -- The pre-transition name whenever a leadership change actually
+      -- happened this event (which may also rename the society) — plain
+      -- 'nameIn' otherwise, since there's no same-event rename claim to
+      -- worry about when both combatants die and 'tcLeadership' is
+      -- 'Nothing'.
+      tcSocietyName = maybe (nameIn w (tcSociety o)) lcSocietyName (tcLeadership o)
   Coup o ->
     T.concat
       [ nameIn w (lcNewLeader (cpLeadership o))
       , " moves against "
       , nameIn w (cpDeposed o)
       , ", and seizes leadership of "
-      , nameIn w (lcSociety (cpLeadership o))
+      , lcSocietyName (cpLeadership o)
       , " without a drop of blood spilled."
-      , render w (Renaming (cpLeadership o))
+      , renameText (cpLeadership o)
       ]
-  RelicRecognition rm
-    | not (rmFresh rm) -> ""
-    | otherwise -> case [c | c <- rmClaims rm, clObject c == Just (ROf (rmItem rm)), clPred c `elem` [Venerates, Shuns]] of
-        (c : _) -> enshrineOrSafeguard w (clSubject c) (rmItem rm) (if clPred c == Venerates then Venerated else Shunned) (rmFallbackSite rm)
-        [] -> ""
-  DyingWordsSpoken dw ->
-    T.concat
-      [ " With their last breath, "
-      , nameIn w (dwSpeaker dw)
-      , if dwCurse dw
-          then T.concat [" cursed ", nameIn w (dwTarget dw), ", that they "]
-          else T.concat [" prophesied that ", nameIn w (dwTarget dw), " "]
-      , dwFraming dw
-      , "."
-      ]
-  Renaming lc -> case lcRenamed lc of
-    Nothing -> ""
-    Just newName -> T.concat [" In token of the change, ", nameIn w (lcSociety lc), " takes a new name: ", newName, "."]
+
+-- Outcome claims and commit ------------------------------------------------
+--
+-- The other half of "'Outcome' -> anything", alongside 'render': every
+-- @xClaims@ function a fired rule's claims list used to be built from
+-- lives here now, next to the record types they read — 'Historian.Rules'
+-- only ever constructs an 'Outcome' and hands it off; it never builds a
+-- claims list by hand any more. 'outcomeKind' and 'outcomeClaims' are the
+-- two dispatchers 'commitOutcomes' needs to turn an 'Outcome' into an
+-- actual 'record' call — 'commitOutcomes' itself is the *only* place
+-- 'record' and 'render' are ever called together.
+
+foundingClaims :: FoundingOutcome -> [Claim]
+foundingClaims o =
+  [ Claim (fdSociety o) Founded Nothing (Just (fdSociety o))
+  , Claim (fdFounder o) LeaderOf (Just (ROf (fdSociety o))) (Just (fdSociety o))
+  , Claim (fdFounder o) Leads (Just (ROf (fdSociety o))) (Just (fdSociety o))
+  ]
+    ++ fdExtraClaims o
+
+schismClaims :: SchismOutcome -> [Claim]
+schismClaims o =
+  [ Claim (scSplinter o) SplitFrom (Just (ROf (scParent o))) (Just (scSplinter o))
+  , Claim (scHeresiarch o) LeaderOf (Just (ROf (scSplinter o))) (Just (scSplinter o))
+  , Claim (scHeresiarch o) Leads (Just (ROf (scSplinter o))) (Just (scSplinter o))
+  , Claim (scSplinter o) Grievance (Just (ROf (scParent o))) (Just (scSplinter o))
+  , Claim (scParent o) Grievance (Just (ROf (scSplinter o))) (Just (scParent o))
+  ]
+    ++ scExtraClaims o
+
+battleClaims :: BattleOutcome -> [Claim]
+battleClaims o =
+  [ Claim (btVictor o) BattledAt (Just (ROf (btSite o))) (Just (btVictor o))
+  , Claim (btVanquished o) BattledAt (Just (ROf (btSite o))) (Just (btVanquished o))
+  , -- The loser seeks a rematch; the winner considers the matter settled,
+    -- at least from their own side. This is what lets 'grievancePairs'
+    -- eventually stop recurring for a pair instead of scanning an
+    -- ever-growing, never-pruned log.
+    Claim (btVanquished o) Grievance (Just (ROf (btVictor o))) (Just (btVanquished o))
+  , Claim (btVictor o) Reconciled (Just (ROf (btVanquished o))) (Just (btVictor o))
+  ]
+    ++ [Claim p Slain (Just (ROf (btVictor o))) (Just (btVanquished o)) | Just p <- [btVictim o]]
+    ++ maybe [] rmClaims (btRelic o)
+    ++ maybe [] dwClaims (btDyingWords o)
+
+disputeClaims :: DisputeOutcome -> [Claim]
+disputeClaims o = [Claim (dsDisputant o) Disputes (Just (REvent (evId (dsDisputed o)))) (Just (dsDisputant o))]
+
+sanctifyClaims :: SanctifyOutcome -> [Claim]
+sanctifyClaims o =
+  [ Claim (sySite o) Sanctified (Just (ROf (syClaimant o))) (Just (syClaimant o))
+  , Claim (syClaimant o) Venerates (Just (ROf (sySite o))) (Just (syClaimant o))
+  ]
+
+defileClaims :: DefileOutcome -> [Claim]
+defileClaims o =
+  [ Claim (dfSite o) Sanctified (Just (ROf (dfClaimant o))) (Just (dfClaimant o))
+  , Claim (dfClaimant o) Venerates (Just (ROf (dfSite o))) (Just (dfClaimant o))
+  , Claim (dfDeposed o) Grievance (Just (ROf (dfClaimant o))) (Just (dfDeposed o))
+  ]
+
+miracleSaintClaims :: MiracleSaintOutcome -> [Claim]
+miracleSaintClaims o =
+  [ Claim (msSite o) Sanctified (Just (ROf (msSociety o))) (Just (msSociety o))
+  , Claim (msSociety o) Venerates (Just (ROf (msSaint o))) (Just (msSociety o))
+  ]
+    ++ msExtraClaims o
+
+miracleRelicClaims :: MiracleRelicOutcome -> [Claim]
+miracleRelicClaims o =
+  [ Claim (mrSite o) Sanctified (Just (ROf (mrSociety o))) (Just (mrSociety o))
+  , Claim (mrSociety o) Venerates (Just (ROf (mrRelic o))) (Just (mrSociety o))
+  ]
+    ++ mrExtraClaims o
+
+miracleOnClaims :: MiracleOnOutcome -> [Claim]
+miracleOnClaims o =
+  [ Claim (moSite o) Sanctified (Just (ROf (moSociety o))) (Just (moSociety o))
+  , Claim (moSociety o) Venerates (Just (ROf (moActor o))) (Just (moSociety o))
+  , Claim (moSociety o) Venerates (Just (ROf (moTarget o))) (Just (moSociety o))
+  ]
+    ++ moExtraClaims o
+
+theftClaims :: TheftOutcome -> [Claim]
+theftClaims o =
+  [ regardClaim (thThief o) (thItem o) (thRegard o)
+  , Claim (thKeeper o) Grievance (Just (ROf (thThief o))) (Just (thKeeper o))
+  ]
+
+giftClaims :: GiftOutcome -> [Claim]
+giftClaims o =
+  regardClaim (giReceiver o) (giItem o) (giRegard o)
+    : [Claim (giReceiver o) Reconciled (Just (ROf (giGiver o))) (Just (giReceiver o)) | giReconciled o]
+
+destroyRelicClaims :: DestroyRelicOutcome -> [Claim]
+destroyRelicClaims o =
+  Claim (drItem o) Terminated Nothing (Just (drKeeper o))
+    : [Claim v Grievance (Just (ROf (drKeeper o))) (Just v) | v <- drMourners o]
+
+assassinateClaims :: AssassinateOutcome -> [Claim]
+assassinateClaims o =
+  [ Claim (asFigure o) Slain (Just (ROf (asKillers o))) (Just (asSociety o))
+  , Claim (asSociety o) Grievance (Just (ROf (asKillers o))) (Just (asSociety o))
+  , Claim (asSociety o) Venerates (Just (ROf (asFigure o))) (Just (asSociety o))
+  , Claim (asKillers o) Heretic (Just (ROf (asFigure o))) (Just (asKillers o))
+  ]
+    ++ maybe [] rmClaims (asRelic o)
+    ++ maybe [] dwClaims (asDyingWords o)
+
+-- | Every living member of @from@ transfers to @to@: a fresh 'LeaderOf',
+-- attested by @to@, is what "current member" already means everywhere else
+-- (latest-fact-wins via 'allegiances'), so this is the whole mechanism.
+transferClaims :: World -> EntityId -> EntityId -> [Claim]
+transferClaims w from to =
+  [Claim p LeaderOf (Just (ROf to)) (Just to) | p <- livingMembers w from]
+
+-- | Every grievance @from@ currently holds against a third party is
+-- re-asserted from @to@, attested by @to@ — the survivor inherits the
+-- grudge, not just the members.
+inheritedGrievanceClaims :: World -> EntityId -> EntityId -> [Claim]
+inheritedGrievanceClaims w from to =
+  [ Claim to Grievance (Just (ROf c)) (Just to)
+  | c <- entitiesOf Society w
+  , c /= from
+  , c /= to
+  , holdsGrievance w from c
+  ]
+
+mergerClaims :: World -> MergerOutcome -> [Claim]
+mergerClaims w (MergerFounding a b new extra) =
+  [ Claim a MergedInto (Just (ROf new)) (Just a)
+  , Claim b MergedInto (Just (ROf new)) (Just b)
+  ]
+    ++ transferClaims w a new
+    ++ transferClaims w b new
+    ++ inheritedGrievanceClaims w a new
+    ++ inheritedGrievanceClaims w b new
+    ++ extra
+mergerClaims w (MergerAbsorption absorbed survivor) =
+  Claim absorbed MergedInto (Just (ROf survivor)) (Just absorbed)
+    : transferClaims w absorbed survivor
+    ++ inheritedGrievanceClaims w absorbed survivor
+
+dissolveClaims :: DissolveOutcome -> [Claim]
+dissolveClaims o = [Claim (dsSociety o) Terminated Nothing Nothing]
+
+reviveClaims :: ReviveOutcome -> [Claim]
+reviveClaims o = [Claim (rvReviver o) Revives (Just (ROf (rvDefunct o))) (Just (rvReviver o))]
+
+prophesyClaims :: ProphesyOutcome -> [Claim]
+prophesyClaims o = [Claim (pyProphet o) Prophesied (Just (ROmen (pyTarget o) (pyOmen o))) (Just (pyProphet o))]
+
+-- | Extracted from 'Historian.Rules.fireCoronation''s own inline claims —
+-- @candidate@ there is always 'lcNewLeader' of its own 'crLeadership'.
+coronationClaims :: CoronationOutcome -> [Claim]
+coronationClaims o =
+  lcClaims (crLeadership o)
+    ++ [Claim r Rivalry (Just (ROf (lcNewLeader (crLeadership o)))) (Just r) | r <- crRivals o]
+
+-- | Extracted from 'Historian.Rules.fireTrialByCombat''s own inline
+-- claims — @slainClaims@ there named which combatant killed which
+-- directly off the roll; reconstructed here from 'tcSlain' plus whichever
+-- of 'tcChallenger'\/'tcRival' isn't the slain one, since that's all the
+-- outcome itself carries.
+trialByCombatClaims :: TrialByCombatOutcome -> [Claim]
+trialByCombatClaims o =
+  [Claim p Slain (Just (ROf (theOther p))) (Just (tcSociety o)) | p <- tcSlain o]
+    ++ [ Claim (tcChallenger o) Reconciled (Just (ROf (tcRival o))) (Just (tcSociety o))
+       , Claim (tcRival o) Reconciled (Just (ROf (tcChallenger o))) (Just (tcSociety o))
+       ]
+    ++ maybe [] lcClaims (tcLeadership o)
+  where
+    theOther p = if p == tcChallenger o then tcRival o else tcChallenger o
+
+-- | Extracted from 'Historian.Rules.fireCoup''s own inline claims —
+-- @usurper@ there is always 'lcNewLeader' of its own 'cpLeadership'.
+coupClaims :: CoupOutcome -> [Claim]
+coupClaims o =
+  lcClaims (cpLeadership o)
+    ++ [ Claim (cpDeposed o) Grievance (Just (ROf (lcNewLeader (cpLeadership o)))) (Just (cpDeposed o))
+       , Claim (lcNewLeader (cpLeadership o)) Reconciled (Just (ROf (cpDeposed o))) (Just (lcNewLeader (cpLeadership o)))
+       ]
+
+-- | The event-kind tag each 'record' call used to pass as a literal
+-- string — now a total function of the constructor.
+outcomeKind :: Outcome -> Text
+outcomeKind = \case
+  Founding _ -> "founding"
+  Schism _ -> "schism"
+  Battle _ -> "battle"
+  Dispute _ -> "reinterpretation"
+  Sanctify _ -> "sanctification"
+  Defile _ -> "purification"
+  MiracleSaint _ -> "miracle"
+  MiracleRelic _ -> "miracle"
+  MiracleOn _ -> "miracle"
+  Theft _ -> "theft"
+  Gift _ -> "gift"
+  DestroyRelic _ -> "destruction"
+  Assassinate _ -> "assassination"
+  Merger _ -> "merger"
+  Dissolve _ -> "dissolution"
+  Revive _ -> "revival"
+  Prophesy _ -> "prophecy"
+  Coronation _ -> "coronation"
+  TrialByCombat _ -> "trial-by-combat"
+  Coup _ -> "coup"
+
+-- | Dispatches to the @xClaims@ function above matching each constructor.
+-- Takes 'World' only because 'mergerClaims' genuinely needs it
+-- ('transferClaims'\/'inheritedGrievanceClaims' look up the pre-existing
+-- parents' current members\/grievances) — every other case ignores it.
+outcomeClaims :: World -> Outcome -> [Claim]
+outcomeClaims w = \case
+  Founding o -> foundingClaims o
+  Schism o -> schismClaims o
+  Battle o -> battleClaims o
+  Dispute o -> disputeClaims o
+  Sanctify o -> sanctifyClaims o
+  Defile o -> defileClaims o
+  MiracleSaint o -> miracleSaintClaims o
+  MiracleRelic o -> miracleRelicClaims o
+  MiracleOn o -> miracleOnClaims o
+  Theft o -> theftClaims o
+  Gift o -> giftClaims o
+  DestroyRelic o -> destroyRelicClaims o
+  Assassinate o -> assassinateClaims o
+  Merger o -> mergerClaims w o
+  Dissolve o -> dissolveClaims o
+  Revive o -> reviveClaims o
+  Prophesy o -> prophesyClaims o
+  Coronation o -> coronationClaims o
+  TrialByCombat o -> trialByCombatClaims o
+  Coup o -> coupClaims o
+
+-- | The only place 'record' and 'render' are ever called together — every
+-- fired rule's effect ('Historian.Rules') only ever builds 'Outcome'
+-- values and hands them here, at the point an evaluation step actually
+-- commits a result ('Historian.Rules.stepWith'\/'Historian.Rules.generate',
+-- or 'Historian.Engine.intelligentStep' for the engine's own single-rule
+-- path). 'fulfillProphecies' is applied uniformly to every outcome's
+-- claims now, rather than selectively per rule as before — verified inert
+-- for the three rules that used to skip it ('Dispute'\/'Revive'\/
+-- 'Prophesy'): 'omenOf' has no case for their own predicates
+-- ('Disputes'\/'Revives'\/'Prophesied'), so this can never actually
+-- fulfill anything for them.
+commitOutcomes :: [Outcome] -> Chronicle ()
+commitOutcomes outcomes = do
+  w <- get
+  forM_ outcomes $ \o ->
+    let claims = outcomeClaims w o
+     in record (outcomeKind o) (render w o) (claims ++ fulfillProphecies w claims)

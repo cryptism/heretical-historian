@@ -1,10 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | A generic, declarative rule-matching engine — Phase 1 (see
--- docs/DESIGN.md Decision 23). Sits between 'Historian.World' (store and
--- queries) and 'Historian.Rules' (which defines the actual 'RuleSpec'
--- values, since those reference specific @fireX@ functions this module
--- must not depend on).
+-- docs/DESIGN.md Decision 23). Sits between 'Historian.World'\/
+-- 'Historian.Render' (store, queries, and — since the rendering-out-of-
+-- rules refactor — the 'Outcome' every 'RuleSpec' fires produce) and
+-- 'Historian.Rules' (which defines the actual 'RuleSpec' values, since
+-- those reference specific @fireX@ functions this module must not depend
+-- on). Importing 'Historian.Render' isn't a layering violation: that
+-- module only ever imports 'Historian.Types'\/'Historian.World' itself,
+-- so there's no cycle — 'Historian.Rules' still sits above both.
 --
 -- Purely additive: nothing here is wired into 'Historian.Rules.generate'
 -- or 'Historian.Rules.step'. Every hand-written 'Historian.Rules.Rule'
@@ -16,6 +20,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import Historian.Corpus (vaurethine)
+import Historian.Render (Outcome, commitOutcomes)
 import Historian.Types
 import Historian.World
 
@@ -45,9 +50,13 @@ data Slot = Slot
 data RuleSpec = RuleSpec
   { rsName :: Text
   , rsSlots :: [Slot]
-  , rsFire :: World -> [Maybe EntityId] -> Chronicle ()
+  , rsFire :: World -> [Maybe EntityId] -> Chronicle [Outcome]
   -- ^ One element per 'rsSlots', same order. A 'slotRequired' slot's
-  -- element is always 'Just' by the time this runs.
+  -- element is always 'Just' by the time this runs. Returns the
+  -- 'Outcome'(s) this firing produced (a fired rule's own primary outcome,
+  -- plus a second one when 'Historian.Rules.maybeDispute' also rolls) —
+  -- not yet committed to the 'World'; see 'intelligentStep' for where
+  -- that happens.
   }
 
 -- | Every existing entity satisfying one slot, given what's already been
@@ -200,23 +209,31 @@ chooseRule :: [RuleSpec] -> Either StepError RuleSpec
 chooseRule [rs] = Right rs
 chooseRule rss = Left (AmbiguousRule rss)
 
+-- | Runs one rule's firing to completion and commits it, keeping the same
+-- external @Chronicle ()@ shape this always had even though 'rsFire' now
+-- hands back 'Outcome' data rather than recording anything itself:
+-- 'intelligentStep' is an evaluation step in its own right (the engine's
+-- single-rule\/single-entity counterpart to
+-- 'Historian.Rules.stepWith'\/'Historian.Rules.generate'), so it's the one
+-- that calls 'commitOutcomes', not 'rsFire' or the @fireX@ function
+-- underneath it.
 intelligentStep :: [RuleSpec] -> World -> StepRequest -> Chronicle ()
 intelligentStep specs w StepAny =
   case [(rs, assignment) | rs <- specs, assignment <- allAssignments w rs] of
     [] -> pure ()
     (p : ps) -> do
       (rs, assignment) <- pickOr p (p : ps)
-      rsFire rs w assignment
+      rsFire rs w assignment >>= commitOutcomes
 intelligentStep _ w (StepRule rs hints) = do
   let hints' = take (length (rsSlots rs)) (hints ++ repeat Nothing)
   resolved <- resolveAll w (rsSlots rs) hints' []
-  rsFire rs w resolved
+  rsFire rs w resolved >>= commitOutcomes
 intelligentStep specs w (StepEntities es)
   | null candidates = pure ()
   | otherwise = do
       rs <- weighted [(1 + usefulness rs', rs') | rs' <- candidates]
       resolved <- resolveAll w (rsSlots rs) (replicate (length (rsSlots rs)) Nothing) es
-      rsFire rs w resolved
+      rsFire rs w resolved >>= commitOutcomes
   where
     candidates = [rs | rs <- specs, runnable w rs || usefulness rs > 0]
     usefulness rs = length [() | slot <- rsSlots rs, e <- es, matchesKind e slot]

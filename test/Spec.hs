@@ -16,7 +16,7 @@ import qualified Data.Text.IO as TIO
 import Historian.Corpus (vaurethine)
 import Historian.Engine
 import Historian.Json (encodeWorld)
-import Historian.Render (chronicle)
+import Historian.Render (chronicle, commitOutcomes)
 import Historian.Rules
   ( assassinateSpec
   , battleSpec
@@ -240,7 +240,7 @@ main = do
 -- these no longer need a lucky seed to exercise — construct exactly the
 -- shape wanted and check the engine reads/resolves it correctly.
 engineWorld :: World
-engineWorld = execState (genesis >> advanceEpoch) (emptyWorld 999)
+engineWorld = execState (genesis >>= commitOutcomes >> advanceEpoch) (emptyWorld 999)
 
 engineSociety :: EntityId
 engineSociety = case entitiesOf Society engineWorld of
@@ -364,20 +364,20 @@ firstOrErr msg = \case
 -- them at once.
 buildRichWorld :: Chronicle (EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId)
 buildRichWorld = do
-  genesis
+  genesis >>= commitOutcomes
   advanceEpoch
   w0 <- get
   let s0 = firstOrErr "buildRichWorld: genesis produced no society" (entitiesOf Society w0)
       p0 = firstOrErr "buildRichWorld: genesis produced no founder" (livingMembers w0 s0)
-  fireSchism w0 s0 (Just p0)
+  fireSchism w0 s0 (Just p0) >>= commitOutcomes
   advanceEpoch
   w1 <- get
   let s1 = firstOrErr "buildRichWorld: first schism produced no splinter" (filter (/= s0) (entitiesOf Society w1))
-  fireSchism w1 s0 Nothing
+  fireSchism w1 s0 Nothing >>= commitOutcomes
   advanceEpoch
   w2 <- get
   let s2 = firstOrErr "buildRichWorld: second schism produced no splinter" (filter (\s -> s /= s0 && s /= s1) (entitiesOf Society w2))
-  fireSanctify w2 s0 Nothing
+  fireSanctify w2 s0 Nothing >>= commitOutcomes
   advanceEpoch
   w3 <- get
   let st0 = firstOrErr "buildRichWorld: sanctify produced no site" (entitiesOf Site w3)
