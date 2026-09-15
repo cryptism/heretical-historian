@@ -144,8 +144,8 @@ rMonth = do
     if withEpithet
       then do
         ep <- rPick "Turning" monthEpithets
-        pure (T.concat [adj, " ", noun, ", ", ep])
-      else pure (T.concat [adj, " ", noun])
+        pure (adj <> " " <> noun <> ", " <> ep)
+      else pure (adj <> " " <> noun)
   len <- rRoll (1, 40)
   pure (Month nm len)
 
@@ -191,9 +191,9 @@ calendarParams seed = evalState genParams (mkStdGen (seed * 7919 + 104729))
 -- right before the era starts is "1 Before", not "0 Before".
 eraLabel :: EraScheme -> Text -> Int -> Text
 eraLabel BeforeAfter era y
-  | y >= 0 = T.concat ["Year ", T.pack (show (y + 1)), " After ", era]
-  | otherwise = T.concat ["Year ", T.pack (show (negate y)), " Before ", era]
-eraLabel SignedYear era y = T.concat ["Year ", T.pack (show y), " of ", era]
+  | y >= 0 = "Year " <> T.pack (show (y + 1)) <> " After " <> era
+  | otherwise = "Year " <> T.pack (show (negate y)) <> " Before " <> era
+eraLabel SignedYear era y = "Year " <> T.pack (show y) <> " of " <> era
 
 -- | Render an epoch as a fictional calendar date — "23rd Dancing Butcher
 -- (Year 3 After the Sundering)". Walks whole years first (each with its own
@@ -213,7 +213,7 @@ dateOf w (Epoch e) = findYear y0 e
             else findYear (year + 1) (daysLeft - yearLen)
     findMonth year (m : ms) n
       | n < monLength m =
-          T.concat [ordinal (n + 1), " ", monName m, " (", eraLabel scheme era year, ")"]
+          ordinal (n + 1) <> " " <> monName m <> " (" <> eraLabel scheme era year <> ")"
       | otherwise = findMonth year ms (n - monLength m)
     findMonth _ [] _ = "an unrecorded day"
 
@@ -227,7 +227,7 @@ ordinal n
   | n `mod` 10 == 3 = suffix "rd"
   | otherwise = suffix "th"
   where
-    suffix s = T.concat [T.pack (show n), s]
+    suffix s = T.pack (show n) <> s
 
 -- Naming ---------------------------------------------------------------
 
@@ -253,9 +253,8 @@ markovWord c = go (6 :: Int)
 
 -- | A componential "prefix + syllable-chain root + suffix" name, per
 -- 'Historian.Corpus.NameGrammar' — used only for persons and relics (see
--- 'newPerson'\/'newItem'). Sites and societies keep 'markovWord' unchanged.
--- Same bounded-retry rejection discipline as 'markovWord', reusing the
--- exact same check. See Decision 20 in docs/DESIGN.md.
+-- 'newPerson'\/'newItem'); sites and societies stay on 'markovWord'. Same
+-- bounded-retry rejection discipline as 'markovWord'.
 syllableName :: Culture -> Chronicle Text
 syllableName c = go (6 :: Int)
   where
@@ -291,7 +290,7 @@ joinSyllables _ [s] = pure s
 joinSyllables hyphenChance (s : rest) = do
   restJoined <- joinSyllables hyphenChance rest
   useHyphen <- weighted [(hyphenChance, True), (100 - hyphenChance, False)]
-  pure (T.concat [s, if useHyphen then "-" else "", restJoined])
+  pure (s <> (if useHyphen then "-" else "") <> restJoined)
 
 -- | Capitalizes the first letter of the whole name and, if it's
 -- hyphenated, the first letter of every piece after a hyphen too — a
@@ -350,16 +349,12 @@ generateSocietyName c = do
   stem <- markovWord c
   modifier <- societyModifier
   nn <- pickOr "Order" societyNouns
-  pure (T.concat ["The ", modifier, " ", nn, " of ", stem])
+  pure ("The " <> modifier <> " " <> nn <> " of " <> stem)
 
 -- | Every society gets an independent patron concept from the moment it
--- exists, the same "eligible from birth" treatment 'newItem' already
--- gives relics — not conditional on which naming branch
--- 'societyModifier' happened to take. Returns the concept alongside the
--- society so the caller can add the 'Embodies' claim (unattested,
--- intrinsic) and an initial 'Venerates' (the starting regard a later
--- leadership change can flip), the same two-claims pattern
--- 'fireMiracleRelic' already follows for a fresh item.
+-- exists. Returns the concept alongside the society so the caller can add
+-- the 'Embodies' claim (unattested, intrinsic) and an initial 'Venerates'
+-- (the starting regard a later leadership change can flip).
 newSociety :: Culture -> Chronicle (EntityId, EntityId)
 newSociety c = do
   name <- generateSocietyName c
@@ -373,21 +368,18 @@ newPerson c = do
   stem <- syllableName c
   bn <- pickOr "the Silent" bynames
   useByname <- coin
-  mint Person c (if useByname then T.concat [stem, " ", bn] else stem) Nothing
+  mint Person c (if useByname then stem <> " " <> bn else stem) Nothing
 
 newSite :: Culture -> Chronicle EntityId
 newSite c = do
   stem <- markovWord c
   nn <- pickOr "Stair" siteNouns
-  mint Site c (T.concat ["The ", nn, " of ", stem]) Nothing
+  mint Site c ("The " <> nn <> " of " <> stem) Nothing
 
 -- | Every item is "relic-eligible" from the moment it exists: a modifier
--- (placeholder, no mechanical use yet) and a symbolic 'Concept' link
--- (returned alongside the item, so the caller can add the 'Embodies'
--- claim to whatever event is doing the minting — see e.g.
--- 'Historian.Rules.fireMiracleRelic'\/'optionalRelicFor') are rolled here,
--- unconditionally, not deferred until some later rule decides to "promote"
--- it. Becoming an actual relic, narratively, is simply the first time any
+-- (placeholder, no mechanical use yet) and a symbolic 'Concept' link are
+-- rolled here unconditionally, not deferred to a later "promotion" step.
+-- Becoming an actual relic, narratively, is simply the first time any
 -- cult asserts 'Venerates'\/'Shuns' on it — see
 -- 'Historian.Rules.regardReactions'.
 newItem :: Culture -> Chronicle (EntityId, EntityId)
@@ -397,7 +389,7 @@ newItem c = do
   modifier <- roll (-2, 4)
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
-  item <- mint Item c (T.concat ["The ", nn, " of ", stem]) (Just modifier)
+  item <- mint Item c ("The " <> nn <> " of " <> stem) (Just modifier)
   pure (item, concept)
 
 -- | Concepts are the one 'Kind' minted once per name and reused, not
@@ -425,19 +417,25 @@ propertyOf w i =
 
 -- Recording ------------------------------------------------------------
 
--- | Advances the day count by a uniformly random gap, 1..300 days, rather
--- than a fixed one day per step — real gaps between recorded events aren't
--- regular, and 'dateOf' already treats an 'Epoch' as an absolute day count
--- with no assumption that a single step's gap fits inside one year (it
--- walks 'yearMonths' year by year regardless of how big the jump is).
--- Consumes 'Chronicle'\'s own RNG stream, same as any other rule decision
--- — not the calendar's separate one (invariant 8 in CLAUDE.md is about
--- 'dateOf' itself never reaching into 'wGen', not about how much time a
--- step advances).
+-- | Advances the day count by a gap that narrows as the world gets busier,
+-- rather than a flat uniform 1..300 every step: 'activity' is the number of
+-- active societies plus the total living membership across them, so more
+-- cults and larger cults both shorten the range, while a young, sparse
+-- world still gets the full 1..300 spread. Floored at 1..20 rather than
+-- letting the range collapse to nothing. 'dateOf' treats an 'Epoch' as an
+-- absolute day count with no assumption a step's gap fits inside one year,
+-- so nothing about the calendar needs to change to accept this. Consumes
+-- 'Chronicle''s own RNG stream, not the calendar's separate one (invariant
+-- 8 in CLAUDE.md is about 'dateOf' never reaching into 'wGen'; see
+-- Decision 22 in docs/DESIGN.md for why that's true of this function too).
 advanceEpoch :: Chronicle ()
 advanceEpoch = do
-  gap <- roll (1, 300)
-  modify' $ \w -> w {wEpoch = Epoch (unEpoch (wEpoch w) + gap)}
+  w <- get
+  let socs = activeSocieties w
+      activity = length socs + sum (map (length . livingMembers w) socs)
+      maxGap = max 20 (300 - 5 * activity)
+  gap <- roll (1, maxGap)
+  modify' $ \w' -> w' {wEpoch = Epoch (unEpoch (wEpoch w') + gap)}
 
 -- | Append one event and its facts. This is the only way facts enter the
 -- world, so every fact has a source event whose prose can be shown.
@@ -612,8 +610,8 @@ alreadyMerged w s = any (\f -> factPred f == MergedInto && factSubject f == s) (
 
 -- | Whether an entity has reached its permanent terminal state — a
 -- society dissolved for lack of living members ('ruleDissolve') or a relic
--- destroyed ('ruleDestroyRelic'). One query for both, since they're one
--- predicate ('Terminated') now — see the type's own Haddock for why.
+-- destroyed ('ruleDestroyRelic'). One query for both, since they share one
+-- predicate ('Terminated') — see the type's own Haddock for why.
 isTerminated :: World -> EntityId -> Bool
 isTerminated w i = any (\f -> factPred f == Terminated && factSubject f == i) (wFacts w)
 
@@ -691,15 +689,9 @@ openProphecies w target =
 -- 'Sanctified' put it in the subject (the dissolving society or destroyed
 -- relic, the society merging away, the slain person, the site itself),
 -- while 'SplitFrom'\/'BattledAt'\/'Heretic'\/'Shuns' put it in the object.
---
--- 'Terminated' covering *both* dissolution and destruction here is what
--- the Dissolved\/Destroyed unification (CLAUDE.md work queue item 13)
--- actually fixed in passing: before it, this function had a 'Dissolved'
--- case but no 'Destroyed' one, so an item's destruction silently never
--- fulfilled the "will be shattered"\/"will be melted down" prophecies
--- 'Historian.Corpus.prophecyFramings' had already been offering for
--- 'Item' since the relics work — a dormant bug, caught only by unifying
--- the two predicates into one that this function couldn't help but cover.
+-- 'Terminated' covers both dissolution and destruction, so an item's
+-- destruction can fulfill the "will be shattered"\/"will be melted down"
+-- prophecies 'Historian.Corpus.prophecyFramings' offers for 'Item'.
 omenOf :: Claim -> Maybe (Predicate, EntityId)
 omenOf c = case clPred c of
   Terminated -> Just (Terminated, clSubject c)
@@ -732,9 +724,7 @@ omenOf c = case clPred c of
 -- the same site object, which would otherwise double-fulfill the same
 -- prophecy. No loop risk either way: 'omenOf' never recognizes
 -- 'Prophesied', 'Disputes', 'Revives', or 'Fulfilled' itself, so a
--- fulfillment can never cascade into fulfilling anything else — the same
--- care that avoided reinterpretation's original meta-loop bug (CLAUDE.md
--- bug #3).
+-- fulfillment can never cascade into fulfilling anything else.
 fulfillProphecies :: World -> [Claim] -> [Claim]
 fulfillProphecies w claims =
   nubBy

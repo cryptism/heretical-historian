@@ -1,18 +1,20 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | A generic, declarative rule-matching engine — Phase 1 (see
--- docs/DESIGN.md Decision 23). Sits between 'Historian.World'\/
--- 'Historian.Render' (store, queries, and — since the rendering-out-of-
--- rules refactor — the 'Outcome' every 'RuleSpec' fires produce) and
--- 'Historian.Rules' (which defines the actual 'RuleSpec' values, since
--- those reference specific @fireX@ functions this module must not depend
--- on). Importing 'Historian.Render' isn't a layering violation: that
--- module only ever imports 'Historian.Types'\/'Historian.World' itself,
--- so there's no cycle — 'Historian.Rules' still sits above both.
+-- | A generic, declarative rule-matching engine (docs/DESIGN.md Decision
+-- 23) — in CSP terms, 'RuleSpec' is a small constraint satisfaction
+-- problem per rule; see Decision 25 for the full vocabulary mapping and
+-- why a CP library isn't a better fit. Sits between
+-- 'Historian.World'\/'Historian.Render' (store, queries,
+-- and the 'Outcome' every 'RuleSpec' fires produces) and 'Historian.Rules'
+-- (which defines the actual 'RuleSpec' values, since those reference
+-- specific @fireX@ functions this module must not depend on). Importing
+-- 'Historian.Render' isn't a layering cycle: that module only imports
+-- 'Historian.Types'\/'Historian.World', so 'Historian.Rules' still sits
+-- above both.
 --
 -- Purely additive: nothing here is wired into 'Historian.Rules.generate'
 -- or 'Historian.Rules.step'. Every hand-written 'Historian.Rules.Rule'
--- keeps working completely unchanged.
+-- keeps working unchanged.
 module Historian.Engine where
 
 import Control.Applicative ((<|>))
@@ -24,12 +26,15 @@ import Historian.Render (Outcome, commitOutcomes)
 import Historian.Types
 import Historian.World
 
--- | One parameter a rule needs filled. 'slotConstraint' takes the
--- entities already resolved for earlier slots (in declaration order, see
--- 'RuleSpec') alongside the candidate, so a later slot can depend on an
--- earlier one (a schism's heresiarch must belong to *this* schism's own
--- society, not just be alive somewhere) without any dependent-type
--- machinery — a plain closure over the accumulated bindings suffices.
+-- | One parameter a rule needs filled — a CSP variable: 'slotKind' bounds
+-- its domain, 'slotConstraint' is an intensional constraint on it (a
+-- predicate over live 'World' state, not an enumerated table — see
+-- docs/DESIGN.md Decision 25 for why that's the right shape here).
+-- 'slotConstraint' takes the entities already resolved for earlier slots
+-- (declaration order, see 'RuleSpec') alongside the candidate, so a later
+-- slot can depend on an earlier one (a schism's heresiarch must belong to
+-- *this* schism's own society) without any dependent-type machinery — a
+-- plain closure over the accumulated bindings suffices.
 data Slot = Slot
   { slotKind :: Kind
   , slotConstraint :: World -> [EntityId] -> EntityId -> Bool
@@ -40,7 +45,8 @@ data Slot = Slot
   -- an optional slot just because a required one nearby did).
   }
 
--- | A rule's declarative shape — what 'Historian.Rules.ruleSchism' (etc.)
+-- | A rule's declarative shape — a small CSP over the rule's free
+-- variables, one 'Slot' apiece — what 'Historian.Rules.ruleSchism' (etc.)
 -- otherwise hand-writes as its own list comprehension. 'rsSlots' only
 -- ever describes *existing-or-generatable* input entities; a rule's own
 -- always-happens creations (a schism's splinter society, complete with
@@ -90,11 +96,9 @@ runnableRuleSpecs w = filter (runnable w)
 -- and 'newItem' also return a patron\/embodied 'Concept' and expect the
 -- caller to record 'Embodies'\/'Venerates' claims alongside whatever
 -- event is doing the minting (see 'Historian.Rules.patronClaims') — this
--- drops that second half rather than guessing at it, since no rule
--- migrated in this phase ever generates either 'Kind'. Whichever future
--- rule migration is the first to need it should settle
--- 'RuleSpec'\/'resolveSlot's shape for that case in code, not have it
--- guessed at here.
+-- drops that second half rather than guessing at it. No current
+-- 'RuleSpec' generates either 'Kind', so this is unexercised; settle the
+-- shape in code once one does, not here.
 generateForKind :: Culture -> Kind -> Chronicle EntityId
 generateForKind cult k = case k of
   Person -> newPerson cult
@@ -154,12 +158,15 @@ resolveAll w slots posHints = go [] slots (posHints ++ repeat Nothing)
       (m :) <$> go resolved' slots' posHints' remainingPool'
     go _ _ _ _ = pure []
 
--- | Every satisfying assignment for a rule — the Cartesian product across
--- its slots, an optional slot's own contribution to the product including
--- 'Nothing'. This is what 'StepAny' pools uniformly across every rule,
--- the direct 'RuleSpec' analogue of how 'Historian.Rules.step' already
--- pools every legacy 'Historian.Rules.Rule's candidate list — a rule
--- self-weights by how many assignments it has, exactly as today.
+-- | The rule's full solution set — every satisfying assignment, the
+-- Cartesian product across its slots (an optional slot's own contribution
+-- including 'Nothing'). This is the *extensional* view of the CSP
+-- 'RuleSpec' describes: 'slotConstraint' is intensional, but this
+-- enumerates its extension on demand rather than keeping one around.
+-- 'StepAny' pools this uniformly across every rule, the direct 'RuleSpec'
+-- analogue of how 'Historian.Rules.step' pools every legacy
+-- 'Historian.Rules.Rule's candidate list — a rule self-weights by how
+-- many assignments it has, exactly as today.
 allAssignments :: World -> RuleSpec -> [[Maybe EntityId]]
 allAssignments w rs = go [] (rsSlots rs)
   where

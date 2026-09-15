@@ -25,8 +25,8 @@ main = do
       w = generate seed steps
   if hasFlag "--json" args
     then -- The same boundary a wasm host crosses: 'generate' then
-      -- 'encodeWorld', nothing else. Useful for testing the encoder, or
-      -- feeding a JS prototype, well before any wasm toolchain is involved.
+      -- 'encodeWorld', nothing else — lets the encoder be tested with no
+      -- wasm toolchain involved.
       BSLC.putStrLn (encodeWorld w)
     else do
       TIO.putStrLn "== CHRONICLE =="

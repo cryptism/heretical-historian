@@ -57,14 +57,9 @@ Three layers, deliberately separated:
 `generate :: Int -> Int -> World` is pure, so a wasm host only ever needs two
 functions: `generate`, then `Historian.Json.encodeWorld`. `wasm/Main.hs`
 exports `generateJson` (`foreign export ccall`) and the RTS's own `hs_init`
-(exported directly, not wrapped in Haskell); `historian-wasm` (the cabal
-executable built from it) compiles fine under ordinary native GHC and also
-cross-compiles to a real `.wasm` under a `wasm32-wasi-ghc` toolchain (e.g.
-from `ghc-wasm-meta`, not wired into `flake.nix`). A host calls
-`hs_init(0, 0)` once, then `generateJson` — verified end to end from Node
-(`node:wasi`, reactor mode) — see `CLAUDE.md` Status and `docs/DESIGN.md`
-Decision 7 for the full account, including the manual `.wasm` patch a
-reactor-style host still needs.
+directly (not wrapped in Haskell — a `foreign export`ed function can't start
+the RTS itself, see `docs/DESIGN.md` Decision 7). A host calls `hs_init(0, 0)`
+once, then `generateJson`.
 
 **Rules are the interesting part.** A `Rule` is a function `World -> [Chronicle ()]`:
 it returns one fully-applied effect per satisfying assignment of its variables.
@@ -91,16 +86,15 @@ so `Vaurethine` splits toward `Vaurethesh` rather than toward something from a
 different phonology.
 
 **Epochs render as a fictional calendar date** — `E7` is also "23rd Dancing
-Butcher (Year 5 After the Sundering)". Years have no fixed number of
-months, and months are never reused across years
-(`Historian.World.dateOf`/`yearMonths`); the calendar is computed purely
-from the world's seed and an absolute year index, entirely independent of
-the RNG stream that decides what history happens — a date is display, not
-state (see `CLAUDE.md` invariant 8). Genesis doesn't have to land on "Year
-1": `calendarParams` also picks, per world, one named era, one of two
-year-numbering schemes (two directional markers relative to the era, like
-B.C./A.D., or one marker with a signed year), and an offset — possibly
-negative — for which absolute year genesis falls in.
+Butcher (Year 5 After the Sundering)". Years have no fixed number of months,
+and months are never reused across years (`Historian.World.dateOf`/
+`yearMonths`); the calendar is computed purely from the world's seed and an
+absolute year index, independent of the RNG stream that decides what history
+happens — a date is display, not state (invariant 8). `calendarParams` also
+picks, per world, a named era, a year-numbering scheme (B.C./A.D.-style
+directional markers, or one marker with a signed year), and an offset —
+possibly negative — for which absolute year genesis falls in, so genesis
+need not be "Year 1" of anything.
 
 ## Language extensions
 
@@ -132,14 +126,9 @@ sidesteps the whole problem of storing heterogeneously-typed bindings.
 
 ## Known gaps
 
-None currently open. All eight event rules from the original brief are
-built, plus reinterpretation, fact retraction, dissolution, revival,
-prophecy, and `ruleWeight` — see `docs/EVENTS.md` and `CLAUDE.md`'s work
-queue for the full account of each. The wasm boundary works end to end
-(see above), verified from a real JS host.
-
-Building for wasm is two steps, not one — not a gap, just how
-`build-type: Simple` (no `Setup.hs` hooks) has to work here:
+See `CLAUDE.md`'s work queue for what's open. The wasm boundary works end
+to end, verified from a real JS host, but building for it is two steps —
+`build-type: Simple` has no `Setup.hs` hooks to do this automatically:
 
 ```nu
 nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command wasm32-wasi-cabal build historian-wasm
@@ -149,5 +138,4 @@ nix shell git+https://gitlab.haskell.org/ghc/ghc-wasm-meta.git --command nu wasm
 The second step (`wasm/patch-reactor.nu`) strips the auto-generated
 `_start` export and adds the `__wasm_call_ctors`/`__wasi_init_tp` exports a
 reactor-style host (one that calls in repeatedly, e.g. Node's
-`wasi.initialize()`) needs — see `CLAUDE.md` Status and `docs/DESIGN.md`
-Decision 7 for why.
+`wasi.initialize()`) needs.

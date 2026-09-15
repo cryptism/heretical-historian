@@ -19,18 +19,16 @@ import Historian.Types
 import Historian.World
 
 -- | 'ruleWeight' multiplies a rule's candidate list before 'step' pools
--- everything and picks uniformly — see 'rule' for the default, and
--- 'weightedRule' to override it. A rule that self-weights too aggressively
--- for a given seed (see CLAUDE.md Status on miracle) can be dialed back
--- without touching its precondition or effect.
+-- everything and picks uniformly — see 'rule' for the default and
+-- 'weightedRule' to override it, dialing a rule's pacing back without
+-- touching its precondition or effect.
 data Rule = Rule
   { ruleName :: Text
   , ruleWeight :: Int
   , ruleCandidates :: World -> [Chronicle [Outcome]]
   }
 
--- | The default: every rule counts once per candidate, exactly the
--- behavior before 'ruleWeight' existed.
+-- | The default: every rule counts once per candidate.
 rule :: Text -> (World -> [Chronicle [Outcome]]) -> Rule
 rule name = Rule name 1
 
@@ -44,14 +42,10 @@ weightedRule w name = Rule name w
 rules :: [Rule]
 rules = [ruleSchism, ruleBattle, ruleSanctify, ruleDefile, ruleMiracle, ruleAssassinate, ruleMerger, ruleDissolve, ruleRevive, ruleProphesy, ruleTheft, ruleDestroyRelic, ruleGift, ruleCoronation, ruleTrialByCombat, ruleCoup]
 
--- | Every migrated 'RuleSpec' (docs/DESIGN.md Decision 23 and its
--- follow-up), purely additive alongside 'rules' — nothing here is wired
--- into 'generate'\/'step'; see 'Historian.Engine.intelligentStep' for how
--- to actually run one. Disputing is no longer a rule at all (see
--- 'fireDispute'), so every rule remaining in 'rules' now has a
--- 'RuleSpec' — migrated one at a time as CLAUDE.md's own work queue
--- asked for, just batched into a single pass at the user's explicit
--- request rather than spread across separate ones.
+-- | Every 'RuleSpec' (docs/DESIGN.md Decision 23), purely additive
+-- alongside 'rules' — not wired into 'generate'\/'step'; see
+-- 'Historian.Engine.intelligentStep' to run one directly. Disputing has
+-- no spec (see 'fireDispute') since it's no longer a rule at all.
 ruleSpecs :: [RuleSpec]
 ruleSpecs =
   [ schismSpec
@@ -128,15 +122,10 @@ fireSchism w s mh = do
   disputes <- maybeDispute s
   pure (Schism outcome : disputes)
 
--- | 'Historian.Engine' proof of concept (Phase 1, see docs/DESIGN.md
--- Decision 23): the same two inputs 'ruleSchism' hand-writes above,
--- expressed declaratively instead. Purely additive — 'ruleSchism' and
--- 'fireSchism' are completely unchanged and keep firing exactly as
--- before via 'generate'\/'step'; this is a second, independent way to
--- reach the same effect, callable via 'Historian.Engine.intelligentStep'.
--- The heresiarch slot's constraint depends on which society the first
--- slot resolved to — exactly the cross-slot dependency
--- 'Historian.Engine.Slot' exists to express.
+-- | Declarative equivalent of 'ruleSchism'\/'fireSchism' (both unchanged),
+-- callable via 'Historian.Engine.intelligentStep'. The heresiarch slot's
+-- constraint depends on the first slot's resolved society — the
+-- cross-slot dependency 'Historian.Engine.Slot' exists to express.
 schismSpec :: RuleSpec
 schismSpec =
   RuleSpec
@@ -151,10 +140,8 @@ schismSpec =
     heresiarchConstraint w resolved p = case resolved of
       (s : _) -> p `elem` livingMembers w s
       [] -> False
-    -- The list is untyped-length ('Chronicle'-facing, not a fixed tuple),
-    -- so GHC can't see that 'schismSpec' only ever declares two slots —
-    -- this catch-all is defensive against that shape, not against any
-    -- input 'Historian.Engine.intelligentStep' can actually produce.
+    -- Defensive: the assignment list is untyped-length, so GHC can't see
+    -- it's always exactly two long.
     fire w assignment = case assignment of
       [Just s, mh] -> fireSchism w s mh
       _ -> pure []
@@ -190,14 +177,11 @@ fireBattle w a b msite = do
   disputes <- maybeDispute victor
   pure (Battle outcome : disputes)
 
--- | 'Historian.Engine' migration (docs/DESIGN.md Decision 23 follow-up).
--- Two societies rather than one free variable, which is why the second
--- slot's constraint reaches back into 'grievancePairs' via the first
--- slot's own resolved binding — the two together reconstruct exactly the
--- unordered pairs 'grievancePairs' produces, just walked as two
--- dependent picks instead of one precomputed list. The site slot mirrors
--- 'sanctifySpec's own optional pick-or-mint site exactly, reusing
--- 'fireBattle' unchanged.
+-- | Declarative equivalent of 'ruleBattle'. The two society slots
+-- together reconstruct the unordered pairs 'grievancePairs' produces, as
+-- two dependent picks instead of one precomputed list. The site slot
+-- mirrors 'sanctifySpec's optional pick-or-mint site, reusing 'fireBattle'
+-- unchanged.
 battleSpec :: RuleSpec
 battleSpec =
   RuleSpec
@@ -222,34 +206,17 @@ battleSpec =
 
 -- Dispute -----------------------------------------------------------------
 
--- | No longer its own top-level 'Rule' with its own candidate list — it
--- used to be (@ruleReinterpret@\/@fireReinterpret@), and that shape had
--- two real problems at once, at the user's own request to fix both by
--- removing the rule entirely: its candidate list (every non-dispute
--- event times every active society not yet on record about it) grows
--- without bound as history accretes, self-weighting it into dominance
--- over every other rule (CLAUDE.md bug #3\/#5); and its one free
--- variable, an 'EventId', has no honest 'Historian.Engine' 'Slot' shape
--- ('Slot' only ever draws from an 'EntityId'-keyed 'Kind'), so it was
--- the one rule Decision 23's migration batch couldn't cover.
---
--- Making it an optional side effect any other rule's own firing can roll
--- instead — the same discipline 'optionalRelicFor'\/'fireDyingWords'
--- already established ("resolved entirely here, inside the effect, never
--- as a new bound variable in a rule's precondition list, so the calling
--- rule's candidate count doesn't grow") — fixes both at once: the growth
--- problem disappears since disputing no longer has its own share of the
--- candidate pool at all, and the migration gap disappears since there is
--- no longer a rule here for the engine to need a 'Slot' for. Still its
--- own independent 'Event', not folded into the triggering rule's own
--- narration via 'maybeDispute' below — a dispute is about some *other*,
--- unrelated past event, unlike a relic or dying words, which are part of
--- the very event they're attached to.
---
--- Still excludes disputing a dispute ('evKind ev /= "reinterpretation"'):
--- that restriction was never really about pool-share (which no longer
--- exists to protect), it's that arguing about an argument has nothing
--- left to say — the same reasoning CLAUDE.md bug #3 already gave it.
+-- | An optional side effect any other rule's firing can roll — not a
+-- standalone 'Rule' with its own candidate list. A candidate list here
+-- (every non-dispute event times every society not yet on record about
+-- it) would grow unbounded as history accretes and dominate every other
+-- rule's share (CLAUDE.md bug #3\/#5); resolving it inside the effect
+-- instead, the same discipline 'optionalRelicFor'\/'fireDyingWords' use,
+-- avoids that. Still its own independent 'Event', not folded into the
+-- triggering rule's own narration ('maybeDispute' below) — a dispute is
+-- about some *other*, unrelated past event. Never disputes a dispute
+-- ('evKind ev /= "reinterpretation"'): arguing about an argument has
+-- nothing left to say (CLAUDE.md bug #3).
 fireDispute :: World -> EntityId -> Chronicle (Maybe DisputeOutcome)
 fireDispute w disputant = do
   disputes <- weighted [(75, False), (25, True)]
@@ -270,16 +237,11 @@ fireDispute w disputant = do
           framing <- pick1 (disputedFramings (evKind ev))
           pure (Just (DisputeOutcome disputant ev framing))
 
--- | Called at the end of a rule's effect, right after building its own
--- primary 'Outcome', with whichever active society is already in scope as
--- the potential disputant — its result is appended to that outcome's own
--- returned list, so the primary outcome always commits first. A no-op
--- most of the time ('fireDispute' rolls its own probability); when it does
--- trigger, it's still its own independent 'Event' once committed, not
--- folded into the triggering rule's own text. Every rule that already has
--- one clearly active society in scope calls this; 'fireDissolve' is the
--- one deliberate exception — its only party is the society that just lost
--- its last living member, which is no voice to lend an opinion to.
+-- | Called at the end of a rule's effect with whichever active society is
+-- already in scope as the potential disputant; its result is appended
+-- after the primary 'Outcome' so that one always commits first. Every
+-- rule with a clearly active society calls this except 'fireDissolve' —
+-- its only party just lost its last member and has no voice to lend.
 maybeDispute :: EntityId -> Chronicle [Outcome]
 maybeDispute disputant = do
   w <- get
@@ -311,15 +273,10 @@ fireSanctify w s msite = do
   disputes <- maybeDispute s
   pure (Sanctify outcome : disputes)
 
--- | Second 'Historian.Engine' migration (see docs/DESIGN.md Decision 23
--- and 'schismSpec' above), alongside the completely untouched
--- 'ruleSanctify'\/'fireSanctify'. The free site slot has exactly the same
--- optional pick-or-mint shape schism's heresiarch slot does, just for a
--- different 'Kind' — an existing unsanctified 'Site', or (if none
--- qualifies) a freshly minted one — both already handled unchanged by
--- 'fireSanctify' itself, so the slot stays 'False' (optional) rather than
--- forcing 'Historian.Engine.generateForKind' to mint one on the engine's
--- own initiative.
+-- | Declarative equivalent of 'ruleSanctify'\/'fireSanctify' (both
+-- unchanged). The site slot has the same optional pick-or-mint shape as
+-- schism's heresiarch slot — an existing unsanctified 'Site' or a freshly
+-- minted one, both already handled by 'fireSanctify' itself.
 sanctifySpec :: RuleSpec
 sanctifySpec =
   RuleSpec
@@ -331,9 +288,7 @@ sanctifySpec =
     , rsFire = fire
     }
   where
-    -- Same defensive catch-all as schismSpec's own fire wrapper — the
-    -- assignment list is untyped-length, not a fixed tuple GHC can see is
-    -- exactly two long.
+    -- Defensive: same untyped-length assignment list as schismSpec's fire.
     fire w assignment = case assignment of
       [Just s, msite] -> fireSanctify w s msite
       _ -> pure []
@@ -370,14 +325,12 @@ fireDefile site s h = do
   disputes <- maybeDispute h
   pure (Defile outcome : disputes)
 
--- | 'Historian.Engine' migration. Both slots are optional (never minted
--- by the engine): a site must already be sanctified to be a candidate at
--- all, and a fresh site or a fresh hostile society would each make up a
--- precondition that was never actually true. @s@ (the current claimant)
--- isn't its own slot — it's a deterministic function of @site@
--- ('sanctifiedBy'), recomputed in 'fire' the same way @candidate@'s
--- constraint reaches it, rather than trying to bind it as a third slot
--- with nothing new to pick.
+-- | Declarative equivalent of 'ruleDefile'. Both slots stay optional
+-- (never minted): a fresh site or a fresh hostile society would each make
+-- up a precondition that was never true. @s@ (the current claimant) isn't
+-- its own slot — it's a deterministic function of @site@ ('sanctifiedBy'),
+-- recomputed in 'fire' rather than bound as a third slot with nothing new
+-- to pick.
 defileSpec :: RuleSpec
 defileSpec =
   RuleSpec
@@ -407,26 +360,18 @@ defileSpec =
 -- who still reveres the place remains eligible — with no hostility
 -- precondition, unlike defilement: faith alone is enough.
 --
--- The simple forms ('fireMiracleSaint', 'fireMiracleRelic') generalize what
--- used to be the whole rule: a lone Ward (a person or an 'Item') named at
--- the site, either an existing figure\/relic or one the rule mints fresh.
--- 'fireMiracleRelic' is what actually closes the "scoped out: relics" gap
--- this rule's docs used to note — it needed 'Item' to exist as a 'Kind'
--- before it could be written at all.
+-- 'fireMiracleSaint'\/'fireMiracleRelic' each name a single Ward (a person
+-- or an 'Item') at the site, existing or freshly minted. 'fireMiracleOn'
+-- has an existing living or dead member of the officiating society act
+-- *on* a second, already-recorded Ward instead — both participants must
+-- already exist, keeping this production distinct from "name someone
+-- new".
 --
--- The compound form ('fireMiracleOn') is new: an existing living or dead
--- member of the officiating society performs the miracle *on* a second,
--- already-recorded Ward — another person or an item — rather than merely
--- being named alongside one. Both participants must already exist here
--- (no fresh minting) precisely so this production stays distinct from the
--- simple ones, which are the "name someone new" reading.
---
--- Every production's site\/ward facts are exactly what 'fireMiracle' always
--- emitted ('Sanctified' transferring current sanctity, 'Venerates' naming
--- the ward) — the only genuinely new step is 'regardReactions', appended to
--- every production, which is where 'Shuns' and 'Disavows' actually get
--- exercised. See docs/DESIGN.md for why that's an additive query rather
--- than a change to 'venerates' itself.
+-- Every production's site\/ward facts are 'Sanctified' (transferring
+-- current sanctity) and 'Venerates' (naming the ward); every production
+-- also appends 'regardReactions', where 'Shuns' and 'Disavows' actually
+-- get exercised. See docs/DESIGN.md for why that's an additive query
+-- rather than a change to 'venerates' itself.
 ruleMiracle :: Rule
 ruleMiracle = rule "miracle" $ \w ->
   [fireMiracleSaint w s site msaint | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, msaint <- Nothing : map Just (livingMembers w s ++ deadMembers w s)]
@@ -472,14 +417,9 @@ fireMiracleOn _w s site actor target = do
   disputes <- maybeDispute s
   pure (MiracleOn outcome : disputes)
 
--- | 'Historian.Engine' migrations for all three 'ruleMiracle' productions.
--- Every one shares the same first two slots (an active society, a site it
--- 'venerates') — factored into 'miracleBaseSlots' rather than repeated.
--- 'fireMiracleSaint'\/'fireMiracleRelic' both already handle a 'Nothing'
--- ward the same mint-internally way schism's heresiarch and sanctify's
--- site do, so their ward slot is optional. @fireMiracleOn@'s @target@
--- spans two 'Kind's in the legacy rule (@'Person' ++ 'activeItems'@) —
--- exactly prophecy's multi-'Kind' problem below — so it's split into
+-- | The first two slots shared by all three 'ruleMiracle' productions: an
+-- active society, and a site it 'venerates'. @fireMiracleOn@'s @target@
+-- spans two 'Kind's in the legacy rule, so it's split into
 -- 'miracleOnPersonSpec'\/'miracleOnItemSpec' rather than one spec.
 miracleBaseSlots :: [Slot]
 miracleBaseSlots =
@@ -629,17 +569,13 @@ flipRegard Shunned = Venerated
 -- Relics ------------------------------------------------------------------
 
 -- | An optional item participant for battle, assassination, or the plain
--- ("saint") miracle production — the ones with no item slot of their own.
--- With some probability, draws either an existing item one of @cults@
--- already regards, or a freshly minted one with no regard yet (the 'Bool'
--- says which). Resolved entirely here, inside the effect — never as a new
--- bound variable in a rule's precondition list comprehension, so the
--- calling rule's candidate count doesn't grow at all from this (the same
--- reasoning that kept miracle's spectators out of candidate enumeration —
--- CLAUDE.md bug #3). Also returns any 'Embodies' claim a freshly-minted
--- item needs alongside it — the caller must fold this into its own claims
--- list, the same way 'fireMiracleRelic' does for its own optional fresh
--- item.
+-- ("saint") miracle production. With some probability, draws either an
+-- existing item one of @cults@ already regards, or a freshly minted one
+-- (the 'Bool' says which). Resolved entirely here, inside the effect —
+-- never as a bound variable in a rule's precondition list, so the calling
+-- rule's candidate count doesn't grow from it (CLAUDE.md bug #3). Also
+-- returns any 'Embodies' claim a freshly-minted item needs — the caller
+-- must fold it into its own claims list.
 optionalRelicFor :: World -> Culture -> [EntityId] -> Chronicle (Maybe (EntityId, Bool), [Claim])
 optionalRelicFor w cult cults = do
   present <- weighted [(70, False), (30, True)]
@@ -654,15 +590,13 @@ optionalRelicFor w cult cults = do
           (i, concept) <- newItem cult
           pure (Just (i, True), [Claim i Embodies (Just (ROf concept)) Nothing])
 
--- | The full optional-relic sequence shared by battle and assassination:
--- draw an item via 'optionalRelicFor', roll reactions to it via
--- 'regardReactions' when one was drawn, and package the result as one
--- 'RelicMoment' term — 'rmClaims' already combines the 'Embodies' claim
--- (if freshly minted) with the reaction claims, so callers never need to
--- fold the two lists together themselves. The plain ("saint") miracle
--- production doesn't use this: its item, when present, joins the *same*
--- 'regardReactions' call as the site and saint rather than getting a
--- standalone one, so it stays bespoke in 'fireMiracleSaint'.
+-- | The optional-relic sequence shared by battle and assassination: draw
+-- an item via 'optionalRelicFor', roll reactions via 'regardReactions'
+-- when one was drawn, and package the result as one 'RelicMoment' —
+-- 'rmClaims' already combines the 'Embodies' claim with the reaction
+-- claims. The plain ("saint") miracle production doesn't use this: its
+-- item joins the *same* 'regardReactions' call as the site and saint, so
+-- it stays bespoke in 'fireMiracleSaint'.
 fireRelicMoment :: World -> EntityId -> [EntityId] -> Maybe EntityId -> Chronicle (Maybe RelicMoment)
 fireRelicMoment w officiant cults fallbackSite = do
   (mrelicItem, embodiesClaims) <- optionalRelicFor w (cultureOf w officiant) cults
@@ -672,18 +606,13 @@ fireRelicMoment w officiant cults fallbackSite = do
       reactions <- regardReactions officiant [item]
       pure (Just (RelicMoment item fresh (embodiesClaims ++ reactions) fallbackSite))
 
--- | An optional dying utterance from a battle casualty or an assassination
--- victim, at the user's request — a curse (always 'Shuns'-omened, offered
--- only when @allowCurse@) or a more general vaticination (whatever omen
--- 'prophecyFramings' offers for the target's 'Kind', same as
--- 'ruleProphesy'), aimed at the killing society or the relic present in
--- the same event, if either. Reuses the existing 'Prophesied'\/'ROmen'
--- machinery exactly like 'ruleProphesy' — the only new thing is a Person,
--- not a Society, as prophet, and nothing anywhere assumes prophets are
--- societies, so this needed no plumbing changes. Resolved entirely here,
--- inside the effect, the same discipline as 'optionalRelicFor': there is
--- exactly one dying person per firing already, so this never becomes a
--- new dimension for a rule's own candidate list to grow along.
+-- | An optional dying utterance from a battle casualty or assassination
+-- victim: a curse (always 'Shuns'-omened, only when @allowCurse@) or a
+-- more general vaticination, aimed at the killing society or the relic
+-- present in the event, if either. Reuses 'Prophesied'\/'ROmen' exactly
+-- like 'ruleProphesy', with a Person rather than a Society as prophet.
+-- Resolved entirely here, inside the effect — the same discipline as
+-- 'optionalRelicFor'.
 fireDyingWords :: World -> EntityId -> EntityId -> Maybe EntityId -> Bool -> Chronicle (Maybe DyingWords)
 fireDyingWords w speaker killerSociety mRelic allowCurse = do
   speaks <- weighted [(70, False), (30, True)]
@@ -695,14 +624,11 @@ fireDyingWords w speaker killerSociety mRelic allowCurse = do
       if curse
         then do
           framing <- pick1 curseFramings
-          -- 'Shuns' only ever applies to a Ward (Person/Item/Site) —
-          -- 'regardReactions' never asserts it with a Society as the
-          -- object, so a curse aimed at the killer's *cult* has no honest
-          -- mechanical match and stays purely rhetorical ('Nothing'),
-          -- the same "no strained fit" call Decision 15/16 already made
-          -- for framings with nothing real to check against. Only a
-          -- curse that lands on the relic (when one was present) is a
-          -- claim anything could ever actually fulfill.
+          -- 'Shuns' only ever applies to a Ward (Person/Item/Site), never
+          -- a Society, so a curse aimed at the killer's cult has no
+          -- honest mechanical match and stays purely rhetorical
+          -- ('Nothing'). Only a curse landing on the relic, when present,
+          -- is fulfillable.
           let omen = if target == killerSociety then Nothing else Just Shuns
           pure (Just (DyingWords speaker target framing True [Claim speaker Prophesied (Just (ROmen target omen)) (Just speaker)]))
         else do
@@ -712,14 +638,12 @@ fireDyingWords w speaker killerSociety mRelic allowCurse = do
 
 -- | Any relic currently hallowed by some keeper can be stolen by any other
 -- active society — no grievance required, "covetousness alone" mirrors
--- miracle's "faith alone" precedent. The thief's new regard is
--- concept-biased the same as every other reaction (mostly 'Venerates',
--- since they wanted it enough to steal it; occasionally 'Shuns', stealing
--- to deny or desecrate it rather than possess it), and the deposed keeper
--- gets a fresh 'Grievance' — what makes theft costly rather than a free
--- transfer. No new predicate needed: reuses 'Venerates'\/'Shuns' plus
--- 'Grievance', the same way 'ruleDefile' reuses 'Sanctified'\/'Grievance'
--- rather than inventing "stolen" as a predicate (Decision 11).
+-- miracle's "faith alone". The thief's new regard is concept-biased
+-- (mostly 'Venerates'; occasionally 'Shuns', stealing to deny or
+-- desecrate rather than possess), and the deposed keeper gets a fresh
+-- 'Grievance' — what makes theft costly rather than a free transfer. No
+-- new predicate: reuses 'Venerates'\/'Shuns'\/'Grievance', the same way
+-- 'ruleDefile' reuses 'Sanctified'\/'Grievance'.
 ruleTheft :: Rule
 ruleTheft = rule "theft" $ \w ->
   [ fireTheft w item k h
@@ -736,9 +660,9 @@ fireTheft w item k h = do
   disputes <- maybeDispute h
   pure (Theft outcome : disputes)
 
--- | 'Historian.Engine' migration. All three slots optional: an item pool
--- with a current venerator, and a hostile-free thief, are both real
--- preconditions with no legacy "or mint one" branch to lean on.
+-- | Declarative equivalent of 'ruleTheft'. All three slots optional: an
+-- item pool with a current venerator, and a hostile-free thief, are both
+-- real preconditions with no "or mint one" branch to lean on.
 theftSpec :: RuleSpec
 theftSpec =
   RuleSpec
@@ -761,20 +685,18 @@ theftSpec =
       [Just item, Just k, Just h] -> fireTheft w item k h
       _ -> pure []
 
--- | Theft's peaceful counterpart, at the user's request: a relic changing
--- hands willingly — no grievance, no hostility precondition, unlike theft.
--- Any active society already regarding a relic, hallowed or cursed alike,
--- can gift it to any other. The receiver's new regard is concept-biased
--- the same as every other reaction, but weighted heavily toward matching
--- the giver's own polarity rather than theft's flat default — a gift
--- carries the giver's implicit endorsement.
+-- | Theft's peaceful counterpart: a relic changing hands willingly — no
+-- grievance, no hostility precondition. Any active society already
+-- regarding a relic, hallowed or cursed alike, can gift it to any other;
+-- the receiver's new regard is concept-biased but weighted heavily toward
+-- matching the giver's own polarity, since a gift carries the giver's
+-- implicit endorsement.
 --
--- The extension the user asked for alongside this: if the receiver
--- currently holds a grievance against the giver, the gift has a chance
--- (not a certainty — "optionally") to reconcile it, the same 'Reconciled'
--- predicate 'fireBattle' already uses for the winning side. This is what
--- actually gives gifting a reason to happen beyond flavor: a relic handed
--- over as a peace offering.
+-- If the receiver holds a grievance against the giver, the gift has a
+-- chance (not a certainty) to reconcile it via the same 'Reconciled'
+-- predicate 'fireBattle' uses for the winning side — what gives gifting a
+-- reason to happen beyond flavor: a relic handed over as a peace
+-- offering.
 ruleGift :: Rule
 ruleGift = rule "gift" $ \w ->
   [ fireGift w item g giverRegard r
@@ -798,11 +720,11 @@ fireGift w item g giverRegard r = do
     matchGiverWeights Venerated = [(85, Venerated), (15, Shunned)]
     matchGiverWeights Shunned = [(15, Venerated), (85, Shunned)]
 
--- | 'Historian.Engine' migration, the mirror image of 'theftSpec': any
--- current regard qualifies the giver, not just 'Venerated'. @giverRegard@
--- isn't its own slot — it's recovered from @g@'s own current regard in
--- 'fire', the same "derived, not picked" treatment 'defileSpec' gives its
--- claimant.
+-- | Declarative equivalent of 'ruleGift', mirroring 'theftSpec' but
+-- qualifying the giver by any current regard, not just 'Venerated'.
+-- @giverRegard@ isn't its own slot — it's recovered from @g@'s current
+-- regard in 'fire', the same "derived, not picked" treatment 'defileSpec'
+-- gives its claimant.
 giftSpec :: RuleSpec
 giftSpec =
   RuleSpec
@@ -829,13 +751,12 @@ giftSpec =
 
 -- | A relic currently cursed to its own keeper can be destroyed by that
 -- same keeper — the cult that already considers it cursed is who rids
--- itself of it, the simplest well-motivated reading for a first cut
--- (rather than a rival destroying something they don't even hold). If some
--- *other* society currently venerates the same item, they get a fresh
--- 'Grievance' toward the destroyer — echoes 'ruleDefile'\'s "grievance
--- from the deposed side". 'Terminated' permanently removes the item from
--- 'activeItems' — the same predicate 'ruleDissolve' uses for a society,
--- attributed to the destroyer here rather than 'Nothing'.
+-- itself of it. If some *other* society currently venerates the same
+-- item, they get a fresh 'Grievance' toward the destroyer — echoes
+-- 'ruleDefile'\'s "grievance from the deposed side". 'Terminated'
+-- permanently removes the item from 'activeItems', the same predicate
+-- 'ruleDissolve' uses for a society, attributed to the destroyer here
+-- rather than 'Nothing'.
 ruleDestroyRelic :: Rule
 ruleDestroyRelic = rule "destroy-relic" $ \w ->
   [ fireDestroyRelic item k
@@ -851,8 +772,8 @@ fireDestroyRelic item k = do
   disputes <- maybeDispute k
   pure (DestroyRelic outcome : disputes)
 
--- | 'Historian.Engine' migration. Same shape as 'theftSpec', just keyed
--- on 'Shunned' instead of 'Venerated'.
+-- | Declarative equivalent of 'ruleDestroyRelic'. Same shape as
+-- 'theftSpec', keyed on 'Shunned' instead of 'Venerated'.
 destroyRelicSpec :: RuleSpec
 destroyRelicSpec =
   RuleSpec
@@ -875,15 +796,10 @@ destroyRelicSpec =
 
 -- | Shared by 'ruleCoronation', 'ruleTrialByCombat', and 'ruleCoup': the
 -- new leader takes 'Leads', and their own freshly-rolled disposition
--- toward the society's patron concept ('propertyOf') directly decides
--- whether the society renames — not a looser probability nudge, per the
--- user's own framing. Biased toward continuity with the society's current
--- regard (a new leader usually, but not always, keeps the faith), the same
--- weighted-roll-off-a-current-state shape 'reactAsPrincipal'\/
--- 'reactAsSpectator' already use, rather than reusing 'polarityWeights'
--- itself — that function's indirection (a Ward's *own* linked concept) has
--- no equivalent here, since the roll is directly about the patron concept.
--- See Decision 19 in docs/DESIGN.md.
+-- toward the society's patron concept directly decides whether the
+-- society renames. Biased toward continuity with the society's current
+-- regard — a new leader usually, but not always, keeps the faith. See
+-- Decision 19 in docs/DESIGN.md.
 fireLeadershipChange :: World -> EntityId -> EntityId -> Chronicle LeadershipChange
 fireLeadershipChange w society newLeader = do
   let oldLeader = currentLeader w society
@@ -930,12 +846,11 @@ fireCoronation w s candidate = do
   disputes <- maybeDispute s
   pure (Coronation outcome : disputes)
 
--- | 'Historian.Engine' migration. The candidate slot deliberately doesn't
--- mint: an invented person crowned leader of a society they never
--- belonged to would be a real, silent correctness bug, not a harmless
--- stand-in the way schism's freshly-minted heresiarch is (that heresiarch
--- becomes the founder of a brand-new splinter, so "never belonged before"
--- is exactly the point; a coronation candidate must already be a member).
+-- | Declarative equivalent of 'ruleCoronation'. The candidate slot
+-- deliberately doesn't mint: an invented person crowned leader of a
+-- society they never belonged to would be a correctness bug, unlike
+-- schism's freshly-minted heresiarch, who becomes founder of a brand-new
+-- splinter — a coronation candidate must already be a member.
 coronationSpec :: RuleSpec
 coronationSpec =
   RuleSpec
@@ -982,9 +897,10 @@ fireTrialByCombat w s a b = do
 
 data TrialOutcome = ADies | BDies | BothDie
 
--- | 'Historian.Engine' migration. @a@'s slot has no rivalry constraint of
--- its own — only @b@'s does, checked against @a@ via 'rivalPairs' —
--- mirroring 'battleSpec's own two-society treatment of 'grievancePairs'.
+-- | Declarative equivalent of 'ruleTrialByCombat'. @a@'s slot has no
+-- rivalry constraint of its own — only @b@'s does, checked against @a@
+-- via 'rivalPairs' — mirroring 'battleSpec's two-society treatment of
+-- 'grievancePairs'.
 trialByCombatSpec :: RuleSpec
 trialByCombatSpec =
   RuleSpec
@@ -1030,12 +946,11 @@ fireCoup w s usurper leader = do
   disputes <- maybeDispute s
   pure (Coup outcome : disputes)
 
--- | 'Historian.Engine' migration. @leader@ is deterministic given @s@
--- ('currentLeader'), but still gets its own slot rather than being
+-- | Declarative equivalent of 'ruleCoup'. @leader@ is deterministic given
+-- @s@ ('currentLeader'), but still gets its own slot rather than being
 -- recomputed in 'fire' — unlike 'defileSpec's claimant, there's a real
 -- 'Person' 'Kind' here for 'Historian.Engine.queryEntity' to report
--- against ("this person satisfies coup's leader slot"), which recomputing
--- inline would lose.
+-- against, which recomputing inline would lose.
 coupSpec :: RuleSpec
 coupSpec =
   RuleSpec
@@ -1096,10 +1011,9 @@ fireAssassinate figure s h = do
   disputes <- maybeDispute h
   pure (Assassinate outcome : disputes)
 
--- | 'Historian.Engine' migration. @s@'s own slot has no active-society
--- constraint, matching the legacy comment above almost verbatim: a
--- nonempty @figure@ slot already implies @s@ has at least one living
--- member, hence isn't defunct.
+-- | Declarative equivalent of 'ruleAssassinate'. @s@'s slot has no
+-- active-society constraint: a nonempty @figure@ slot already implies @s@
+-- has a living member, hence isn't defunct.
 assassinateSpec :: RuleSpec
 assassinateSpec =
   RuleSpec
@@ -1167,13 +1081,12 @@ fireMerger w a b = do
       disputes <- maybeDispute survivor
       pure (Merger outcome : disputes)
 
--- | 'Historian.Engine' migration. No @a < b@ ordering constraint, unlike
--- the legacy list comprehension — that ordering only exists there to
--- avoid enumerating both @(a,b)@ and @(b,a)@ as separate candidates;
--- 'fireMerger' itself treats its two arguments symmetrically (a coin flip
--- decides new-society-vs-absorption and, independently, which side
--- survives), so dropping it changes candidate-count weighting, not
--- correctness.
+-- | Declarative equivalent of 'ruleMerger'. No @a < b@ ordering
+-- constraint: that only exists in the list comprehension to avoid
+-- enumerating both @(a,b)@ and @(b,a)@; 'fireMerger' itself treats its
+-- two arguments symmetrically (a coin flip decides new-society-vs-
+-- absorption and, independently, which side survives), so dropping it
+-- changes candidate-count weighting, not correctness.
 mergerSpec :: RuleSpec
 mergerSpec =
   RuleSpec
@@ -1224,27 +1137,22 @@ ruleDissolve = rule "dissolve" $ \w ->
   , not (alreadyMerged w s)
   ]
 
--- | No 'maybeDispute' call here, deliberately: @s@'s only party is the
--- society that just lost its last living member — the one voice this
--- rule could offer isn't an active society with an opinion to lend,
--- it's the account that no longer has anyone left to hold it (the same
--- reasoning behind 'Terminated's own attestor-less claim just below).
+-- | No 'maybeDispute' call, deliberately: @s@'s only party is the society
+-- that just lost its last living member — no voice left to lend an
+-- opinion (the same reasoning behind 'Terminated's own attestor-less
+-- claim below).
 fireDissolve :: EntityId -> Chronicle [Outcome]
 fireDissolve s = pure [Dissolve (DissolveOutcome s)]
 
--- | 'Historian.Engine' migration. The one slot is optional even though
--- it's the rule's only slot — never required — precisely to avoid
+-- | Declarative equivalent of 'ruleDissolve'. The one slot stays optional
+-- even though it's the rule's only slot, to avoid
 -- 'Historian.Engine.generateForKind' minting a fresh 'Society' to
--- dissolve on the spot: a freshly-minted society would trivially satisfy
--- "no living members" (it has none) but not "age >= 1" or any of the
--- other real preconditions, and worse, would land in the world with none
--- of 'patronClaims's claims — exactly the unsettled 'Society' auxiliary-
--- claims gap 'Historian.Engine.generateForKind' documents. One
--- consequence worth naming rather than hiding: with no required slot at
--- all, 'Historian.Engine.runnable' trivially reports this spec runnable
+-- dissolve on the spot — it would trivially satisfy "no living members"
+-- but not "age >= 1" or the other real preconditions, and would land with
+-- none of 'patronClaims's claims. With no required slot,
+-- 'Historian.Engine.runnable' trivially reports this spec runnable
 -- always, even with zero real candidates — a limitation of that check's
--- own conservatism (docs/DESIGN.md Decision 23), not something special
--- about dissolution.
+-- own conservatism, not something specific to dissolution.
 dissolveSpec :: RuleSpec
 dissolveSpec =
   RuleSpec
@@ -1294,11 +1202,11 @@ fireRevive reviver defunct = do
   disputes <- maybeDispute reviver
   pure (Revive outcome : disputes)
 
--- | 'Historian.Engine' migration. @defunct@ stays optional (never
--- minted) for the same reason 'dissolveSpec's own slot is: a freshly
--- generated society is never actually defunct, so there is nothing
--- honest to mint here — 'isDefunct' can only ever be true of something
--- that already exists.
+-- | Declarative equivalent of 'ruleRevive'. @defunct@ stays optional
+-- (never minted), same as 'dissolveSpec's slot: a freshly generated
+-- society is never actually defunct, so there is nothing honest to mint
+-- here — 'isDefunct' can only ever be true of something that already
+-- exists.
 reviveSpec :: RuleSpec
 reviveSpec =
   RuleSpec
@@ -1348,18 +1256,13 @@ fireProphesy target prophet = do
   disputes <- maybeDispute prophet
   pure (Prophesy outcome : disputes)
 
--- | 'Historian.Engine' migration. The legacy rule's @target@ ranges over
--- four different 'Kind's at once (@entitiesOf Society w ++ entitiesOf
--- Person w ++ entitiesOf Site w ++ activeItems w@) — 'Slot' has no way to
--- express "any of these Kinds", since it draws candidates from exactly
--- one via 'Historian.Engine.candidatesFor'. Rather than force a wrong
--- single-'Kind' shape (or silently narrow what the rule can do), this is
--- one 'RuleSpec' per target 'Kind', built off a shared helper — their
--- union covers exactly what 'ruleProphesy' already covers, just as four
--- separate ways to reach it instead of one. The target slot is optional
--- in every case (never minted): inventing a target purely so a prophecy
--- has someone to be about would be backwards, and for 'Item' specifically
--- it would also hit the exact 'Item' auxiliary-claims gap
+-- | 'ruleProphesy's @target@ ranges over four different 'Kind's at once;
+-- 'Slot' can only draw candidates from one 'Kind' at a time
+-- ('Historian.Engine.candidatesFor'), so this is one 'RuleSpec' per target
+-- 'Kind' via a shared helper — their union covers what 'ruleProphesy'
+-- covers. The target slot is optional in every case: inventing a target
+-- purely so a prophecy has someone to be about would be backwards, and
+-- for 'Item' it would also hit the 'Item' auxiliary-claims gap
 -- 'Historian.Engine.generateForKind' documents.
 prophesySpecFor :: Kind -> Text -> RuleSpec
 prophesySpecFor kind tag =
@@ -1388,31 +1291,19 @@ prophesyPersonSpec = prophesySpecFor Person "person"
 prophesySiteSpec = prophesySpecFor Site "site"
 prophesyItemSpec = prophesySpecFor Item "item"
 
--- | Which entity a claim's predicate is "about", for prophecy-fulfillment
--- purposes, and only for the closed set of predicates 'prophecyFramings'
--- actually offers as omens — everything else is 'Nothing', so a predicate
--- nobody ever foretells can never accidentally fulfill anything.
 -- Driver ---------------------------------------------------------------
 
--- | One historical step. Every satisfying binding across every rule is an
--- equally likely candidate, so rules self-weight by how much of the world
--- they currently apply to — 'ruleWeight' multiplies a rule's whole candidate
--- list before pooling, which is the two-line authorial override
--- 'docs/DESIGN.md' Decision 3 always said would be enough; every rule
--- currently uses the default weight of 1, so this is infrastructure with no
--- behavior change yet. Returns False when history has nothing to say.
---
--- The epoch advances unconditionally, before candidates are gathered: aging
--- preconditions like 'ruleSchism's @ageOf w s >= 1@ can only ever become true
--- if time passes on a step where nothing fires, so gating the advance on a
--- non-empty candidate list is a deadlock, not a no-op — with a single
--- freshly-founded society, every step's first candidate list is empty
--- forever and the epoch never moves.
--- | 'step', generalized over which rule list to pool candidates from.
--- 'step' itself is just this specialized to 'rules', so nothing about
--- existing behavior changes — this exists so 'generateViaEngine' below
--- can reuse the exact same pooling/advance/pick logic against a
--- different list rather than duplicating it.
+-- | One historical step, pooling candidates across @rs@. Every satisfying
+-- binding is an equally likely candidate, so rules self-weight by how
+-- much of the world they currently apply to; 'ruleWeight' multiplies a
+-- rule's whole candidate list before pooling. The epoch advances
+-- unconditionally, before candidates are gathered — aging preconditions
+-- like 'ruleSchism's @ageOf w s >= 1@ can only become true if time passes
+-- on a step where nothing fires, so gating the advance on a non-empty
+-- candidate list would deadlock a single freshly-founded society forever.
+-- Returns False when history has nothing to say. 'step' is this
+-- specialized to 'rules'; 'generateViaEngine' reuses it against
+-- 'rulesFromSpecs'.
 stepWith :: [Rule] -> Chronicle Bool
 stepWith rs = do
   advanceEpoch
@@ -1433,49 +1324,36 @@ generate :: Int -> Int -> World
 generate seed steps =
   execState (genesis >>= commitOutcomes >> replicateM_ steps step) (emptyWorld seed)
 
--- | The adapter promised by CLAUDE.md's work queue item 15: turns a
--- 'RuleSpec' into an ordinary 'Rule' by enumerating every satisfying
--- assignment via 'Historian.Engine.allAssignments' and firing each one
--- through the spec's own 'rsFire' — the direct translation of what a
--- hand-written 'Rule's own list comprehension already does by hand.
--- Drops any assignment that binds nothing at all (every slot 'Nothing')
--- before counting it as a candidate: 'allAssignments' includes that
--- all-'Nothing' combination for any spec whose slots are all optional
--- (right now, only 'dissolveSpec'), since it's a legitimate answer to
--- "every satisfying assignment, including omitting an optional slot" —
--- but firing it can only ever be a no-op ('dissolveSpec's own 'rsFire'
--- pattern-matches it straight to @pure []@), and counting a guaranteed
--- no-op as if it were a real candidate would dilute 'step's pool with a
--- wasted pick for no reason. This is a property of 'ruleFromSpec' alone,
--- not a fix to 'Historian.Engine' itself — 'intelligentStep's own
--- 'StepAny' handling has the same characteristic and is left exactly as
--- Phase 1 shipped it.
+-- | Turns a 'RuleSpec' into an ordinary 'Rule' by enumerating every
+-- satisfying assignment via 'Historian.Engine.allAssignments' and firing
+-- each one through the spec's own 'rsFire'. Drops any assignment that
+-- binds nothing at all: 'allAssignments' includes the all-'Nothing'
+-- combination for any spec whose slots are all optional (currently only
+-- 'dissolveSpec'), a legitimate answer to "every satisfying assignment"
+-- but one that can only ever fire as a no-op — counting it as a real
+-- candidate would dilute 'step's pool for nothing.
+-- 'Historian.Engine.intelligentStep's own 'StepAny' handling has the same
+-- characteristic and is left as is.
 ruleFromSpec :: RuleSpec -> Rule
 ruleFromSpec spec =
   rule (rsName spec) $ \w ->
     [rsFire spec w assignment | assignment <- allAssignments w spec, any isJust assignment]
 
 -- | Every migrated rule, run entirely through 'Historian.Engine' rather
--- than by hand — the natural completion of Decision 23's "generic,
--- declarative rule engine" framing for autonomous generation, not just
--- single-rule/single-entity queries, now that 'ruleSpecs' covers every
--- rule 'rules' does. Kept as its own separate list rather than replacing
--- 'rules' outright: a few specs (see docs/DESIGN.md's Decision 23
--- follow-up — 'battleSpec', 'mergerSpec', 'trialByCombatSpec')
+-- than by hand. Kept as its own separate list rather than replacing
+-- 'rules': a few specs ('battleSpec', 'mergerSpec', 'trialByCombatSpec')
 -- deliberately drop the legacy rule's ordering-based deduplication for
--- two-party pairs, so their candidate *count* is roughly double their
--- legacy counterpart's. Swapping this in for 'rules' would shift every
--- seed's self-weighting balance — a real behavior change nobody has
--- asked for, not a refactor, so 'rules'/'generate'/every existing seed
--- stay completely untouched.
+-- two-party pairs, so their candidate count runs roughly double their
+-- legacy counterpart's — swapping this in for 'rules' would shift every
+-- seed's self-weighting balance, a real behavior change nobody has asked
+-- for.
 rulesFromSpecs :: [Rule]
 rulesFromSpecs = map ruleFromSpec ruleSpecs
 
 -- | 'generate', but driven entirely by 'rulesFromSpecs' instead of the
--- hand-written 'rules' — proof, not just claim, that the engine can now
--- autonomously drive the whole simulation on its own. A genuinely
--- separate function from 'generate', matching 'rulesFromSpecs's own
--- reasoning for staying separate rather than replacing anything.
+-- hand-written 'rules' — proof that the engine can autonomously drive the
+-- whole simulation, kept as a separate function rather than replacing
+-- 'generate' for the same reason 'rulesFromSpecs' stays separate.
 generateViaEngine :: Int -> Int -> World
 generateViaEngine seed steps =
   execState (genesis >>= commitOutcomes >> replicateM_ steps (stepWith rulesFromSpecs)) (emptyWorld seed)

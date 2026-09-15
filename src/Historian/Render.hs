@@ -9,14 +9,10 @@
 -- outcome is one case of the 'Outcome' sum type, rendered by the single
 -- generic 'render' function below, which is pure — 'World' plus an
 -- 'Outcome' in, 'Text' out — deliberately never 'Chronicle': 'Historian.Rules'
--- still does every
--- effect (minting, rolling outcomes, building 'Claim's) and hands the
--- *resolved* result here as data, once, right before its one 'record'
--- call. This doesn't change when prose gets computed (still exactly once,
--- at fire time — invariant 3 in CLAUDE.md is untouched) or what it says;
--- it only moves *where the code that decides the wording lives*, so
--- 'Historian.Rules' stays about what happened and this module stays about
--- how to say it.
+-- does every effect (minting, rolling outcomes, building 'Claim's) and
+-- hands the *resolved* result here as data, right before its one 'record'
+-- call, so 'Historian.Rules' stays about what happened and this module
+-- stays about how to say it.
 module Historian.Render where
 
 import Control.Monad (forM_)
@@ -44,7 +40,7 @@ dateTag w e = T.justifyLeft 28 ' ' (dateOf w e)
 chronicle :: World -> Text
 chronicle w =
   T.unlines
-    [ T.concat [epochTag (evEpoch ev), " ", dateTag w (evEpoch ev), " ", T.justifyLeft 10 ' ' (evKind ev), " ", evText ev]
+    [ epochTag (evEpoch ev) <> " " <> dateTag w (evEpoch ev) <> " " <> T.justifyLeft 10 ' ' (evKind ev) <> " " <> evText ev
     | ev <- sortOn evId (M.elems (wEvents w))
     ]
 
@@ -101,24 +97,22 @@ referentText w = \case
   ROf e -> nameIn w e
   REvent eid -> case lookupEvent w eid of
     Nothing -> "an unrecorded event"
-    Just ev -> T.concat ["the ", evKind ev, " of ", dateOf w (evEpoch ev)]
+    Just ev -> "the " <> evKind ev <> " of " <> dateOf w (evEpoch ev)
   ROmen e _ -> nameIn w e
   RName t -> t
 
 factLine :: World -> Fact -> Text
 factLine w f =
-  T.concat
-    [ "  "
-    , epochTag (factEpoch f)
-    , " "
-    , dateTag w (factEpoch f)
-    , " "
-    , nameIn w (factSubject f)
-    , " "
-    , verbForFact w f
-    , maybe "" (T.cons ' ' . referentText w) (factObject f)
-    , maybe "" (\a -> T.concat [" [so recorded by ", nameIn w a, "]"]) (factAttestedBy f)
-    ]
+  "  "
+    <> epochTag (factEpoch f)
+    <> " "
+    <> dateTag w (factEpoch f)
+    <> " "
+    <> nameIn w (factSubject f)
+    <> " "
+    <> verbForFact w f
+    <> maybe "" (T.cons ' ' . referentText w) (factObject f)
+    <> maybe "" (\a -> " [so recorded by " <> nameIn w a <> "]") (factAttestedBy f)
 
 kindTag :: Kind -> Text
 kindTag = \case
@@ -135,16 +129,14 @@ dossier w i =
     header = case M.lookup i (wEntities w) of
       Nothing -> "unknown entity"
       Just e ->
-        T.concat
-          [ nameIn w i
-          , "  ("
-          , kindTag (entKind e)
-          , ", "
-          , unCulture (entCulture e)
-          , ", first attested "
-          , dateOf w (entBorn e)
-          , ")"
-          ]
+        nameIn w i
+          <> "  ("
+          <> kindTag (entKind e)
+          <> ", "
+          <> unCulture (entCulture e)
+          <> ", first attested "
+          <> dateOf w (entBorn e)
+          <> ")"
 
 -- Rule outcomes -----------------------------------------------------------
 --
@@ -203,17 +195,16 @@ data RelicMoment = RelicMoment
 -- moment it's first recognized at all.
 relicMomentText :: World -> Text -> RelicMoment -> Text
 relicMomentText w presenceClause rm =
-  T.concat [" ", nameIn w (rmItem rm), " ", presenceClause, relicRecognitionText w rm]
+  " " <> nameIn w (rmItem rm) <> " " <> presenceClause <> relicRecognitionText w rm
 
--- | The user's explicit wording for a relic gaining its first-ever regard:
--- hallowed relics are enshrined, cursed ones kept safe from rival cults —
--- at any site the reacting cult already venerates, falling back to
--- 'rmFallbackSite' (the event's own site, where it has one). Only fires
--- for a freshly-minted item ('rmFresh'): an already-established relic
--- reacting via 'regardReactions' already had its recognition moment
--- whenever *it* was first minted, so this isn't repeated for it. A plain
--- function, not an 'Outcome' case: this is a text fragment spliced into a
--- *parent* outcome's own prose, never independently recorded on its own.
+-- | Wording for a relic gaining its first-ever regard: hallowed relics
+-- are enshrined, cursed ones kept safe from rival cults — at any site the
+-- reacting cult already venerates, falling back to 'rmFallbackSite' (the
+-- event's own site, where it has one). Only fires for a freshly-minted
+-- item ('rmFresh'): an already-established relic's own recognition
+-- moment happened when *it* was first minted. A plain function, not an
+-- 'Outcome' case — a text fragment spliced into a parent outcome's prose,
+-- never independently recorded.
 relicRecognitionText :: World -> RelicMoment -> Text
 relicRecognitionText w rm
   | not (rmFresh rm) = ""
@@ -221,24 +212,21 @@ relicRecognitionText w rm
       (c : _) -> enshrineOrSafeguard w (clSubject c) (rmItem rm) (if clPred c == Venerates then Venerated else Shunned) (rmFallbackSite rm)
       [] -> ""
 
--- | The user's explicit wording for a cult's regard toward a relic:
--- hallowed relics are enshrined, cursed ones kept safe from rival cults —
--- at any site the cult already venerates, falling back to @fallbackSite@
--- if it venerates none yet, or narrating nothing at all if neither
--- exists. Shared by a freshly-minted item's first recognition
--- ('relicRecognitionText') and theft (the 'Theft' case of 'render'),
--- where the relic is already established but changing hands.
+-- | Wording for a cult's regard toward a relic: hallowed relics are
+-- enshrined, cursed ones kept safe from rival cults — at any site the
+-- cult already venerates, falling back to @fallbackSite@ if it venerates
+-- none yet, or narrating nothing at all if neither exists. Shared by a
+-- freshly-minted item's first recognition ('relicRecognitionText') and
+-- theft, where the relic is already established but changing hands.
 enshrineOrSafeguard :: World -> EntityId -> EntityId -> Regard -> Maybe EntityId -> Text
 enshrineOrSafeguard w cult item regard fallbackSite =
   case [st | st <- entitiesOf Site w, venerates w cult st] ++ maybe [] pure fallbackSite of
     (site : _) ->
-      T.concat
-        [ " "
-        , nameIn w cult
-        , case regard of
-            Venerated -> T.concat [" enshrined ", nameIn w item, " at ", nameIn w site, "."]
-            Shunned -> T.concat [" sealed ", nameIn w item, " away at ", nameIn w site, ", safe from rival cults."]
-        ]
+      " "
+        <> nameIn w cult
+        <> case regard of
+          Venerated -> " enshrined " <> nameIn w item <> " at " <> nameIn w site <> "."
+          Shunned -> " sealed " <> nameIn w item <> " away at " <> nameIn w site <> ", safe from rival cults."
     [] -> ""
 
 -- | Shared by battle and assassination: an optional dying utterance from
@@ -257,15 +245,14 @@ data DyingWords = DyingWords
 
 dyingWordsText :: World -> DyingWords -> Text
 dyingWordsText w dw =
-  T.concat
-    [ " With their last breath, "
-    , nameIn w (dwSpeaker dw)
-    , if dwCurse dw
-        then T.concat [" cursed ", nameIn w (dwTarget dw), ", that they "]
-        else T.concat [" prophesied that ", nameIn w (dwTarget dw), " "]
-    , dwFraming dw
-    , "."
-    ]
+  " With their last breath, "
+    <> nameIn w (dwSpeaker dw)
+    <> ( if dwCurse dw
+          then " cursed " <> nameIn w (dwTarget dw) <> ", that they "
+          else " prophesied that " <> nameIn w (dwTarget dw) <> " "
+       )
+    <> dwFraming dw
+    <> "."
 
 -- | Shared by all three leadership-transition rules
 -- ('Historian.Rules.fireCoronation'\/'fireTrialByCombat'\/'fireCoup', via
@@ -302,7 +289,7 @@ data LeadershipChange = LeadershipChange
 renameText :: LeadershipChange -> Text
 renameText lc = case lcRenamed lc of
   Nothing -> ""
-  Just newName -> T.concat [" In token of the change, ", lcSocietyName lc, " takes a new name: ", newName, "."]
+  Just newName -> " In token of the change, " <> lcSocietyName lc <> " takes a new name: " <> newName <> "."
 
 data BattleOutcome = BattleOutcome
   { btVictor :: EntityId
@@ -313,11 +300,8 @@ data BattleOutcome = BattleOutcome
   , btDyingWords :: Maybe DyingWords
   }
 
--- | No longer its own 'Historian.Rules.Rule' — see that module's own
--- comment on 'Historian.Rules.fireDispute' for why. Still its own
--- independent 'Event'\/render, just triggered from inside whichever other
--- rule's effect happens to roll it, rather than from a candidate list of
--- its own.
+-- | Not a standalone 'Rule' — triggered from inside another rule's effect
+-- rather than from its own candidate list. See 'Historian.Rules.fireDispute'.
 data DisputeOutcome = DisputeOutcome
   { dsDisputant :: EntityId
   , dsDisputed :: Event
@@ -464,8 +448,7 @@ data TrialByCombatOutcome = TrialByCombatOutcome
   , tcChallenger :: EntityId
   , tcRival :: EntityId
   , tcSlain :: [EntityId]
-  -- ^ One or both — a trial by combat always costs at least one life, per
-  -- the user's own framing of it.
+  -- ^ One or both — a trial by combat always costs at least one life.
   , tcLeadership :: Maybe LeadershipChange
   -- ^ 'Nothing' only when both combatants die and nobody is left to lead.
   }
@@ -510,73 +493,66 @@ data Outcome
   | TrialByCombat TrialByCombatOutcome
   | Coup CoupOutcome
 
--- | The one generic renderer every fired rule's effect calls, replacing
--- the twenty separate @renderX@ functions that used to sit one per
--- 'Outcome' case above. Nothing about *what* gets said changes — every
--- branch below is the untouched body of its old @renderX@ — only that
--- there is now one function taking the sum type, not twenty each taking
--- their own record.
+-- | The one generic renderer every fired rule's effect calls, one branch
+-- per 'Outcome' case.
 render :: World -> Outcome -> Text
 render w = \case
-  Founding o -> T.concat [nameIn w (fdSociety o), " was founded by ", nameIn w (fdFounder o), "."]
+  Founding o -> nameIn w (fdSociety o) <> " was founded by " <> nameIn w (fdFounder o) <> "."
   Schism o
-    | scFresh o -> T.concat [hN, ", until then unrecorded, broke from ", sN, " and took the name ", cN, "."]
-    | otherwise -> T.concat [hN, " renounced ", sN, " and led the dissent out as ", cN, "."]
+    | scFresh o -> hN <> ", until then unrecorded, broke from " <> sN <> " and took the name " <> cN <> "."
+    | otherwise -> hN <> " renounced " <> sN <> " and led the dissent out as " <> cN <> "."
     where
       hN = nameIn w (scHeresiarch o)
       sN = nameIn w (scParent o)
       cN = nameIn w (scSplinter o)
   Battle o ->
-    T.concat
-      [ nameIn w (btVictor o)
-      , " met "
-      , nameIn w (btVanquished o)
-      , " at "
-      , nameIn w (btSite o)
-      , ". The ground was held by the former"
-      , case btVictim o of
-          Nothing -> "."
-          Just p -> T.concat ["; ", nameIn w p, " was left among the dead."]
-      , maybe "" (relicMomentText w "was borne into the fray.") (btRelic o)
-      , maybe "" (dyingWordsText w) (btDyingWords o)
-      ]
+    nameIn w (btVictor o)
+      <> " met "
+      <> nameIn w (btVanquished o)
+      <> " at "
+      <> nameIn w (btSite o)
+      <> ". The ground was held by the former"
+      <> ( case btVictim o of
+            Nothing -> "."
+            Just p -> "; " <> nameIn w p <> " was left among the dead."
+         )
+      <> maybe "" (relicMomentText w "was borne into the fray.") (btRelic o)
+      <> maybe "" (dyingWordsText w) (btDyingWords o)
   Dispute o ->
-    T.concat
-      [ nameIn w (dsDisputant o)
-      , " disputes the common account of the "
-      , dateOf w (evEpoch (dsDisputed o))
-      , " "
-      , evKind (dsDisputed o)
-      , ": they hold it was "
-      , dsFraming o
-      , "."
-      ]
+    nameIn w (dsDisputant o)
+      <> " disputes the common account of the "
+      <> dateOf w (evEpoch (dsDisputed o))
+      <> " "
+      <> evKind (dsDisputed o)
+      <> ": they hold it was "
+      <> dsFraming o
+      <> "."
   Sanctify o
-    | syFresh o -> T.concat [sN, " raised ", siteN, " as a holy place out of nothing before it."]
-    | otherwise -> T.concat [sN, " consecrated ", siteN, ", where blood was once spilled, into a holy place."]
+    | syFresh o -> sN <> " raised " <> siteN <> " as a holy place out of nothing before it."
+    | otherwise -> sN <> " consecrated " <> siteN <> ", where blood was once spilled, into a holy place."
     where
       sN = nameIn w (syClaimant o)
       siteN = nameIn w (sySite o)
   Defile o ->
-    T.concat [nameIn w (dfClaimant o), " declares ", nameIn w (dfSite o), " purified of ", nameIn w (dfDeposed o), "'s corruption, and claims it as their own."]
-  MiracleSaint o -> T.concat [core, maybe "" (relicMomentText w "was witnessed there.") (msRelic o)]
+    nameIn w (dfClaimant o) <> " declares " <> nameIn w (dfSite o) <> " purified of " <> nameIn w (dfDeposed o) <> "'s corruption, and claims it as their own."
+  MiracleSaint o -> core <> maybe "" (relicMomentText w "was witnessed there.") (msRelic o)
     where
       sN = nameIn w (msSociety o)
       siteN = nameIn w (msSite o)
       saintN = nameIn w (msSaint o)
       core
-        | msFresh o = T.concat [sN, " proclaims a miracle at ", siteN, ", and names ", saintN, " a saint sprung from nowhere."]
-        | isDead w (msSaint o) = T.concat [sN, " proclaims a miracle at ", siteN, ": ", saintN, ", once slain, walks the dreams of the faithful still."]
-        | otherwise = T.concat [sN, " proclaims a miracle at ", siteN, " performed through ", saintN, "."]
+        | msFresh o = sN <> " proclaims a miracle at " <> siteN <> ", and names " <> saintN <> " a saint sprung from nowhere."
+        | isDead w (msSaint o) = sN <> " proclaims a miracle at " <> siteN <> ": " <> saintN <> ", once slain, walks the dreams of the faithful still."
+        | otherwise = sN <> " proclaims a miracle at " <> siteN <> " performed through " <> saintN <> "."
   MiracleRelic o
-    | mrFresh o -> T.concat [sN, " proclaims a miracle at ", siteN, ", where ", relicN, " is found, unaccountably, where nothing was before."]
-    | otherwise -> T.concat [sN, " proclaims a miracle at ", siteN, ": ", relicN, " is found to weep, or bleed, or sing."]
+    | mrFresh o -> sN <> " proclaims a miracle at " <> siteN <> ", where " <> relicN <> " is found, unaccountably, where nothing was before."
+    | otherwise -> sN <> " proclaims a miracle at " <> siteN <> ": " <> relicN <> " is found to weep, or bleed, or sing."
     where
       sN = nameIn w (mrSociety o)
       siteN = nameIn w (mrSite o)
       relicN = nameIn w (mrRelic o)
   MiracleOn o ->
-    T.concat [nameIn w (moSociety o), " proclaims a miracle at ", nameIn w (moSite o), ": ", nameIn w (moActor o), " ", verb, " ", nameIn w (moTarget o), "."]
+    nameIn w (moSociety o) <> " proclaims a miracle at " <> nameIn w (moSite o) <> ": " <> nameIn w (moActor o) <> " " <> verb <> " " <> nameIn w (moTarget o) <> "."
     where
       verb = case kindOf w (moTarget o) of
         Just Item -> "works a miracle upon"
@@ -584,66 +560,59 @@ render w = \case
           | isDead w (moTarget o) -> "calls back from among the dead"
           | otherwise -> "works a miracle upon"
   Theft o ->
-    T.concat [nameIn w (thThief o), "'s hands took ", nameIn w (thItem o), " from ", nameIn w (thKeeper o), " in the night.", enshrineOrSafeguard w (thThief o) (thItem o) (thRegard o) Nothing]
+    nameIn w (thThief o) <> "'s hands took " <> nameIn w (thItem o) <> " from " <> nameIn w (thKeeper o) <> " in the night." <> enshrineOrSafeguard w (thThief o) (thItem o) (thRegard o) Nothing
   Gift o ->
-    T.concat
-      [ nameIn w (giGiver o)
-      , " gifted "
-      , nameIn w (giItem o)
-      , " to "
-      , nameIn w (giReceiver o)
-      , if giReconciled o then ", and the grievance between them was laid to rest." else "."
-      , enshrineOrSafeguard w (giReceiver o) (giItem o) (giRegard o) Nothing
-      ]
+    nameIn w (giGiver o)
+      <> " gifted "
+      <> nameIn w (giItem o)
+      <> " to "
+      <> nameIn w (giReceiver o)
+      <> (if giReconciled o then ", and the grievance between them was laid to rest." else ".")
+      <> enshrineOrSafeguard w (giReceiver o) (giItem o) (giRegard o) Nothing
   DestroyRelic o ->
-    T.concat [nameIn w (drKeeper o), " broke ", nameIn w (drItem o), " beyond all mending, and named the curse lifted."]
+    nameIn w (drKeeper o) <> " broke " <> nameIn w (drItem o) <> " beyond all mending, and named the curse lifted."
   Assassinate o ->
-    T.concat
-      [ core
-      , maybe "" (relicMomentText w "was found at the scene.") (asRelic o)
-      , maybe "" (dyingWordsText w) (asDyingWords o)
-      ]
+    core
+      <> maybe "" (relicMomentText w "was found at the scene.") (asRelic o)
+      <> maybe "" (dyingWordsText w) (asDyingWords o)
     where
-      core = T.concat [nameIn w (asKillers o), "'s knives found ", nameIn w (asFigure o), " of ", sN, " in the dark, and left ", sN, " a body to bury."]
+      core = nameIn w (asKillers o) <> "'s knives found " <> nameIn w (asFigure o) <> " of " <> sN <> " in the dark, and left " <> sN <> " a body to bury."
       sN = nameIn w (asSociety o)
   Merger (MergerFounding a b new _) ->
-    T.concat [nameIn w a, " and ", nameIn w b, " dissolved into a single body, taking the name ", nameIn w new, "."]
+    nameIn w a <> " and " <> nameIn w b <> " dissolved into a single body, taking the name " <> nameIn w new <> "."
   Merger (MergerAbsorption absorbed survivor) ->
-    T.concat [nameIn w absorbed, " was absorbed into ", nameIn w survivor, ", and ceased to speak with its own voice."]
-  Dissolve o -> T.concat [nameIn w (dsSociety o), " has no one left to speak for it, and passes from history."]
-  Revive o -> T.concat [nameIn w (rvReviver o), " proclaims itself heir to the fallen name of ", nameIn w (rvDefunct o), ", and takes up its banner."]
-  Prophesy o -> T.concat [nameIn w (pyProphet o), " prophesies that ", nameIn w (pyTarget o), " ", pyFraming o, "."]
+    nameIn w absorbed <> " was absorbed into " <> nameIn w survivor <> ", and ceased to speak with its own voice."
+  Dissolve o -> nameIn w (dsSociety o) <> " has no one left to speak for it, and passes from history."
+  Revive o -> nameIn w (rvReviver o) <> " proclaims itself heir to the fallen name of " <> nameIn w (rvDefunct o) <> ", and takes up its banner."
+  Prophesy o -> nameIn w (pyProphet o) <> " prophesies that " <> nameIn w (pyTarget o) <> " " <> pyFraming o <> "."
   Coronation o ->
-    T.concat
-      [ lcSocietyName (crLeadership o)
-      , " coronates "
-      , nameIn w (lcNewLeader (crLeadership o))
-      , " as its leader."
-      , renameText (crLeadership o)
-      , case crRivals o of
-          [] -> ""
-          rivals ->
-            T.concat
-              [ " "
-              , T.intercalate " and " (map (nameIn w) rivals)
-              , if length rivals == 1 then " begrudges the choice." else " begrudge the choice."
-              ]
-      ]
+    lcSocietyName (crLeadership o)
+      <> " coronates "
+      <> nameIn w (lcNewLeader (crLeadership o))
+      <> " as its leader."
+      <> renameText (crLeadership o)
+      <> ( case crRivals o of
+            [] -> ""
+            rivals ->
+              " "
+                <> T.intercalate " and " (map (nameIn w) rivals)
+                <> (if length rivals == 1 then 
+                  " begrudges the choice." else " begrudge the choice.")
+         )
   TrialByCombat o ->
-    T.concat
-      [ nameIn w (tcChallenger o)
-      , " and "
-      , nameIn w (tcRival o)
-      , " settle their rivalry in trial by combat before "
-      , tcSocietyName
-      , "."
-      , case tcSlain o of
-          [d] -> T.concat [" ", nameIn w d, " is left dead on the ground."]
-          [d1, d2] -> T.concat [" ", nameIn w d1, " and ", nameIn w d2, " fall together, and neither is left to claim victory."]
-          _ -> ""
-      , maybe "" (\lc -> T.concat [" ", nameIn w (lcNewLeader lc), " is proclaimed leader of ", tcSocietyName, " in the aftermath."]) (tcLeadership o)
-      , maybe "" renameText (tcLeadership o)
-      ]
+    nameIn w (tcChallenger o)
+      <> " and "
+      <> nameIn w (tcRival o)
+      <> " settle their rivalry in trial by combat before "
+      <> tcSocietyName
+      <> "."
+      <> ( case tcSlain o of
+            [d] -> " " <> nameIn w d <> " is left dead on the ground."
+            [d1, d2] -> " " <> nameIn w d1 <> " and " <> nameIn w d2 <> " fall together, and neither is left to claim victory."
+            _ -> ""
+         )
+      <> maybe "" (\lc -> " " <> nameIn w (lcNewLeader lc) <> " is proclaimed leader of " <> tcSocietyName <> " in the aftermath.") (tcLeadership o)
+      <> maybe "" renameText (tcLeadership o)
     where
       -- The pre-transition name whenever a leadership change actually
       -- happened this event (which may also rename the society) — plain
@@ -652,25 +621,22 @@ render w = \case
       -- 'Nothing'.
       tcSocietyName = maybe (nameIn w (tcSociety o)) lcSocietyName (tcLeadership o)
   Coup o ->
-    T.concat
-      [ nameIn w (lcNewLeader (cpLeadership o))
-      , " moves against "
-      , nameIn w (cpDeposed o)
-      , ", and seizes leadership of "
-      , lcSocietyName (cpLeadership o)
-      , " without a drop of blood spilled."
-      , renameText (cpLeadership o)
-      ]
+    nameIn w (lcNewLeader (cpLeadership o))
+      <> " moves against "
+      <> nameIn w (cpDeposed o)
+      <> ", and seizes leadership of "
+      <> lcSocietyName (cpLeadership o)
+      <> " without a drop of blood spilled."
+      <> renameText (cpLeadership o)
 
 -- Outcome claims and commit ------------------------------------------------
 --
--- The other half of "'Outcome' -> anything", alongside 'render': every
--- @xClaims@ function a fired rule's claims list used to be built from
--- lives here now, next to the record types they read — 'Historian.Rules'
--- only ever constructs an 'Outcome' and hands it off; it never builds a
--- claims list by hand any more. 'outcomeKind' and 'outcomeClaims' are the
--- two dispatchers 'commitOutcomes' needs to turn an 'Outcome' into an
--- actual 'record' call — 'commitOutcomes' itself is the *only* place
+-- The other half of "'Outcome' -> anything", alongside 'render': one
+-- @xClaims@ function per record type, next to the types they read.
+-- 'Historian.Rules' only ever constructs an 'Outcome' and hands it off,
+-- never builds a claims list by hand. 'outcomeKind' and 'outcomeClaims'
+-- are the two dispatchers 'commitOutcomes' needs to turn an 'Outcome'
+-- into an actual 'record' call — 'commitOutcomes' itself is the *only* place
 -- 'record' and 'render' are ever called together.
 
 foundingClaims :: FoundingOutcome -> [Claim]
@@ -813,18 +779,14 @@ reviveClaims o = [Claim (rvReviver o) Revives (Just (ROf (rvDefunct o))) (Just (
 prophesyClaims :: ProphesyOutcome -> [Claim]
 prophesyClaims o = [Claim (pyProphet o) Prophesied (Just (ROmen (pyTarget o) (pyOmen o))) (Just (pyProphet o))]
 
--- | Extracted from 'Historian.Rules.fireCoronation''s own inline claims —
--- @candidate@ there is always 'lcNewLeader' of its own 'crLeadership'.
 coronationClaims :: CoronationOutcome -> [Claim]
 coronationClaims o =
   lcClaims (crLeadership o)
     ++ [Claim r Rivalry (Just (ROf (lcNewLeader (crLeadership o)))) (Just r) | r <- crRivals o]
 
--- | Extracted from 'Historian.Rules.fireTrialByCombat''s own inline
--- claims — @slainClaims@ there named which combatant killed which
--- directly off the roll; reconstructed here from 'tcSlain' plus whichever
--- of 'tcChallenger'\/'tcRival' isn't the slain one, since that's all the
--- outcome itself carries.
+-- | Which combatant killed which is reconstructed from 'tcSlain' plus
+-- whichever of 'tcChallenger'\/'tcRival' isn't the slain one, since
+-- that's all the outcome itself carries.
 trialByCombatClaims :: TrialByCombatOutcome -> [Claim]
 trialByCombatClaims o =
   [Claim p Slain (Just (ROf (theOther p))) (Just (tcSociety o)) | p <- tcSlain o]
@@ -835,8 +797,6 @@ trialByCombatClaims o =
   where
     theOther p = if p == tcChallenger o then tcRival o else tcChallenger o
 
--- | Extracted from 'Historian.Rules.fireCoup''s own inline claims —
--- @usurper@ there is always 'lcNewLeader' of its own 'cpLeadership'.
 coupClaims :: CoupOutcome -> [Claim]
 coupClaims o =
   lcClaims (cpLeadership o)
@@ -844,8 +804,8 @@ coupClaims o =
        , Claim (lcNewLeader (cpLeadership o)) Reconciled (Just (ROf (cpDeposed o))) (Just (lcNewLeader (cpLeadership o)))
        ]
 
--- | The event-kind tag each 'record' call used to pass as a literal
--- string — now a total function of the constructor.
+-- | The event-kind tag for each 'record' call, as a total function of
+-- the constructor.
 outcomeKind :: Outcome -> Text
 outcomeKind = \case
   Founding _ -> "founding"
@@ -901,12 +861,9 @@ outcomeClaims w = \case
 -- values and hands them here, at the point an evaluation step actually
 -- commits a result ('Historian.Rules.stepWith'\/'Historian.Rules.generate',
 -- or 'Historian.Engine.intelligentStep' for the engine's own single-rule
--- path). 'fulfillProphecies' is applied uniformly to every outcome's
--- claims now, rather than selectively per rule as before — verified inert
--- for the three rules that used to skip it ('Dispute'\/'Revive'\/
--- 'Prophesy'): 'omenOf' has no case for their own predicates
--- ('Disputes'\/'Revives'\/'Prophesied'), so this can never actually
--- fulfill anything for them.
+-- path). 'fulfillProphecies' runs uniformly over every outcome's claims —
+-- harmless for 'Dispute'\/'Revive'\/'Prophesy', since 'omenOf' has no case
+-- for their own predicates ('Disputes'\/'Revives'\/'Prophesied').
 commitOutcomes :: [Outcome] -> Chronicle ()
 commitOutcomes outcomes = do
   w <- get

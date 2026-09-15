@@ -46,8 +46,7 @@ data Kind
   | Site
   | Item
   -- ^ A physical object that can be venerated or shunned like a person or
-  -- site. Fills the "site or relic" gap 'Historian.Rules.ruleMiracle'
-  -- originally scoped out for lack of a kind to mint it as.
+  -- site.
   | Concept
   -- ^ A shared, symbolic idea — an element, mineral, animal, monster, or
   -- similar (see 'Historian.Corpus.conceptNames') — that a cult can itself
@@ -68,13 +67,11 @@ data Entity = Entity
   , entModifier :: Maybe Int
   -- ^ -2..+4, rolled once at creation for every 'Item' ('Nothing' for
   -- every other 'Kind'). A placeholder for future mechanical use — nothing
-  -- reads it yet, the same infrastructure-before-use spirit as
-  -- 'Historian.Rules.ruleWeight' when it was first introduced. The
-  -- 'Concept' an 'Item' embodies is deliberately *not* a field here —
-  -- unlike this scalar, it's a relationship to another entity, so it's an
-  -- 'Embodies' fact instead (see 'Predicate'), the same reasoning that
-  -- keeps every other relationship in this model fact-based rather than
-  -- baked onto 'Entity'.
+  -- reads it yet. The 'Concept' an 'Item' embodies is deliberately *not* a
+  -- field here — unlike this scalar, it's a relationship to another
+  -- entity, so it's an 'Embodies' fact instead (see 'Predicate'), keeping
+  -- every relationship in this model fact-based rather than baked onto
+  -- 'Entity'.
   }
   deriving stock (Show)
 
@@ -125,15 +122,14 @@ data Predicate
   -- *prophecy's own* event — the same shape 'Disputes' points at a
   -- disputed one. See 'Historian.Rules.fulfillProphecies'.
   | Embodies
-  -- ^ An 'Item''s (or, since Decision 19, any 'Society''s) link to the
-  -- 'Concept' it symbolically embodies — intrinsic, not attested by
-  -- anyone (like a dissolved society's 'Terminated' fact, nobody "holds
-  -- this account"; unlike it, this is asserted the moment the entity is
-  -- minted, not conditionally). What makes a 'Concept' entity inspectable
-  -- at all, and what 'Historian.World.propertyOf' reads to bias
+  -- ^ An 'Item''s (or any 'Society''s) link to the 'Concept' it
+  -- symbolically embodies — intrinsic, not attested by anyone, asserted
+  -- unconditionally the moment the entity is minted. What makes a
+  -- 'Concept' entity inspectable at all, and what
+  -- 'Historian.World.propertyOf' reads to bias
   -- 'Historian.Rules.polarityWeights' toward whatever the reacting cult
   -- already thinks of that concept. For a society, this is its *patron*
-  -- concept — see 'Named' and Decision 19 in docs/DESIGN.md.
+  -- concept — see 'Named'.
   | Named
   -- ^ Marks a society's current name resolved — 'Historian.World.nameIn'
   -- reads the latest one, falling back to 'entName' when there isn't one
@@ -175,10 +171,8 @@ data Referent
   -- ^ A 'Named' fact's object: the entity's freshly chosen name. The only
   -- case where 'Referent' carries raw text rather than pointing at
   -- something else — nothing else in 'Fact'\/'Claim' has a text-carrying
-  -- slot, and per Decision 9 a parallel record is exactly what extending
-  -- 'Referent' again avoids. See 'Historian.World.nameIn' and Decision 19
-  -- in docs/DESIGN.md — this is what "Known compromise" always said would
-  -- be the right move if a rule ever needed to rename something.
+  -- slot; extending 'Referent' again keeps this out of a parallel record,
+  -- per Decision 9. See 'Historian.World.nameIn'.
   deriving stock (Eq, Ord, Show)
 
 data Fact = Fact

@@ -1733,3 +1733,115 @@ result is simply discarded still type-checks, it just never calls
 `record`. Caught immediately by `cabal test` itself (a check failure,
 then a crash from a downstream `firstOrErr` finding nothing), not by
 inspection.
+
+## Decision 25: naming `Historian.Engine`'s CSP vocabulary explicitly
+
+**Needed for:** the user's own research, raised in conversation — they'd
+identified that `Historian.Engine` (Decision 23) is a constraint
+satisfaction problem, specifically one of *extensional* constraints with
+solutions weighted against each other, and asked whether a CP library or
+methodology should replace the hand-rolled version.
+
+**Checked, not assumed: the "extensional" half of that framing doesn't
+match what's built, and that's correct, not a gap.** An extensional
+(table) constraint is one given as an explicit enumerated set of allowed
+tuples; an intensional constraint is a predicate evaluated against
+candidates. `slotConstraint :: World -> [EntityId] -> EntityId -> Bool` is
+intensional — a closure over live, mutable `World` state (e.g. a
+heresiarch's constraint checks `livingMembers` at the moment the rule
+fires). A literal table would need to be rebuilt from that same state on
+every call anyway, which is just re-deriving the predicate with extra
+steps. `allAssignments` is where an extensional view legitimately shows
+up: it's the fully-enumerated *solution set* of the CSP, computed on
+demand — extensional solutions over intensional constraints is the normal
+combination, not a conflict.
+
+**The rest of the framing already matches, and already has vocabulary in
+Decision 23 — it just isn't named as CSP terms there.** `Slot` is a CSP
+variable (`slotKind` bounds its domain to `entitiesOf slotKind`,
+`slotConstraint` is its constraint); `RuleSpec` is a small CSP over a
+rule's free variables; `allAssignments` is brute-force solution
+enumeration (Cartesian product across slots, filtered per slot); `step`/
+`intelligentStep`'s `StepAny` is weighted-uniform sampling over that
+solution set (`ruleWeight` replication, then a uniform pick). No new
+methodology was needed to reach this — it's what Decision 23 already
+built, via the Prolog-resolution precedent, before this framing had a
+name.
+
+**Considered and rejected: a dedicated CP/SMT/ASP library or `LogicT`.**
+SMT solvers (`SBV`) and ASP solvers (clingo) are built to *find or
+optimize* a solution, not *uniformly sample* one, and both require an
+external process or FFI boundary that would break `generate`'s purity
+(invariant 5). `LogicT` was checked in more detail: its value over plain
+`List` is fairness (interleaving so one infinite/huge branch can't starve
+another), pruning (`once`/`ifte`, stop before enumerating everything), and
+backtracking (undo a choice, try the next). None apply — every domain
+here is small and finite, `allAssignments` deliberately materializes the
+*entire* solution set rather than stopping early (since `step` needs the
+full pool to weight-sample across), and nothing does sequential
+commit-then-discover-a-dead-end resolution that would need retrying.
+Worse, folding search into `Chronicle` (`LogicT (State World)`) would not
+give free per-branch state rollback the way Prolog's trail does — a
+dead-end branch wouldn't undo RNG advances or minted entities without
+manual snapshot/restore — which is exactly the hazard the current
+two-phase split (enumerate purely with no `Chronicle` involved, mint/roll
+RNG exactly once at commit) exists to avoid. Consistent with Decisions 1
+and 2's own reasoning against reaching for heavier machinery than a rule's
+actual shape needs.
+
+**Chosen: no library, no structural change — name the existing vocabulary
+in `Historian.Engine`'s own doc comments** (`Slot` as variable+domain,
+`slotConstraint` as an intensional constraint, `allAssignments` as the
+extensional solution set), so the CSP shape is legible without first
+reading the Prolog analogy in Decision 23. Comments only; `cabal build`/
+`cabal test` unaffected.
+
+## Decision 26: day gaps scaled by world activity
+
+**Needed for:** work queue item 16 — the flat `roll (1, 300)` gap Decision
+22 introduced doesn't distinguish a lone founding society from a world
+with a dozen cults and their memberships jostling each other; the user
+asked for the gap to shrink as the world gets busier instead.
+
+**Chosen: `activeSocieties` count plus total `livingMembers` across them
+is `advanceEpoch`'s "activity" figure, and it narrows the *upper* end of
+the roll, not the lower.** `maxGap = max 20 (300 - 5 * activity)` — every
+additional active society or living member shaves 5 days off the top of
+the range, floored at 20 so the range never collapses to a single fixed
+value (which would make gaps stop feeling irregular, the entire point of
+Decision 22). The lower bound stays 1 unconditionally. A fresh world
+(activity 0, before genesis has even run) gets the original full 1..300
+spread; a busy one tightens toward 1..20. `activity` is read fresh from
+`World` at the *start* of each `advanceEpoch` call, i.e. against the state
+left by the previous step — cheap, since `activeSocieties`/
+`livingMembers` are already plain queries over `wFacts`, no new state to
+maintain.
+
+**Considered and rejected: weighting society count and membership
+differently, or using membership alone.** Total living membership alone
+already implicitly captures "more cults, or bigger ones" (more cults with
+members raises it exactly like fewer bigger ones do), but a population of
+recluses spread across many independent societies plausibly generates
+more *events* than the same headcount in one — each active society is
+itself a distinct actor with its own candidate rules. Counting societies
+and members with equal weight (rather than inventing a second tunable
+coefficient to balance them) was the simplest thing that satisfies both
+readings of "number of cults and their size" without over-fitting a
+constant nobody asked for.
+
+**Still consumes `Chronicle`'s ordinary RNG stream, exactly as Decision
+22 already established — this activity-scaling doesn't touch `dateOf`,
+`yearMonths`, or `calendarParams`, so invariant 8 stays exactly as
+uninvolved as it was before.** Only the width of the range `roll` is
+called with changed; the calendar-rendering half of the system was never
+touched.
+
+**Verified against a real run, not just written:** seed 1 at 30 steps
+still shows plausible year-spanning gaps (E0→E246→E490→E678→…), and
+`cabal test` passed at exactly 187 checks with no seed replacement needed
+— the range narrowing is gradual enough, at this project's typical
+population sizes over a normal run length, that it didn't dislodge any
+existing aggregate check's witness the way every *RNG-consumption-count*
+change in this project's history has. This change doesn't add or remove
+a roll, only reshapes the bounds of the one Decision 22 already made, so
+that's the expected outcome, not a surprise.

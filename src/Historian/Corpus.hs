@@ -38,10 +38,9 @@ semitic = Culture "Semitic"
 mesoamerican :: Culture
 mesoamerican = Culture "Mesoamerican"
 
--- | A joke culture, at the user's explicit request: the Baboons of Caves
--- of Qud, whose entire vocabulary is hooting. No real-world phonology to
--- respect — just vowels, "h", and a very high 'ngHyphenChance' so names
--- read as a chant ("Oo-Ee-Ahoo-Waa").
+-- | A joke culture: the Baboons of Caves of Qud, whose entire vocabulary
+-- is hooting. No real-world phonology — just vowels, "h", and a very high
+-- 'ngHyphenChance' so names read as a chant ("Oo-Ee-Ahoo-Waa").
 baboon :: Culture
 baboon = Culture "Baboon"
 
@@ -244,9 +243,8 @@ mesoamericanGrammar =
     , ngHyphenChance = 20
     }
 
--- | The highest hyphen chance and syllable cap of any culture, at the
--- user's explicit request: a longer chain of hooted syllables reads as a
--- chant ("Oo-Ee-Ahoo-Waa"), which is the entire point.
+-- | The highest hyphen chance and syllable cap of any culture: a longer
+-- chain of hooted syllables reads as a chant ("Oo-Ee-Ahoo-Waa"), the point.
 baboonGrammar :: NameGrammar
 baboonGrammar =
   NameGrammar
@@ -302,14 +300,10 @@ itemEpithets =
 
 -- | A dying curse's own framing — deliberately flat, not indexed by
 -- 'Kind' like 'prophecyFramings': a curse's "may you be shunned" register
--- reads naturally against a society, a person, or an item alike, unlike a
--- doom prophecy's kind-specific imagery. Always paired with the 'Shuns'
--- omen ('Historian.Rules.fireDyingWords') — the first thing that actually
--- makes `omenOf`'s `Shuns` case reachable, since the relics work remapped
--- 'Item'\'s own lines to 'Terminated' (Decision 17, docs/DESIGN.md).
--- | 'NonEmpty', not a plain list, so picking one never needs a fallback
--- literal — 'Historian.Rules.fireDyingWords' can take the head as its own
--- safe default rather than making one up.
+-- reads naturally against a society, a person, or an item alike. Always
+-- paired with the 'Shuns' omen ('Historian.Rules.fireDyingWords').
+-- 'NonEmpty' so 'fireDyingWords' can take the head as its own fallback
+-- instead of a separate literal.
 curseFramings :: NonEmpty Text
 curseFramings =
   "will be shunned by all who once called them kin"
@@ -410,12 +404,11 @@ eraNames =
 
 -- | What a prophecy foretells, keyed by the kind of thing it's about, each
 -- line paired with the 'Predicate' whose future assertion about the target
--- would fulfill it (see 'Historian.Rules.omenOf'/'fulfillProphecies') —
+-- fulfills it (see 'Historian.Rules.omenOf'/'fulfillProphecies') —
 -- 'Nothing' for a line with no honest mechanical match, which stays purely
--- rhetorical, exactly what every prophecy was before fulfillment existed.
--- Deliberately excludes already-ubiquitous predicates ('Grievance',
--- 'Venerates', 'Reconciled') as omens: they fire constantly via unrelated
--- rules and would make "fulfilled" nearly meaningless.
+-- rhetorical. Excludes 'Grievance'\/'Venerates'\/'Reconciled' as omens
+-- deliberately: they fire so constantly via unrelated rules that using them
+-- would make "fulfilled" nearly meaningless.
 prophecyFramings :: Kind -> [(Maybe Predicate, Text)]
 prophecyFramings Society =
   [ (Just Terminated, "will fall to ruin within a generation")
@@ -443,22 +436,17 @@ prophecyFramings Item =
   ]
 prophecyFramings Concept = []
 
--- | Fallback used only if 'prophecyFramings' is ever asked about a 'Kind'
--- with no framings of its own (currently just 'Concept', which
--- 'Historian.Rules.ruleProphesy' never targets, so this never actually
--- fires) — kept here, not as a string literal in 'Historian.Rules', so
--- every scrap of prose stays in one place.
+-- | Fallback for a 'Kind' with no framings of its own (currently just
+-- 'Concept', which 'Historian.Rules.ruleProphesy' never targets, so this
+-- never actually fires). Kept here rather than a literal in
+-- 'Historian.Rules' so all prose stays in one place.
 defaultFraming :: (Maybe Predicate, Text)
 defaultFraming = (Nothing, "will not see another dawn")
 
--- | Contrary framings for a disputed event, keyed by 'evKind'. Falls back to
--- a generic framing for any kind not listed, so a future event kind never
--- makes reinterpretation crash — only sound blander until it earns entries
--- here.
--- | 'NonEmpty', same reasoning as 'curseFramings': the wildcard case
--- already guarantees this never runs dry, so the type may as well say so
--- — 'Historian.Rules.fireReinterpret' takes the head as its own fallback
--- rather than a literal.
+-- | Contrary framings for a disputed event, keyed by 'evKind'. Falls back
+-- to a generic framing for any kind not listed, so a future event kind
+-- never makes disputing crash — only sound blander until it earns entries
+-- here. 'NonEmpty' for the same reason as 'curseFramings'.
 disputedFramings :: Text -> NonEmpty Text
 disputedFramings "founding" =
   "no founding at all, but a theft of a name already owed elsewhere"
