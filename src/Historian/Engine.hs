@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | A generic, declarative rule-matching engine (docs/DESIGN.md Decision
+-- | A generic, declarative rule-matching engine (.claude/docs/DESIGN.md Decision
 -- 23) — in CSP terms, 'RuleSpec' is a small constraint satisfaction
 -- problem per rule; see Decision 25 for the full vocabulary mapping and
 -- why a CP library isn't a better fit. Sits between
@@ -30,7 +30,7 @@ import Historian.World
 -- | One parameter a rule needs filled — a CSP variable: 'slotKind' bounds
 -- its domain, 'slotConstraint' is an intensional constraint on it (a
 -- predicate over live 'World' state, not an enumerated table — see
--- docs/DESIGN.md Decision 25 for why that's the right shape here).
+-- .claude/docs/DESIGN.md Decision 25 for why that's the right shape here).
 -- 'slotConstraint' takes the entities already resolved for earlier slots
 -- (declaration order, see 'RuleSpec') alongside the candidate, so a later
 -- slot can depend on an earlier one (a schism's heresiarch must belong to

@@ -574,7 +574,7 @@ correctly without thinking about it.
 
 ## Decision 13: prophecy, cheap version only
 
-**Needed for:** `docs/EVENTS.md` already sketched prophecy, in the
+**Needed for:** `.claude/docs/EVENTS.md` already sketched prophecy, in the
 "rules considered and deliberately not on the list" section, as a
 present-tense `Prophesied` fact "that later rules may or may not choose to
 satisfy." The user asked to build it, then — in the same message — asked to
@@ -601,7 +601,7 @@ have to become *structured* claims a rule's own effect could actually be
 compared against (something like "this society dissolves" or "this person
 is slain" as data, not prose), since there's no way to mechanically check
 whether a sentence a human would read and judge has "come true." Write-up
-lives in `docs/EVENTS.md` under Prophecy so the scope decision doesn't need
+lives in `.claude/docs/EVENTS.md` under Prophecy so the scope decision doesn't need
 re-deriving from scratch if this is picked back up.
 
 ## Decision 14: Ward regard — a convention, two new predicates, an additive query
@@ -675,7 +675,7 @@ verification already demonstrated deliberately.
 ## Decision 15: prophecy fulfillment — a third `Referent` case, not a fourth predicate
 
 **Needed for:** the fuller version of prophecy, deliberately deferred in
-Decision 13 and written up in `docs/EVENTS.md`'s "left for later" note:
+Decision 13 and written up in `.claude/docs/EVENTS.md`'s "left for later" note:
 later rules checking, when they fire, whether their own effect fulfills an
 open `Prophesied` fact, and marking it resolved. That note already
 specified the resolution shape ("a `Fulfilled` fact pointing at the
@@ -840,7 +840,7 @@ holding a fresh `Grievance` against the destroyer.
 
 **Deferred, on the user's own call given the size this grew to:**
 enshrinement as its own event, loss/rediscovery, gift, and ceremony. Write-
-up lives in `docs/EVENTS.md` under Concepts and relics so the scope
+up lives in `.claude/docs/EVENTS.md` under Concepts and relics so the scope
 decision doesn't need re-deriving. Since scoped in a follow-up
 conversation, "gift" is a voluntary relic transfer between cults with no
 grievance or hostility precondition — ready to build when picked up;
@@ -2072,9 +2072,9 @@ also not done here.
 **Needed for:** turning Decision 27's research into an actual plan — the
 user asked for this directly, separately noting it was "just as sweeping"
 as work item 17, which prompted a small documentation restructuring
-alongside it (a `docs/plans/` directory now holds both large efforts'
+alongside it (a `.claude/docs/plans/` directory now holds both large efforts'
 approved plans; `CLAUDE.md`'s own bullets for both are now short pointers
-rather than full inlined plans — see `docs/plans/14-backdated-minting.md`
+rather than full inlined plans — see `.claude/docs/plans/14-backdated-minting.md`
 for the plan itself).
 
 **Chosen: the PoC stays completely standalone — not a `RuleSpec`, not
@@ -2326,7 +2326,7 @@ correction before the plan was even approved — no `Outcome` involvement
 rejected twice before landing on relocating it into `Historian.Types`;
 `chronicle` calling `render` at read time rejected as a real bug, not a
 style choice; the narrator pick required to almost never be neutral) is
-`docs/plans/17-cult-voice.md`, written *before* work items 14/19 existed.
+`.claude/docs/plans/17-cult-voice.md`, written *before* work items 14/19 existed.
 This entry records what changed between that plan and what actually got
 built, now that both had landed first.
 

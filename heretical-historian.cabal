@@ -59,7 +59,7 @@ executable historian
     , heretical-historian
     , text
 
--- | The wasm boundary, per docs/DESIGN.md Decision 7 and its stateful-
+-- | The wasm boundary, per .claude/docs/DESIGN.md Decision 7 and its stateful-
 -- handle follow-up: generateJson (batch, one shot) plus the
 -- historian_new/step/query/free family (a World kept resident behind an
 -- opaque handle, one step at a time). Builds as an ordinary native
@@ -86,7 +86,7 @@ executable historian-wasm
   -- `hs_init` is exported directly too, as the RTS's own plain C init
   -- function — NOT wrapped in a Haskell `foreign export` (a wrapper of
   -- that shape was tried and definitively ruled out; see wasm/Main.hs and
-  -- docs/DESIGN.md Decision 7: every Haskell-level foreign export runs
+  -- .claude/docs/DESIGN.md Decision 7: every Haskell-level foreign export runs
   -- `rts_lock`/`newBoundTask` before its body, which requires the RTS to
   -- already be running, so a Haskell function can never be the thing that
   -- starts it). A host must call the exported `hs_init` directly before
@@ -97,7 +97,7 @@ executable historian-wasm
   -- accept it, and `__wasm_call_ctors`/`__wasi_init_tp` need exporting and
   -- calling before `hs_init` — currently a manual post-link patch, not
   -- something cabal/ghc-options can express. See CLAUDE.md Status and
-  -- docs/DESIGN.md Decision 7 for the full account.
+  -- .claude/docs/DESIGN.md Decision 7 for the full account.
   if arch(wasm32)
     ghc-options:
       -optl-Wl,--export=generateJson

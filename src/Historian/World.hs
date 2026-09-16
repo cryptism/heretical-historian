@@ -32,7 +32,7 @@ type Chronicle = State World
 -- a negative 'Epoch' (it wouldn't crash, but would render a garbled
 -- ordinal). Reserved at genesis rather than clamped per backdate, so a
 -- saint can get its full intended backstory age regardless of how early
--- in the run it's minted — see docs/plans/14-backdated-minting.md §2.
+-- in the run it's minted — see .claude/docs/plans/14-backdated-minting.md §2.
 -- Sized for this PoC's single backdating level (100 years); expand if a
 -- future depth-2/3 recursive backdating pass needs more.
 backstoryHeadroomDays :: Int
@@ -604,7 +604,7 @@ generateWardFor c = do
 -- was considered and not built, to avoid the raw-mint duplication it would
 -- need (the fresh Ward would have to skip 'newPerson'\/'newSite'\/
 -- 'newItem's own 'backfillWard' call to keep a counter meaningful); see
--- docs/DESIGN.md Decision 32 for the full reasoning.
+-- .claude/docs/DESIGN.md Decision 32 for the full reasoning.
 backfillPatron :: Tuning -> EntityId -> Chronicle ()
 backfillPatron cfg cult = do
   w <- get
@@ -803,7 +803,7 @@ propertyOf w i =
 -- so nothing about the calendar needs to change to accept this. Consumes
 -- 'Chronicle''s own RNG stream, not the calendar's separate one (invariant
 -- 8 in CLAUDE.md is about 'dateOf' never reaching into 'wGen'; see
--- Decision 22 in docs/DESIGN.md for why that's true of this function too).
+-- Decision 22 in .claude/docs/DESIGN.md for why that's true of this function too).
 advanceEpoch :: Chronicle ()
 advanceEpoch = do
   w <- get
@@ -959,7 +959,7 @@ venerates w subject obj =
 -- retract to neutral. Deliberately additive, not a replacement for
 -- 'venerates' — 'ruleMiracle'\'s own precondition and 'ruleDefile'\'s
 -- framing keep reading the cumulative history exactly as before. See
--- docs/DESIGN.md.
+-- .claude/docs/DESIGN.md.
 -- | The 'Claim' a cult's regard toward a Ward actually asserts — shared by
 -- every rule that rolls a regard reaction and by 'Historian.Render's
 -- claims-building for 'Historian.Render.TheftOutcome'\/'GiftOutcome',
@@ -1051,7 +1051,7 @@ isTerminated w i = any (\f -> factPred f == Terminated && factSubject f == i) (w
 -- | Whether an entity already existed, and hadn't yet been terminated, as
 -- of a given epoch — the hard temporal-consistency check backdated
 -- minting needs before offering an existing entity as a candidate
--- dependency (docs/DESIGN.md Decision 27's own hard-invariant list; see
+-- dependency (.claude/docs/DESIGN.md Decision 27's own hard-invariant list; see
 -- 'Historian.Rules.mintBackdatedSaint'). 'isTerminated'/'isDefunct' only
 -- ever ask about *now*, not an arbitrary past epoch, so this is genuinely
 -- new rather than a restriction of either.
@@ -1216,7 +1216,7 @@ grievancePairs w =
 -- latest-fact-wins shape as 'holdsGrievance', reusing 'Reconciled' rather
 -- than a second new predicate: a rivalry closes the same way a grievance
 -- does, by the same generic "this directional relationship is resolved"
--- fact. See Decision 19 in docs/DESIGN.md for why 'Rivalry' itself still
+-- fact. See Decision 19 in .claude/docs/DESIGN.md for why 'Rivalry' itself still
 -- needed to be its own predicate even though its resolution didn't.
 hasRivalry :: World -> EntityId -> EntityId -> Bool
 hasRivalry w a b =

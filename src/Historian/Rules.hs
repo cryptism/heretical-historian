@@ -43,7 +43,7 @@ weightedRule w name = Rule name w
 rules :: [Rule]
 rules = [ruleSchism, ruleBattle, ruleSanctify, ruleDefile, ruleMiracle, ruleAssassinate, ruleMerger, ruleDissolve, ruleRevive, ruleProphesy, ruleTheft, ruleDestroyRelic, ruleGift, ruleCoronation, ruleTrialByCombat, ruleCoup]
 
--- | Every 'RuleSpec' (docs/DESIGN.md Decision 23), purely additive
+-- | Every 'RuleSpec' (.claude/docs/DESIGN.md Decision 23), purely additive
 -- alongside 'rules' — not wired into 'generate'\/'step'; see
 -- 'Historian.Engine.intelligentStep' to run one directly. Disputing has
 -- no spec (see 'fireDispute') since it's no longer a rule at all.
@@ -87,7 +87,7 @@ genesis = do
 -- (unattested, like a fresh item's own) and an initial 'Venerates' (self-
 -- attested), the starting regard a later leadership change can flip. Every
 -- society-minting call site (genesis, schism, merger's new-society branch)
--- adds these alongside its own claims. See Decision 19 in docs/DESIGN.md.
+-- adds these alongside its own claims. See Decision 19 in .claude/docs/DESIGN.md.
 patronClaims :: EntityId -> EntityId -> [Claim]
 patronClaims society concept =
   [ Claim society Embodies (Just (ROf concept)) Nothing Nothing
@@ -371,7 +371,7 @@ defileSpec =
 -- Every production's site\/ward facts are 'Sanctified' (transferring
 -- current sanctity) and 'Venerates' (naming the ward); every production
 -- also appends 'regardReactions', where 'Shuns' and 'Disavows' actually
--- get exercised. See docs/DESIGN.md for why that's an additive query
+-- get exercised. See .claude/docs/DESIGN.md for why that's an additive query
 -- rather than a change to 'venerates' itself.
 ruleMiracle :: Rule
 ruleMiracle = rule "miracle" $ \w ->
@@ -806,7 +806,7 @@ destroyRelicSpec =
 -- toward the society's patron concept directly decides whether the
 -- society renames. Biased toward continuity with the society's current
 -- regard — a new leader usually, but not always, keeps the faith. See
--- Decision 19 in docs/DESIGN.md.
+-- Decision 19 in .claude/docs/DESIGN.md.
 fireLeadershipChange :: World -> EntityId -> EntityId -> Chronicle LeadershipChange
 fireLeadershipChange w society newLeader = do
   let oldLeader = currentLeader w society
@@ -1238,7 +1238,7 @@ reviveSpec =
 -- society, person, or site alike. Deliberately the cheap version:
 -- 'Prophesied' is a rhetorical claim about the future, exactly the shape
 -- 'Revives' is a rhetorical claim about the past — nothing here checks
--- whether a prophecy ever comes true. `docs/EVENTS.md` sketches the fuller
+-- whether a prophecy ever comes true. `.claude/docs/EVENTS.md` sketches the fuller
 -- version (later rules checking whether their own firing *fulfills* an
 -- open prophecy); that's a cross-cutting change on the scale of
 -- dissolution's `isDefunct` plumbing, deliberately not built yet.
@@ -1381,7 +1381,7 @@ generateViaEngine seed steps =
 -- this codebase needs — so this calls 'Historian.World.recordBackdated'
 -- directly instead. Reachable only by calling it directly (from tests, or
 -- a future explicit hook), never from ordinary autonomous generation — see
--- docs/plans/14-backdated-minting.md §1 and docs/DESIGN.md Decision 27.
+-- .claude/docs/plans/14-backdated-minting.md §1 and .claude/docs/DESIGN.md Decision 27.
 
 -- | Mints a person with a backdated birth (up to
 -- 'Historian.World.backstoryHeadroomDays' behind "now"), optionally an
@@ -1395,7 +1395,7 @@ mintBackdatedSaint tn w = do
   epoch <- backdatedEpoch
   -- The one hard invariant this needs beyond what 'Slot' already gives
   -- ordinary rules: a candidate cult must have already existed, and not
-  -- yet been terminated, as of the backdated epoch (docs/DESIGN.md
+  -- yet been terminated, as of the backdated epoch (.claude/docs/DESIGN.md
   -- Decision 27's hard-invariant list) — 'existedBy' is genuinely new,
   -- since 'isTerminated'/'activeSocieties' only ever ask about *now*.
   let candidates = [s | s <- entitiesOf Society w, existedBy w epoch s]

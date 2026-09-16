@@ -21,7 +21,7 @@ Predicates currently in `Historian.Types`: `Founded`, `LeaderOf`, `SplitFrom`,
 `Revives`, `Prophesied`, `Fulfilled`, `Embodies`. `Terminated` used to be
 two predicates, `Dissolved` and `Destroyed` — unified once both existed,
 since the only real difference between them was the attestor (see the
-work queue and `docs/DESIGN.md`). No new predicate was needed for defilement/purification
+work queue and `.claude/docs/DESIGN.md`). No new predicate was needed for defilement/purification
 or merger's allegiance/grievance transfer — both reuse
 `Sanctified`/`Grievance`/`Venerates`/`LeaderOf`. `Venerates` in particular
 was never restricted to sites; miracle is what actually exercises it with a
@@ -37,7 +37,7 @@ it's a claim about the future, which nothing else in the model represents.
 respectively, for the same "current regard" a cult can hold toward a
 **Ward** — any `Person`, `Item`, or `Site` — mirroring how
 `Grievance`/`Reconciled` are two predicates for one directional
-relationship's two states. See Miracle, below, and `docs/DESIGN.md`.
+relationship's two states. See Miracle, below, and `.claude/docs/DESIGN.md`.
 `Fulfilled` is the most recent: the same shape `Disputes` already is (an
 `REvent` object), marking an open `Prophesied` fact resolved. It needed
 `Referent`'s third case, `ROmen`, rather than a new predicate of its own —
@@ -103,7 +103,7 @@ user's own request, removed and replaced with `Historian.Rules.fireDispute`\/
 `maybeDispute`, an optional side effect any other rule's own effect can roll,
 the same shape `optionalRelicFor`\/`fireDyingWords` already established
 ("resolved entirely here, inside the effect, never as a new bound variable
-in a rule's precondition list"). See `docs/DESIGN.md`'s Decision 23
+in a rule's precondition list"). See `.claude/docs/DESIGN.md`'s Decision 23
 follow-up-to-the-follow-up for the full account of why. What follows
 describes the mechanism as it exists now, not the original standalone rule.
 
@@ -133,7 +133,7 @@ describes the mechanism as it exists now, not the original standalone rule.
 - **Resolved during the original implementation:** the object slot needed
   to point at an `EventId`, not just an `EntityId`. Went with a `Referent =
   ROf EntityId | REvent EventId` sum on `Fact`'s existing object field,
-  rather than a parallel `Dispute` record — see `docs/DESIGN.md` Decision 9
+  rather than a parallel `Dispute` record — see `.claude/docs/DESIGN.md` Decision 9
   for why. Still true after this rework — nothing about the fact shape
   changed, only how the effect gets triggered.
 - **Guardrail carried over unchanged:** a dispute may only target a primary
@@ -177,7 +177,7 @@ describes the mechanism as it exists now, not the original standalone rule.
 - **Named, and told, from the claimant's side only:** the event kind is
   always `"purification"`, self-servingly, regardless of whether it reads to
   anyone else as a defilement. This is deliberate — see Decision 11 in
-  `docs/DESIGN.md`. It composes with reinterpretation for free: no new
+  `.claude/docs/DESIGN.md`. It composes with reinterpretation for free: no new
   `Referent` case, no new query, just a `disputedFramings "purification"`
   entry — verified against seed 1, where reinterpretation immediately
   disputes exactly the purification it's paired with, calling it "a
@@ -520,7 +520,7 @@ what actually gives that eligibility substance, at the user's request.
   society currently venerates the same item, they get a fresh `Grievance`
   toward the destroyer — echoes `ruleDefile`'s "grievance from the deposed
   side." A relic's `Terminated` fact (the predicate is now shared with a
-  dissolved society's — see the work queue and `docs/DESIGN.md`) is a
+  dissolved society's — see the work queue and `.claude/docs/DESIGN.md`) is a
   permanent terminal state gating `activeItems` the same way a society's
   gates `activeSocieties` (invariant 7), attributed to the destroyer rather
   than left attestor-less. Every candidate site that could draw an item
@@ -564,8 +564,8 @@ what actually gives that eligibility substance, at the user's request.
 
 At the user's request: a society can rename itself, as a consequence of a
 leadership change and the new leader's own stance toward the society's
-identity. See Decision 19 in `docs/DESIGN.md` for the full design
-reasoning, including why this is exactly what `docs/DESIGN.md`'s old
+identity. See Decision 19 in `.claude/docs/DESIGN.md` for the full design
+reasoning, including why this is exactly what `.claude/docs/DESIGN.md`'s old
 "Known compromise" note anticipated.
 
 - **A patron `Concept` for every society, from birth** — the same

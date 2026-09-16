@@ -5,7 +5,7 @@
 -- own boundary) and the incremental one ('encodeStepResult'\/
 -- 'encodeQueryResult', a single step's delta or a single entity's
 -- dossier, 'Historian.Engine.stepAutonomous'\/'Historian.Engine.
--- queryEntity's own boundary — see @docs/DESIGN.md@ Decision 7 and its
+-- queryEntity's own boundary — see @.claude/docs/DESIGN.md@ Decision 7 and its
 -- stateful-handle follow-up).
 --
 -- Deliberately hand-written rather than a derived instance on 'World'
@@ -37,7 +37,7 @@ encodeWorld w =
 
 -- | One 'Historian.Engine.stepAutonomous' call's delta between the 'World'
 -- before and after — not the whole world, per the stateful-handle design
--- (@docs/DESIGN.md@ Decision 7's follow-up): just what a single step
+-- (@.claude/docs/DESIGN.md@ Decision 7's follow-up): just what a single step
 -- actually added. 'wEntities'\/'wEvents' are keyed maps, so
 -- 'M.difference' finds exactly the new ones; 'wFacts' is a newest-first
 -- list that 'Historian.World.record' only ever prepends to, so the new

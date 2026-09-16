@@ -425,7 +425,7 @@ pickNarrator tn w o
 -- | Idiosyncratic dressing layered onto an already-voiced reading —
 -- independent of 'VoiceRegister' (that's a lexical substitution axis
 -- inside 'renderWithVoice'; this is a post-processing one applied after
--- it). Four independent weighted coin flips (docs/DESIGN.md Decision
+-- it). Four independent weighted coin flips (.claude/docs/DESIGN.md Decision
 -- 34), each its own quirk: shout the whole thing in caps, open with a
 -- recurring hailing word, tack on a rambling aside, or decline to
 -- elaborate at all. Deliberately outside 'render'\/'renderWithVoice'
@@ -708,7 +708,7 @@ commitOutcomes outcomes = do
     narrated <- case narrator of
       Nothing -> pure neutral
       -- Idiosyncrasies dress only the in-voice reading — 'evNeutralText'
-      -- stays the permanent, unmangled "generic log" (docs/DESIGN.md
+      -- stays the permanent, unmangled "generic log" (.claude/docs/DESIGN.md
       -- Decision 29), same as before this existed.
       Just sid -> applyIdiosyncrasies defaultTuning (render w (Just sid) o)
     recordOutcome (outcomeKind o) o narrator narrated neutral (claims ++ fulfillProphecies w claims)

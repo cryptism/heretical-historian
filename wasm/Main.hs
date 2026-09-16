@@ -1,6 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 
--- | The wasm entry point, per @docs/DESIGN.md@ Decision 7 and its
+-- | The wasm entry point, per @.claude/docs/DESIGN.md@ Decision 7 and its
 -- stateful-handle follow-up. Two shapes: 'generateJson', a one-shot batch
 -- call (seed and steps in, the whole resulting 'World' as JSON out); and
 -- the @historian_*@ family, which keeps one 'World' resident on this
@@ -31,7 +31,7 @@
 -- RTS. The RTS's own @hs_init@ (a plain C function, no such stub) is
 -- exported directly at the link level instead (@--export=hs_init@ in the
 -- cabal file); a host must call it before any function below is usable.
--- See @docs/DESIGN.md@ Decision 7.
+-- See @.claude/docs/DESIGN.md@ Decision 7.
 module Main (main, generateJson, historianNew, historianStep, historianQuery, historianFree) where
 
 import qualified Data.ByteString as BS

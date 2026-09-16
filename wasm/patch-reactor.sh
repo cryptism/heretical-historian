@@ -9,7 +9,7 @@
 # of the wasm build pipeline for no reason. See CLAUDE.md Conventions for
 # the carve-out.
 #
-# Per docs/DESIGN.md Decision 7 follow-up: `wasm32-wasi-ghc` always exports
+# Per .claude/docs/DESIGN.md Decision 7 follow-up: `wasm32-wasi-ghc` always exports
 # `_start`, and Node's `node:wasi` refuses `wasi.initialize()` (the
 # call-in-repeatedly reactor path, as opposed to `wasi.start()`'s
 # run-once-and-exit command path) on any module that still exports it.

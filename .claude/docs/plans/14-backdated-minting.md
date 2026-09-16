@@ -2,13 +2,13 @@
 
 ## Context
 
-`docs/DESIGN.md` Decision 27 is a completed *research* pass on work item
+`.claude/docs/DESIGN.md` Decision 27 is a completed *research* pass on work item
 14 (minting backdated entities with an implied backstory) — it settled the
 shape (age cap, depth cap, prefer-omit `Slot`-style resolution, why plain
 `cons` stays correct in scope, hard-vs-permissible invariants, the
 `fulfillProphecies` structural parallel) but built nothing. The user asked
 to turn that into an actual plan, and separately noted this is "just as
-sweeping as 17" — item 17 already has an *approved* plan (`docs/plans/
+sweeping as 17" — item 17 already has an *approved* plan (`.claude/docs/plans/
 17-cult-voice.md`). Two problems, one fix: both large efforts need a
 durable, in-repo home, and `CLAUDE.md`'s Work Queue needs to stop inlining
 their full detail if it's going to keep accumulating sweeping items
@@ -16,19 +16,19 @@ without becoming unscannable.
 
 ## Approach
 
-### 0. Restructuring: a `docs/plans/` directory, ported plan, shorter queue bullets
+### 0. Restructuring: a `.claude/docs/plans/` directory, ported plan, shorter queue bullets
 
-- `docs/plans/` now holds both large efforts: `17-cult-voice.md` (ported
+- `.claude/docs/plans/` now holds both large efforts: `17-cult-voice.md` (ported
   from the ephemeral `~/.claude/plans/` location) and this file.
 - `CLAUDE.md` item 17's bullet is a short paragraph — what it is, current
-  status (approved, not built), a pointer to `docs/plans/17-cult-voice.md`
+  status (approved, not built), a pointer to `.claude/docs/plans/17-cult-voice.md`
   for the concrete shapes — instead of inlining the plan itself. Item 14
   gets the same short-pointer treatment, replacing its Decision-27-summary
   paragraph.
-- **Convention going forward:** a work-queue item earns a `docs/plans/
+- **Convention going forward:** a work-queue item earns a `.claude/docs/plans/
   NN-name.md` file once it has an *approved* plan, and its `CLAUDE.md`
   bullet stays a short pointer from that point on — full reasoning lives
-  in the plan file (pre-build) and `docs/HISTORY.md`/`docs/DESIGN.md`
+  in the plan file (pre-build) and `.claude/docs/HISTORY.md`/`.claude/docs/DESIGN.md`
   (post-build), never duplicated inline in the queue itself. Not a new
   top-level section in `CLAUDE.md` — the numbered queue's existing
   ordering already does the job; the fix is where detail lives, not the
@@ -164,7 +164,7 @@ than inventing a new one:
    somewhat, and Decision 27's own reasoning is that "no fact at all" is
    the shape that costs nothing to get right).
 
-### 5. `docs/DESIGN.md` follow-up entry
+### 5. `.claude/docs/DESIGN.md` follow-up entry
 
 Once built and verified, Decision 27 gets a short follow-up (not a
 rewrite) recording: the standalone-function choice and why (§1), that the

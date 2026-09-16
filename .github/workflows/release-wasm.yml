@@ -3,7 +3,7 @@ name: Release wasm
 # Builds historian-wasm.wasm via the same pipeline `nix run .#build-wasm`
 # runs locally (cross-compile with wasm32-wasi-ghc, patch into a
 # reactor-style module, verify against a real Node WASI host — see
-# docs/DESIGN.md Decision 7/33/34 and flake.nix) and publishes the
+# .claude/docs/DESIGN.md Decision 7/33/34 and flake.nix) and publishes the
 # patched, verified artifact as a GitHub release asset. Consumed by
 # hh-site's `bun run fetch-wasm` (scripts/fetch-wasm.ts there), which
 # expects an asset named exactly `historian-wasm.wasm` on the latest

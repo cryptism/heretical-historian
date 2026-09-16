@@ -1,7 +1,7 @@
 // Verifies a patched historian-wasm.wasm (see wasm/patch-reactor.nu) end to
 // end against a real Node WASI host, both the batch entry point
 // (generateJson) and the stateful-handle family (historian_new/step/
-// query/free) — see docs/DESIGN.md Decision 7 and its Decision 33
+// query/free) — see .claude/docs/DESIGN.md Decision 7 and its Decision 33
 // follow-up.
 //
 // Requires Node's WASI module (--experimental-wasi-unstable-preview1 not

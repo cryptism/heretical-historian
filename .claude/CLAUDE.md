@@ -1,9 +1,9 @@
 # CLAUDE.md
 
-Read `docs/DESIGN.md` before changing anything structural. It records *why*
+Read `.claude/docs/DESIGN.md` before changing anything structural. It records *why*
 the architecture is shaped this way, including options that were considered
 and rejected — reintroducing one of them by accident is the main failure mode
-for this codebase. `docs/HISTORY.md` is the fuller build-by-build account —
+for this codebase. `.claude/docs/HISTORY.md` is the fuller build-by-build account —
 what was asked for, what was verified against a real seed, and how — behind
 every entry in this file's Status section and work queue; read it when a
 work-queue item or Status line points at it and you need the full story,
@@ -26,7 +26,7 @@ per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 below) for the two rarest — trial by combat and a coup — plus two
 hand-built worlds, `schismSpec`/`sanctifySpec`'s and the richer
 `richWorld`, covering direct-construction checks for the `RuleSpec`
-engine and everything migrated onto it. Full breakdown: `docs/HISTORY.md`.
+engine and everything migrated onto it. Full breakdown: `.claude/docs/HISTORY.md`.
 
 The `test-suite` is now genuinely parallel where it can be: every
 `veryWideSeeds` `generate` call is a pure function of its own seed with
@@ -36,13 +36,13 @@ nothing shared, so `test/Spec.hs`'s `veryWideResults` sparks them via
 the test-suite's own `ghc-options` gained `-threaded -with-rtsopts=-N` so
 those sparks actually land on separate OS threads. Chunk size (20, tuned
 empirically — 250 and one-spark-per-seed were both measured slower; see
-`docs/HISTORY.md`) matters more than it looks. Measured: 50.6s wall
+`.claude/docs/HISTORY.md`) matters more than it looks. Measured: 50.6s wall
 (single core) down to ~19.8s (12-core machine, no explicit `+RTS` flags
 needed at the call site). This doesn't touch `generate` itself, which
 stays deliberately sequential — see invariant 5 and the Architecture
 section below.
 
-Sixteen event rules are built and firing: the eight from `docs/EVENTS.md`
+Sixteen event rules are built and firing: the eight from `.claude/docs/EVENTS.md`
 (schism, battle, sanctification, defilement/purification, miracle,
 assassination, merger, society dissolution) plus eight built beyond the
 brief at the user's request — dispute (formerly a standalone
@@ -51,7 +51,7 @@ firing can roll, `fireDispute`/`maybeDispute`), revival, prophecy (with
 fulfillment), theft, gift, destroy-relic, and coronation/trial-by-combat/
 coup leadership change. They compose correctly with each other across
 long runs, not just individually — which seed shows what, and why, is in
-`docs/HISTORY.md`.
+`.claude/docs/HISTORY.md`.
 
 Also built: `ruleWeight` (rule self-weighting infrastructure — every rule
 still uses the default weight, no behavior change on its own); a real,
@@ -63,19 +63,19 @@ generator and seven cultures; the `Terminated` predicate unifying
 scales with world activity instead of a flat roll (work queue item 16);
 and a generic declarative rule engine, `Historian.Engine` — every rule
 but the old reinterpretation rule now has a `RuleSpec` (work queue item
-15, `docs/DESIGN.md` Decision 23 and its follow-ups); a standalone
-backdated-minting PoC (work queue item 14, `docs/DESIGN.md` Decision 27);
+15, `.claude/docs/DESIGN.md` Decision 23 and its follow-ups); a standalone
+backdated-minting PoC (work queue item 14, `.claude/docs/DESIGN.md` Decision 27);
 a standalone recursive, weighted free-variable backfill hooked live into
 ordinary `newPerson`/`newSite`/`newItem` (`weightedResolve`/
 `backfillWard` — a freshly-minted Ward's chance to already be venerated
-by a cult, work queue item 19, `docs/DESIGN.md` Decision 28), now
+by a cult, work queue item 19, `.claude/docs/DESIGN.md` Decision 28), now
 mutually recursive with `newSociety`'s own symmetric `backfillPatron`
-hook (a fresh cult's chance to already venerate a Ward, `docs/DESIGN.md`
+hook (a fresh cult's chance to already venerate a Ward, `.claude/docs/DESIGN.md`
 Decision 32); cult
 voice — three outcome types (`Founding`/`Schism`/`MiracleSaint`) narrated
 in whichever society's own `VoiceRegister` gets picked to tell them, a
 kept, unmodified neutral reading still available for the wasm FFI (work
-queue item 17, `docs/DESIGN.md` Decision 29); and themed relic naming —
+queue item 17, `.claude/docs/DESIGN.md` Decision 29); and themed relic naming —
 `newItem` takes an optional commissioning cult, and when one's known at
 mint time and already has a current `Venerates`/`Shuns` stance on
 something, `themedItemName` gets a `tnThemedItemNameChance` (`Tuning`)
@@ -97,15 +97,15 @@ sampling across real generated worlds turned up suspiciously few
 "of `<Name>`" hits for how common an available veneration target
 (every society's patron `Concept`) should be. Fixed by dropping the
 collision check for the themed branch entirely — it was never the right
-guard for this shape of name. `docs/HISTORY.md` covers the full account.
+guard for this shape of name. `.claude/docs/HISTORY.md` covers the full account.
 
-**`docs/HISTORY.md` has the full build-by-build account** — what was
+**`.claude/docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
 a real seed rather than just reasoned about. Read it before touching any
 feature named above, so you're extending settled reasoning instead of
-rediscovering it. `docs/DESIGN.md` is the *why the architecture is
+rediscovering it. `.claude/docs/DESIGN.md` is the *why the architecture is
 shaped this way* companion (options considered and rejected);
-`docs/HISTORY.md` is *what was built, in what order, and how it was
+`.claude/docs/HISTORY.md` is *what was built, in what order, and how it was
 checked*.
 
 Bugs found along the way, fixed, and noted here so nobody reintroduces them:
@@ -132,7 +132,7 @@ Bugs found along the way, fixed, and noted here so nobody reintroduces them:
    degenerates into a content-free "no, we're right" loop that starves
    genesis/schism/battle almost entirely by step 10. Fixed by restricting
    `ruleReinterpret`'s targets to non-`"reinterpretation"`-kind events. See
-   `docs/EVENTS.md` under Reinterpretation. If a future rule (e.g.
+   `.claude/docs/EVENTS.md` under Reinterpretation. If a future rule (e.g.
    defilement) also disputes something, apply the same restriction or check
    candidate growth empirically before trusting it.
 4. **Grievance retraction is real but only one-sided per battle, by design
@@ -151,7 +151,7 @@ Bugs found along the way, fixed, and noted here so nobody reintroduces them:
    events. This is bounded (miracle's own candidates don't compound the way
    reinterpretation's did — each firing adds one fact, not a new candidate
    pair) and is the self-weighting design working as documented in
-   `docs/DESIGN.md` Decision 3, not a bug. Don't "fix" it without being asked
+   `.claude/docs/DESIGN.md` Decision 3, not a bug. Don't "fix" it without being asked
    — it's `ruleWeight` (queue item 11) that exists for exactly this kind of
    pacing complaint, not a guardrail on the rule itself.
 6. **Dissolution needed a longer test run to confirm it fires at all.** A
@@ -211,13 +211,13 @@ Break any of these and the project stops being what it is:
    (`render w (Just otherSid) (evOutcome ev)`) can legitimately differ
    across reads — that's a live query against whatever `World` is current,
    not part of the permanent record, and is the one place this invariant
-   doesn't apply. See `docs/DESIGN.md` Decision 29 (work queue item 17)
+   doesn't apply. See `.claude/docs/DESIGN.md` Decision 29 (work queue item 17)
    for why this changed from the original "one rendered `Text`" shape.
 4. **Every `Fact` carries a `factSource` event and an optional `factAttestedBy`.**
    Attestation is what lets contradictory accounts coexist. Don't collapse it
    into a single authoritative timeline. `factObject :: Maybe Referent` (not
    bare `EntityId`) for the same reason on the object side: a `Disputes` fact
-   points at the event it contests. See `docs/DESIGN.md` Decision 9 before
+   points at the event it contests. See `.claude/docs/DESIGN.md` Decision 9 before
    adding a second, parallel fact-like record for any future predicate —
    extend `Referent` instead.
 5. **`generate :: Int -> Int -> World` stays pure.** The whole thing is a
@@ -263,7 +263,7 @@ Layers: `Historian.Types` + `Historian.World` (store and queries) →
 (preconditions and effects, deciding *what happened* as an `Outcome` value
 and nothing more) → `Historian.Markov` + `Historian.Corpus` (surface
 vocabulary). Rendering a fired rule's prose used to happen inline inside
-each rule's own effect; it doesn't any more (see docs/DESIGN.md Decision
+each rule's own effect; it doesn't any more (see .claude/docs/DESIGN.md Decision
 24) — every `fireX` ends by returning `Chronicle [Outcome]`, and
 `Historian.Render.commitOutcomes` is the *only* place `record` and
 `render` are ever called together, invoked from `step`/`generate`
@@ -282,33 +282,53 @@ happens.
   and requiring Nushell there would mean pulling it in as an extra runtime
   dependency of the build pipeline for no reason. Interactive, developer-
   facing commands stay Nushell.
-- **NixOS.** Flake-based; `nix develop` for the shell, `nix run . -- --seed 42`
-  to run. `.envrc` is `use flake` for direnv.
+- **NixOS.** Flake-based; `nix develop` for the shell, `nix run . -- --seed 42
+  --steps 14` to run without one. `--inspect <name-fragment>` filters to one
+  entity's dossier; `--json` emits the same run as JSON instead of prose —
+  the same wire format a wasm host crosses (`Historian.Json.encodeWorld`).
+  `.envrc` is `use flake` for direnv.
 - **Extensions live in `default-extensions`** in `heretical-historian.cabal`, not in file
   pragmas: `OverloadedStrings`, `DerivingStrategies`, `GeneralizedNewtypeDeriving`,
-  `LambdaCase`, `StrictData`. `DerivingStrategies` is load-bearing — with GND
-  enabled, a bare `deriving (Show)` on a newtype silently picks the wrapped
-  type's instance. Always write `deriving stock` or `deriving newtype`.
+  `LambdaCase`, `StrictData`.
+  - `OverloadedStrings` — a string literal becomes `fromString "..."` instead
+    of being fixed at `String`, so `"the Blind"` can be a `Data.Text.Text`
+    without `T.pack` at every call site. Cost: literals become ambiguous in
+    polymorphic positions, so you occasionally need an annotation.
+  - `DerivingStrategies` is load-bearing — with GND enabled, a bare
+    `deriving (Show)` on a newtype silently picks the wrapped type's
+    instance, so `EntityId 3` would print as `3`. Always write
+    `deriving stock` or `deriving newtype` to get the real one.
+  - `GeneralizedNewtypeDeriving` lets a newtype inherit the underlying
+    type's instances by coercion — `newtype Epoch = Epoch Int deriving
+    newtype (Eq, Ord)` reuses `Int`'s comparison at zero runtime cost,
+    while `Epoch` still stays distinct from `EntityId` in the type checker.
+  - `LambdaCase` — `\case` is `\x -> case x of`; used throughout for
+    total-function dispatch tables (`verbFor` etc.) that read better without
+    a named scrutinee.
+  - `StrictData` makes every constructor field implicitly `!`. Prevents the
+    classic accumulator space leak where `wNextEntity` builds a tower of
+    unevaluated `1 + 1 + ...` thunks across a long generation run. Turn it
+    off per-field with `~` if you ever want laziness back.
 - **No GADTs or existentials.** They were considered and are not needed; see
-  `docs/DESIGN.md`. If you find yourself reaching for one, the rule shape is
+  `.claude/docs/DESIGN.md`. If you find yourself reaching for one, the rule shape is
   probably wrong.
 - `-Wall -Wcompat -Wincomplete-uni-patterns` are on. Keep them clean.
 - Formatting via `fourmolu`, linting via `hlint`, both in the dev shell.
 
 ## Work queue
 
-In priority order. `docs/EVENTS.md` has precondition/effect sketches for every
+In priority order. `.claude/docs/EVENTS.md` has precondition/effect sketches for every
 unbuilt rule.
 
 1. ~~Make it compile and pass `cabal test`.~~ Done.
 2. ~~Reinterpretation rule.~~ Done, then removed and replaced — see item
-   15 and `docs/HISTORY.md`. `Historian.Rules.fireDispute`/`maybeDispute`
+   15 and `.claude/docs/HISTORY.md`. `Historian.Rules.fireDispute`/`maybeDispute`
    is now an optional side effect any other rule's own firing can roll,
    rather than a standalone rule.
 3. ~~Fact retraction.~~ Done — `holdsGrievance` in `Historian.World` does
    latest-fact-wins per directed pair; `fireBattle` reconciles the
    victor's side while renewing the loser's, so a rivalry trading losses
-   both ways never goes fully quiet (bug #4 below; `docs/EVENTS.md` under
+   both ways never goes fully quiet (bug #4 below; `.claude/docs/EVENTS.md` under
    Fact retraction).
 4. ~~Founding of a religious place.~~ Done — `ruleSanctify` in
    `Historian.Rules`. Emits `Sanctified` (site → society) and `Venerates`
@@ -316,15 +336,15 @@ unbuilt rule.
 5. ~~Defilement / purification.~~ Done — `ruleDefile` in `Historian.Rules`.
    Reuses `Sanctified` (a second, more recent fact transfers current
    sanctity) and `Grievance`; no new predicate. Event kind is always
-   `"purification"`, told only from the claimant's side (`docs/DESIGN.md`
+   `"purification"`, told only from the claimant's side (`.claude/docs/DESIGN.md`
    Decision 11). Exile of a named figure is still scoped out.
 6. ~~Miracle.~~ Done — `ruleMiracle` in `Historian.Rules`. Precondition is
    `venerates`, not `sanctifiedBy` — a deposed former holder can reclaim
    a site through a miracle with no grievance needed. Now three
    productions (saint/relic/on-target) on top of the Ward regard
-   mechanic — full account in `docs/HISTORY.md`.
+   mechanic — full account in `.claude/docs/HISTORY.md`.
 7. ~~Assassination.~~ Done — `ruleAssassinate` in `Historian.Rules`. Needed
-   one genuinely new predicate, `Heretic` — `docs/EVENTS.md` explains why
+   one genuinely new predicate, `Heretic` — `.claude/docs/EVENTS.md` explains why
    `Grievance` couldn't be reused for the killers' side the way
    `Venerates` was safely reused for the martyr's side.
 8. ~~Merger.~~ Done — `ruleMerger` in `Historian.Rules`. Needed one new
@@ -348,7 +368,7 @@ unbuilt rule.
     `historian-wasm`, confirmed end-to-end from a real JS host (Node,
     `node:wasi`, reactor mode). A host must call the RTS's own
     `hs_init(0, 0)` directly before `generateJson` is usable — never a
-    Haskell-level `foreign export` (`docs/DESIGN.md` Decision 7 follow-up
+    Haskell-level `foreign export` (`.claude/docs/DESIGN.md` Decision 7 follow-up
     explains why that can't work) — and the built `.wasm` needs
     `wasm/patch-reactor.sh` run on it first (self-checks its four
     required exports). **Wired into `flake.nix`** — `nix develop .#wasm`
@@ -356,7 +376,7 @@ unbuilt rule.
     from a pinned `ghc-wasm-meta` flake input), and `nix run .#build-wasm`
     cross-compiles, patches, and re-verifies `historian-wasm.wasm` in one
     command — no more ad hoc `nix shell git+https://...` invocation. Full
-    account of the wiring: `docs/DESIGN.md` Decision 7's flake follow-up.
+    account of the wiring: `.claude/docs/DESIGN.md` Decision 7's flake follow-up.
 13. ~~Unify the terminus predicate shape across `Dissolved` and
     `Destroyed`.~~ Done — one predicate, `Terminated` (`Historian.Types`),
     distinguished by the existing `factAttestedBy`: `Nothing` for a
@@ -365,7 +385,7 @@ unbuilt rule.
     per-`Kind` since `verbFor` alone can't see the subject. `Slain` is
     deliberately *not* folded in — a dead person stays a valid, actively-
     referenced object, unlike a terminated society/item. Full account,
-    including a dormant `omenOf` bug this fixed for free: `docs/HISTORY.md`.
+    including a dormant `omenOf` bug this fixed for free: `.claude/docs/HISTORY.md`.
 14. ~~Backdated minting PoC.~~ Done — `Historian.Rules.mintBackdatedSaint`
     mints a person with a backdated birth, optionally an existing or
     freshly-generated cult behind them (or neither). Deliberately
@@ -377,8 +397,8 @@ unbuilt rule.
     shift in every rendered date, confirmed harmless to every existing
     check. Full account, including a correction found while planning
     (reserve headroom, don't clamp) and a bug the test suite itself
-    caught (a defensive floor `backdatedEpoch` needed): `docs/DESIGN.md`
-    Decision 27's follow-up, `docs/plans/14-backdated-minting.md`.
+    caught (a defensive floor `backdatedEpoch` needed): `.claude/docs/DESIGN.md`
+    Decision 27's follow-up, `.claude/docs/plans/14-backdated-minting.md`.
     Depth 2/3 recursive backdating and promoting this to a real `RuleSpec`
     are explicitly deferred, not built.
 15. ~~A generic, declarative rule engine.~~ Done — every rule but
@@ -390,7 +410,7 @@ unbuilt rule.
     their legacy dedup, so swapping it in would shift every seed's
     weighting). `generateViaEngine`'s candidate counts run somewhat high
     for multi-slot specs due to a known, documented no-op-candidate
-    wrinkle (`docs/HISTORY.md`) — doesn't affect correctness, only that
+    wrinkle (`.claude/docs/HISTORY.md`) — doesn't affect correctness, only that
     pathway's relative weighting. `Society`/`Item` slot generation's
     auxiliary-claims shape (their patron `Concept` and its claims) is
     still unsettled but still not blocking anything — no spec has needed
@@ -425,13 +445,13 @@ unbuilt rule.
     steps (cross-compile, patch, verify) in one command; `patch-reactor.nu`
     was rewritten as `patch-reactor.sh` (bash, not Nushell — see
     Conventions) since it's now invoked from a Nix-generated shell script.
-    Full account: `docs/DESIGN.md` Decision 33 and Decision 7's flake
+    Full account: `.claude/docs/DESIGN.md` Decision 33 and Decision 7's flake
     follow-up.
 16. ~~Remodel the inter-step day gap.~~ Done — `advanceEpoch` rolls
     within `1..maxGap`, `maxGap = max 20 (300 - 5 * activity)`, `activity`
     = active society count plus their total `livingMembers`. Still draws
     from `Chronicle`'s ordinary RNG stream; invariant 8 untouched
-    (`docs/DESIGN.md` Decision 26).
+    (`.claude/docs/DESIGN.md` Decision 26).
 17. ~~Cult voice.~~ Done — `Voice`/`VoiceRegister` minted once per
     `Society` at founding; `Outcome` (and `Regard`/`RelicMoment`/
     `DyingWords`/`LeadershipChange`) relocated into `Historian.Types` so
@@ -447,7 +467,7 @@ unbuilt rule.
     `Event.evOutcome` is `Maybe Outcome` and a new `recordOutcome` handles
     the voiced path, rather than changing `record` itself. Full account,
     including the batched re-scan (two `perSeed` witness seeds replaced,
-    one `richWorld`-dependent trial count widened): `docs/DESIGN.md`
+    one `richWorld`-dependent trial count widened): `.claude/docs/DESIGN.md`
     Decision 29.
 18. ~~Abstract probabilistic-weight constants into something tunable.~~
     Done — `Historian.World.Tuning`/`defaultTuning` replaces
@@ -465,7 +485,7 @@ unbuilt rule.
     still passes `defaultTuning` unchanged, same as `MintOptions`'s own
     call sites before item 17's refactor. Pure refactor, no weight values
     changed: `cabal test` held at 200 checks, no RNG-cascade fallout, no
-    batched re-scan needed. See `docs/DESIGN.md` Decision 31. "Load this
+    batched re-scan needed. See `.claude/docs/DESIGN.md` Decision 31. "Load this
     from a file instead" stays future work, not attempted here.
 19. ~~Recursive, weighted free-variable backfill on ordinary minting.~~
     Done — `Historian.World.weightedResolve` (general pick/generate/omit,
@@ -479,7 +499,7 @@ unbuilt rule.
     RNG-cascade cost every such change does, paid here with zero witness
     replacements needed (the wide seed pools already absorbed it). Full
     account, including three rejected designs before landing here and a
-    real inspectability bug `cabal test` itself caught: `docs/DESIGN.md`
+    real inspectability bug `cabal test` itself caught: `.claude/docs/DESIGN.md`
     Decision 28. **Follow-up done too: `newSociety` gained the symmetric
     `backfillPatron` hook** (a fresh society's own weighted chance to
     already venerate an existing or freshly-generated Ward) — closing the
@@ -497,7 +517,7 @@ unbuilt rule.
     reseeding since `newSociety` can now itself mint extra entities — the
     exact same fix technique as any other RNG-cascade round, just against
     exact-equality checks instead of wide seed pools. `cabal test` 200 to
-    203 checks. Full account: `docs/DESIGN.md` Decision 32.
+    203 checks. Full account: `.claude/docs/DESIGN.md` Decision 32.
 20. ~~An idiosyncrasy layer on top of `VoiceRegister`.~~ Done — built on
     `idiosyncratic-voice` in an isolated `git worktree` at the user's
     request (a second session was live-editing
@@ -528,7 +548,7 @@ unbuilt rule.
     tuple-sections, one hoist-not) got cleaned up rather than left flagged
     yet again, same commit range (`d89d985`) — not specific to this item,
     just done in passing while the branch was open. Full account:
-    `docs/DESIGN.md` Decision 34. **Deliberately not attempted:**
+    `.claude/docs/DESIGN.md` Decision 34. **Deliberately not attempted:**
     per-society idiosyncrasy
     weight profiles (every society currently shares one global `Tuning`),
     and parameterizing `commitOutcomes`'s own hardcoded `defaultTuning` —

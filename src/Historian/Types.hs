@@ -39,7 +39,7 @@ newtype Culture = Culture {unCulture :: Text}
 -- the type level, the same way 'Venerates'\'s object is conventionally
 -- never a 'Society' today; a real @Ward@ newtype would need either a GADT
 -- (ruled out project-wide) or a runtime-checked wrapper every call site
--- would just have to trust. See docs/DESIGN.md.
+-- would just have to trust. See .claude/docs/DESIGN.md.
 data Kind
   = Society
   | Person
@@ -178,7 +178,7 @@ data Referent
     -- (see 'Historian.Rules.omenOf'/'fulfillProphecies' and
     -- 'Historian.World.openProphecies'). 'Nothing' means purely rhetorical,
     -- same as every prophecy was before this existed. Extending 'Referent'
-    -- again rather than a parallel record, per Decision 9 in docs/DESIGN.md.
+    -- again rather than a parallel record, per Decision 9 in .claude/docs/DESIGN.md.
     ROmen EntityId (Maybe Predicate)
   | -- | A 'Named' fact's object: the entity's freshly chosen name. The only
     -- case where 'Referent' carries raw text rather than pointing at

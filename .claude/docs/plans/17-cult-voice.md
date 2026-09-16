@@ -277,7 +277,7 @@ the narrated one. All frozen values, no live rendering at encode time.
 - New CLAUDE.md work-queue item: abstract `pickNarrator`'s weights (attested
   vs. other-active) into something tunable — explicitly not built this
   pass, the user wants to tune it by feel once it exists.
-- `docs/DESIGN.md` gets a new Decision recording all of this, including the
+- `.claude/docs/DESIGN.md` gets a new Decision recording all of this, including the
   round-4 rendering-timing bug and why it mattered, and what's deferred
   (below).
 

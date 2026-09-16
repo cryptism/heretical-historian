@@ -15,7 +15,7 @@ hollowtongue = Culture "Hollowtongue"
 
 -- | Invented, not transliterated — evokes Amharic/Ge'ez phonology (soft,
 -- vowel-final syllables, occasional gemination) the same way 'vaureWords'
--- evokes Latin without being real Latin. See Decision 21 in docs/DESIGN.md.
+-- evokes Latin without being real Latin. See Decision 21 in .claude/docs/DESIGN.md.
 ethiopian :: Culture
 ethiopian = Culture "Ethiopian"
 
@@ -266,7 +266,7 @@ baboonWords =
   ]
 
 -- | A componential name grammar for persons and relics only — see
--- 'Historian.World.syllableName' and Decision 20 in docs/DESIGN.md for why
+-- 'Historian.World.syllableName' and Decision 20 in .claude/docs/DESIGN.md for why
 -- this exists alongside 'markovWord' rather than replacing it (sites and
 -- societies still use the character chain unchanged). Fragments are
 -- stored lowercase; 'Historian.World.capitalizeName' handles casing.
@@ -520,7 +520,7 @@ curseFramings =
 
 -- | Idiosyncratic dressing pools for 'Historian.Render.applyIdiosyncrasies'
 -- — independent of 'VoiceRegister' (that's a lexical substitution axis;
--- this is a post-processing one, see docs/DESIGN.md Decision 34). A
+-- this is a post-processing one, see .claude/docs/DESIGN.md Decision 34). A
 -- recurring exclamation a narrator opens with, regardless of what's being
 -- reported.
 hailWords :: NonEmpty Text

@@ -9,7 +9,7 @@ in `CLAUDE.md`'s own Status section now lives, moved out because it had
 grown to dominate the token cost of reading `CLAUDE.md` at all.
 
 Read this before touching any feature it describes, so you're extending
-settled reasoning instead of rediscovering it. `docs/DESIGN.md` is the
+settled reasoning instead of rediscovering it. `.claude/docs/DESIGN.md` is the
 companion *why the architecture is shaped this way* document (options
 considered and rejected); this file is *what was built, in what order,
 and how it was checked*.
@@ -31,7 +31,7 @@ proving the `RuleSpec`-into-`Rule` adapter (`ruleFromSpec`\/
 `generateViaEngine`), and 16 replacing what used to be seed-scanning
 existence checks with direct construction against that same `richWorld`
 — as of 2026-09-14. All eight
-event rules from `docs/EVENTS.md` plus eight rules beyond the brief
+event rules from `.claude/docs/EVENTS.md` plus eight rules beyond the brief
 (reinterpretation, fact retraction, dissolution, revival, prophecy,
 coronation, trial by combat, coup) are built and firing — schism,
 battle, reinterpretation, grievance retraction, sanctification,
@@ -51,7 +51,7 @@ revival the normal way.
 `ruleWeight` also now exists: `Rule` carries an integer weight, `rule` (the
 default, 1) and `weightedRule` construct one, and `step` replicates each
 rule's candidate list by its weight before pooling and picking uniformly —
-exactly the two-line change `docs/DESIGN.md` Decision 3 always said would
+exactly the two-line change `.claude/docs/DESIGN.md` Decision 3 always said would
 suffice. Every rule still uses the default, so this is infrastructure with
 no behavior change on its own; verified it actually does something by
 temporarily setting schism's weight to 8, watching it produce 9 of 20
@@ -59,7 +59,7 @@ events instead of its normal share, and reverting.
 
 **The wasm boundary is now real, and partially verified — added
 `Historian.Json` (`encodeWorld`, hand-written, not derived — see Decision 7
-follow-up in `docs/DESIGN.md`), a `--json` flag on the `historian` CLI for
+follow-up in `.claude/docs/DESIGN.md`), a `--json` flag on the `historian` CLI for
 testing it without any wasm toolchain at all, and `wasm/Main.hs` /
 `historian-wasm` wrapping `generate` + `encodeWorld` in one `foreign export
 ccall "generateJson"`.** Verified for real, not just written: fetched a
@@ -95,7 +95,7 @@ corpus's em dashes came out as mojibake) — fixed with a direct byte copy
 instead (`bsToCString` in `wasm/Main.hs`). Full account, including why
 `__wasi_init_tp` and real argc/argv storage — both tried in the round that
 didn't find the actual cause — were reasonable but beside the point, is in
-`docs/DESIGN.md` Decision 7 follow-up. Everything on the *original* work
+`.claude/docs/DESIGN.md` Decision 7 follow-up. Everything on the *original* work
 queue is done, and this closes the last item on the queue below too.
 
 **A fictional calendar now exists, at the user's request.** Epochs render
@@ -139,7 +139,7 @@ whether a prophecy ever comes true, and `hasProphesied` only stops the same
 prophet repeating itself, not a rival prophesying something contradictory
 about the same target — deliberately, for the same reason revival allows
 false claimants. The fuller version — later rules checking whether their
-own firing *fulfills* an open prophecy — is written up in `docs/EVENTS.md`
+own firing *fulfills* an open prophecy — is written up in `.claude/docs/EVENTS.md`
 under Prophecy as the deliberately-deferred next step, not built.
 
 **`ruleMiracle` generalized into three productions on top of a new Ward
@@ -148,7 +148,7 @@ physical object that, like a person or site, can be `Venerates`d or
 `Shuns`ed; together these and the new `Disavows` (a cult's own retraction
 back to neutral) form the closed set `Historian.World.regardOf` reads
 latest-fact-wins to find a cult's *current* stance toward a **Ward** (a
-Person, Item, or Site — documentation, not a new type; see `docs/DESIGN.md`
+Person, Item, or Site — documentation, not a new type; see `.claude/docs/DESIGN.md`
 Decision 14). `venerates` itself is untouched and stays cumulative —
 `regardOf` is additive, so every existing rule built on `venerates` behaves
 exactly as before. `ruleMiracle` now has three productions:
@@ -172,7 +172,7 @@ figure, and the first cult disavows entirely — and a wide seed scan
 confirms `Item`, `Shuns`, `Disavows`, and all three productions firing. The
 five original test seeds needed two more (15, 21) to keep every aggregate
 check passing — not a regression, just the expected RNG-cascade shift from
-a rule with substantially more candidate mass; see `docs/DESIGN.md`
+a rule with substantially more candidate mass; see `.claude/docs/DESIGN.md`
 Decision 14. **Propositions** (a richer philosophical-texture idea the user
 floated alongside this) and opening the regard reaction to more than one
 independent roll per involved cult are both explicitly out of scope for
@@ -192,7 +192,7 @@ unfulfilled prophecies about it; `fulfillProphecies` ties them together and
 is wired into every rule that acts on an entity — `fireSchism`,
 `fireBattle`, `fireSanctify`, `fireDefile`, all three `fireMiracle*`,
 `fireAssassinate`, both branches of `fireMerger`, `fireDissolve` — exactly
-the list `docs/EVENTS.md` scoped when this was deferred. Deliberately
+the list `.claude/docs/EVENTS.md` scoped when this was deferred. Deliberately
 excludes `Grievance`/`Venerates`/`Reconciled` from ever being offered as
 omens (too ubiquitous, would cheapen "fulfilled" into "almost immediate").
 Verified against a real run, not just written: a 100-seed scan shows all
@@ -205,7 +205,7 @@ assassination that actually kills them — carries a `Fulfilled` fact
 pointing back at event 4. Also fixed in passing: `ruleProphesy` never
 actually included `Item` in its own target list, even though
 `prophecyFramings Item` had existed since the Ward regard work — an
-oversight from that session, caught and fixed here. See `docs/DESIGN.md`
+oversight from that session, caught and fixed here. See `.claude/docs/DESIGN.md`
 Decision 15.
 
 **`test/Spec.hs`'s seed handling reworked, to stop the RNG-cascade shift
@@ -274,7 +274,7 @@ by any `Fact`, so the existing "every entity is inspectable" check failed
 for every seed with an item. Fixed by making the link a fact instead
 (`Embodies`, unattested — intrinsic, like `Dissolved` having no attestor);
 `entModifier` stays a plain `Entity` field since it's a scalar with no
-relationship shape. See `docs/DESIGN.md` Decision 16 for why that
+relationship shape. See `.claude/docs/DESIGN.md` Decision 16 for why that
 distinction matters and why the existing test suite is what caught it.
 
 Verified against a real run, not just written: one seed's full trace
@@ -296,7 +296,7 @@ simply a voluntary transfer of a relic from one cult to another — no
 grievance, no hostility precondition, unlike theft — still not built, but
 now scoped and ready to pick up. **Ceremony** the user is still thinking
 through themselves; not to be designed or built without them bringing it
-back. See `docs/EVENTS.md` under Concepts and relics.
+back. See `.claude/docs/EVENTS.md` under Concepts and relics.
 
 **Refactor: all event prose moved out of `Historian.Rules` into
 `Historian.Render`, at the user's request.** Every fired rule used to build
@@ -420,11 +420,11 @@ already latent in `fireProphesy` and `fireReinterpret`. Fixed properly:
 as fallback; `prophecyFramings` (genuinely can return `[]` for `Concept`)
 got a named `Historian.Corpus.defaultFraming` constant instead. A full
 sweep confirmed zero prose string literals remain in `Historian.Rules` —
-only event-kind tags and comments. See `docs/DESIGN.md` Decision 18.
+only event-kind tags and comments. See `.claude/docs/DESIGN.md` Decision 18.
 
 **Cult renaming, patron concepts, and leadership conflict, at the user's
 request — this closes the "Known compromise" note that used to sit at the
-end of `docs/DESIGN.md`.** Every society now gets an independent patron
+end of `.claude/docs/DESIGN.md`.** Every society now gets an independent patron
 `Concept` from birth (`newSociety` returns both), and a new `Leads`
 predicate names a real, distinguished current leader distinct from
 `LeaderOf`'s "current member." Three new rules — `ruleCoronation`,
@@ -440,7 +440,7 @@ fourth extension of `Referent` (Decision 9) — `RName Text`, consumed by a
 new `Named` predicate — and `Historian.World.nameIn` now checks for one
 before falling back to the entity's birth name; the two call sites that
 used to bypass it (`entityJson`'s `"name"` field, `dossier`'s header) were
-fixed to go through it too. See `docs/DESIGN.md` Decision 19 for the full
+fixed to go through it too. See `.claude/docs/DESIGN.md` Decision 19 for the full
 reasoning. **Verified against real seeds:** seed 101 shows a coronation
 renaming a society, with the very next event correctly using the new name
 in its own stored prose; seed 114 shows a trial by combat where both
@@ -469,7 +469,7 @@ and a `NameGrammar`, invented rather than real vocabulary throughout (the
 same standard `vaureWords`/`hollowWords` already set) — Semitic's and
 Mesoamerican's prefixes lean on genuine cross-family grammatical
 *particles* ("the," "son of," "-tzin" as a suffix shape) rather than any
-specific real name. See `docs/DESIGN.md` Decisions 20 and 21.
+specific real name. See `.claude/docs/DESIGN.md` Decisions 20 and 21.
 **Confirmed `cultureOf` never gates a rule precondition anywhere** —
 expanding from two cultures to seven changes nothing about which events
 can fire, only which word lists a freshly-minted entity draws from.
@@ -494,7 +494,7 @@ worlds twice.
 instead of always advancing by one day. `Epoch` was already an absolute
 day count and `dateOf` already walked years one at a time regardless of
 jump size, so nothing about the calendar itself needed to change; see
-`docs/DESIGN.md` Decision 22 for why this isn't a violation of invariant
+`.claude/docs/DESIGN.md` Decision 22 for why this isn't a violation of invariant
 8. Verified on seed 1: events now land E0→E246→E420→E664 instead of
 E0→E1→E2→E3, correctly crossing month/year boundaries in the rendered
 dates. One more RNG draw per step reshuffled the cascade again, the same
@@ -523,7 +523,7 @@ checked — the user's own stated only-failure-mode — kept separate from
 `intelligentStep` itself, which never fails, since none of `StepRequest`'s
 three constructors can be ambiguous by construction. One rule migrated as
 proof of concept: `schismSpec`, alongside the completely untouched
-`ruleSchism`/`fireSchism`. See `docs/DESIGN.md` Decision 23 for the full
+`ruleSchism`/`fireSchism`. See `.claude/docs/DESIGN.md` Decision 23 for the full
 account, including the real complications settled along the way (cross-
 slot dependency, the conservative empty-context runnability check,
 `Society`/`Item` generation's auxiliary-claims gap deliberately left
@@ -585,7 +585,7 @@ specs (`battleSpec`, `defileSpec`, `theftSpec`, `coupSpec`,
 production makes. `test/Spec.hs` grew from 155 checks to 182 — all 27 new
 ones passed on the first real run, including several exact-candidate-list
 equality checks precise enough to have caught a transposed argument or an
-inverted `elem`/`notElem`. See `docs/DESIGN.md` Decision 23's follow-up
+inverted `elem`/`notElem`. See `.claude/docs/DESIGN.md` Decision 23's follow-up
 for the full account.
 
 **`ruleReinterpret` itself removed entirely — the one exception noted just
@@ -618,7 +618,7 @@ has had): `test/Spec.hs`'s shared `wideSeeds` pool needed widening from
 150 to 250 after a fresh scan found the `Rivalry` check's witness moved
 out to seed 211. `cabal test` stayed at exactly 182 checks throughout —
 nothing about this change added or removed a check, only what makes the
-existing ones pass. See `docs/DESIGN.md` Decision 23's second follow-up.
+existing ones pass. See `.claude/docs/DESIGN.md` Decision 23's second follow-up.
 
 **The `RuleSpec` adapter promised by work queue item 15, done.**
 `Historian.Rules.ruleFromSpec :: RuleSpec -> Rule` turns any migrated
@@ -750,7 +750,7 @@ moved from `Historian.Rules` into `Historian.Render` alongside `render`,
 since `commitOutcomes` has to be reachable from `Historian.Engine`,
 which cannot import `Historian.Rules` — `Historian.Render` is now
 genuinely "`Outcome` → anything," `Historian.Rules` is purely "`World` →
-`Outcome`." See docs/DESIGN.md Decision 24 for the full account,
+`Outcome`." See .claude/docs/DESIGN.md Decision 24 for the full account,
 including a real rename-ordering bug this refactor would have baked in
 permanently if not caught first (fixed by adding `lcSocietyName :: Text`
 to `LeadershipChange`, captured before any rename decision, so
@@ -771,7 +771,7 @@ a young, sparse world still gets the original full spread. Still consumes
 `Chronicle`'s ordinary RNG stream, same as before; only the width of the
 range changed, not whether or how often a roll happens, so invariant 8
 stays as uninvolved as Decision 22 already established. See
-`docs/DESIGN.md` Decision 26 for why society count and membership are
+`.claude/docs/DESIGN.md` Decision 26 for why society count and membership are
 weighted equally rather than adding a second tunable constant. Verified
 against a real run: seed 1 at 30 steps still shows plausible year-
 spanning gaps. `cabal test` held at exactly 187 checks with no seed
@@ -821,7 +821,7 @@ which touches nothing and leaves the defunct society inert forever).
 Invariant 7 was purpose-built and verified to stop a defunct entity
 from ever acting again — a real return-from-terminus needs a
 deliberate, narrow, per-kind carve-out (revival for cults, discovery
-for lost items — see `docs/EVENTS.md` under Concepts and relics), not
+for lost items — see `.claude/docs/EVENTS.md` under Concepts and relics), not
 a generic reversible-terminus rule, or it reopens the exact class of
 bug invariant 7 exists to close.
 

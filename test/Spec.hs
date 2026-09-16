@@ -92,7 +92,7 @@ seeds = [1, 2, 3, 42, 99]
 
 -- | A much wider pool used only by the aggregate existence checks below.
 -- Every rule or RNG-consumption change reshuffles the entire downstream
--- RNG cascade for every seed (documented repeatedly in docs/DESIGN.md,
+-- RNG cascade for every seed (documented repeatedly in .claude/docs/DESIGN.md,
 -- e.g. Decisions 14-15) — against the small 'seeds' list above, that
 -- routinely knocked some aggregate check's one lucky seed out of range,
 -- costing a manual seed-hunt after nearly every change. Wide enough that
@@ -102,7 +102,7 @@ aggregateSeeds :: [Int]
 aggregateSeeds = [1 .. 40]
 
 -- | A dying curse landing on the relic (rather than the killer's cult,
--- which stays purely rhetorical — see Decision 17, docs/DESIGN.md) needs
+-- which stays purely rhetorical — see Decision 17, .claude/docs/DESIGN.md) needs
 -- *four* independent low-probability rolls to line up in the same
 -- assassination: dying words speak (~30%), curse over vaticination
 -- (~50%), a relic present at all (~30%), and the relic chosen as the
@@ -113,7 +113,7 @@ aggregateSeeds = [1 .. 40]
 -- rather than reaching for yet more steps (this doesn't need *time* to
 -- occur, unlike dissolution — it needs more independent trials). Widened
 -- from 150 to 250 after removing reinterpretation as its own 'Rule'
--- (docs/DESIGN.md Decision 23's second follow-up) reshuffled the RNG
+-- (.claude/docs/DESIGN.md Decision 23's second follow-up) reshuffled the RNG
 -- cascade yet again — a fresh scan found the 'Rivalry' check's first
 -- witness moved out to seed 211, just past the old bound.
 wideSeeds :: [Int]
@@ -208,7 +208,7 @@ instance FromJSON WireDossier where
 -- | A dying curse, not a normal prophecy: a 'Prophesied' fact whose omen
 -- is 'Shuns' — currently only 'Historian.Rules.fireDyingWords' ever
 -- produces one, since no 'prophecyFramings' line offers 'Shuns' as an
--- omen (Decision 17, docs/DESIGN.md).
+-- omen (Decision 17, .claude/docs/DESIGN.md).
 isCurse :: Fact -> Bool
 isCurse f =
   factPred f == Prophesied && case factObject f of
@@ -323,7 +323,7 @@ main = do
   unless (null failures) exitFailure
   TIO.putStrLn (T.concat ["ok - ", T.pack (show (length results)), " checks passed"])
 
--- | 'Historian.Engine' (Phase 1, docs/DESIGN.md Decision 23) checks. Hand-
+-- | 'Historian.Engine' (Phase 1, .claude/docs/DESIGN.md Decision 23) checks. Hand-
 -- built worlds, not seed scans: the whole point of the engine is that
 -- these no longer need a lucky seed to exercise — construct exactly the
 -- shape wanted and check the engine reads/resolves it correctly.
@@ -409,7 +409,7 @@ engineChecks =
         Nothing -> False
     , "Engine: queryEntity reports the society can fill schismSpec's own slot"
     )
-  , -- Second migration: sanctifySpec (docs/DESIGN.md Decision 23 follow-up).
+  , -- Second migration: sanctifySpec (.claude/docs/DESIGN.md Decision 23 follow-up).
     -- Its free slot is the mirror image of schism's — optional rather than
     -- required — so these checks exercise the omit path 'schismSpec' never
     -- did, plus the pick path once a real candidate site exists.
@@ -452,7 +452,7 @@ firstOrErr msg = \case
   [] -> error msg
 
 -- | A second, richer hand-built world for the batch of 'Historian.Engine'
--- migrations beyond 'schismSpec'\/'sanctifySpec' (docs/DESIGN.md Decision
+-- migrations beyond 'schismSpec'\/'sanctifySpec' (.claude/docs/DESIGN.md Decision
 -- 23 follow-up). Built by composing the same already-proven 'fireSchism'\/
 -- 'fireSanctify' effects 'engineChecks' already exercises, plus a handful
 -- of direct 'record' calls where a specific, non-probabilistic shape
@@ -686,7 +686,7 @@ batchEngineChecks =
 -- count, not just "a nonzero one"; checked directly against 'richWorld'
 -- rather than assumed from reading the code. 'battleSpec' is checked for
 -- inequality instead, on purpose: it deliberately dropped the legacy
--- rule's @a < b@ ordering dedup (docs/DESIGN.md Decision 23's second
+-- rule's @a < b@ ordering dedup (.claude/docs/DESIGN.md Decision 23's second
 -- follow-up), so its derived candidate count is provably larger, not
 -- equal — asserting equality here would be asserting something false.
 adapterChecks :: [(Bool, Text)]
@@ -818,7 +818,7 @@ directRuleChecks =
     )
   ]
 
--- | Work item 14's standalone PoC (docs/plans/14-backdated-minting.md).
+-- | Work item 14's standalone PoC (.claude/docs/plans/14-backdated-minting.md).
 -- Not wired into generate/step, so this is entirely hand-built-world
 -- checks, no seed scanning — the same "run it N times against one fixed
 -- world" technique 'fireDispute's own check above already uses.
@@ -875,7 +875,7 @@ backdatedChecks =
     )
   ]
 
--- | Work item 17 (cult voice, docs/plans/17-cult-voice.md). Directly
+-- | Work item 17 (cult voice, .claude/docs/plans/17-cult-voice.md). Directly
 -- constructed 'Outcome' samples rather than extracted from real events —
 -- deterministic and self-contained, no dependence on which entities
 -- 'richWorld' happens to already carry a matching event for.
@@ -925,7 +925,7 @@ voiceChecks =
   ]
 
 -- | Branch sketch: an idiosyncrasy layer on top of 'VoiceRegister'
--- (docs/DESIGN.md Decision 34). Deterministic weight overrides isolate
+-- (.claude/docs/DESIGN.md Decision 34). Deterministic weight overrides isolate
 -- one quirk at a time — chance forced to 100 for the quirk under test,
 -- 0 for the other three — so a single 'evalState' call is enough per
 -- check, no seed scanning needed (a lesson this project has already
@@ -976,7 +976,7 @@ idiosyncrasyChecks =
   ]
 
 -- | 'newSociety'\/'backfillPatron' trials (work queue item 19's own
--- "newSociety gaining its own hook" follow-up, docs/DESIGN.md Decision
+-- "newSociety gaining its own hook" follow-up, .claude/docs/DESIGN.md Decision
 -- 32) — same style as 'backdatedTrials': measure the entity\/event count
 -- delta 'newSociety' produces from a fixed base world across many RNG
 -- states. 'richWorld', not 'emptyWorld', is the base specifically because
@@ -1014,7 +1014,7 @@ patronChecks =
     )
   ]
 
--- | Work queue item 15's wasm stateful-handle follow-up (docs/DESIGN.md
+-- | Work queue item 15's wasm stateful-handle follow-up (.claude/docs/DESIGN.md
 -- Decision 33): 'Historian.Engine.intelligentStep's 'StepAny'\/
 -- 'StepEntities' branches never called 'advanceEpoch' before this pass —
 -- a latent, never-exercised gap (every prior 'test/Spec.hs' use of
@@ -1101,7 +1101,7 @@ checksFor seed =
     mergedCount s = length [() | f <- facts, factPred f == MergedInto, factSubject f == s]
 
     -- Shared by societies and items: 'Terminated' is one predicate for
-    -- both dissolution and destruction now (Decision in docs/DESIGN.md),
+    -- both dissolution and destruction now (Decision in .claude/docs/DESIGN.md),
     -- so one count works for "no society dissolves twice" and "no relic
     -- is destroyed twice" alike.
     terminatedCount i = length [() | f <- facts, factPred f == Terminated, factSubject f == i]
