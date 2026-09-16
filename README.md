@@ -2,7 +2,7 @@
 
 A history generator for occult societies. Watch the quintillion-fold truths be born, commit wonders, battle, love, and die.
 
-Essentially an event log below a basic constraint solver and free variable-binder, seen below an engine of esoteric events befalling randomly generated occult societies, each with their own quirks, and with the ability to progressively reveal events both as they occur and in the past, post-hoc.
+Essentially an event log below a basic constraint solver and free variable-binder, and below that an engine of esoteric events befalling randomly generated occult societies, each with their own quirks, and the ability to progressively reveal events both as they occur and in the past, post-hoc.
 
 Website very soon!
 
