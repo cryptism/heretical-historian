@@ -1,0 +1,53 @@
+name: Release wasm
+
+# Builds historian-wasm.wasm via the same pipeline `nix run .#build-wasm`
+# runs locally (cross-compile with wasm32-wasi-ghc, patch into a
+# reactor-style module, verify against a real Node WASI host — see
+# docs/DESIGN.md Decision 7/33/34 and flake.nix) and publishes the
+# patched, verified artifact as a GitHub release asset. Consumed by
+# hh-site's `bun run fetch-wasm` (scripts/fetch-wasm.ts there), which
+# expects an asset named exactly `historian-wasm.wasm` on the latest
+# release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build, patch, and verify historian-wasm.wasm
+        run: nix run .#build-wasm
+
+      - name: Locate the patched wasm
+        id: wasm
+        run: |
+          path=$(find dist-newstyle/build/wasm32-wasi -name historian-wasm.patched.wasm)
+          if [ -z "$path" ]; then
+            echo "historian-wasm.patched.wasm not found after build-wasm" >&2
+            exit 1
+          fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+
+      - name: Create release and upload the wasm binary
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --repo "${{ github.repository }}" \
+            "${{ steps.wasm.outputs.path }}#historian-wasm.wasm"
