@@ -6,8 +6,12 @@
 -- the @historian_*@ family, which keeps one 'World' resident on this
 -- module's own heap behind an opaque handle so a host can drive history
 -- one step at a time and inspect it along the way, without round-tripping
--- the whole thing on every call. Both are thin FFI wrappers — the actual
--- logic ('generate'\/'genesisWorld'\/'stepAutonomous'\/'queryEntity', all
+-- the whole thing on every call. 'historianRulesFor'\/'historianNextSlot'
+-- (Decision 38) extend that second family with the item 21\/22 query
+-- surface — the first two functions here that *take* a 'CString' rather
+-- than only returning one, hence 'cstringToText'. Every function here is
+-- a thin FFI wrapper — the actual logic ('generate'\/'genesisWorld'\/
+-- 'stepAutonomous'\/'queryEntity'\/'rulesFor'\/'nextSlotFromPool', all
 -- pure) and JSON shape ('Historian.Json') both live in the library.
 --
 -- Exported with the portable @ccall@ convention (not @javascript@) so this
@@ -32,20 +36,23 @@
 -- exported directly at the link level instead (@--export=hs_init@ in the
 -- cabal file); a host must call it before any function below is usable.
 -- See @.claude/docs/DESIGN.md@ Decision 7.
-module Main (main, generateJson, historianNew, historianStep, historianQuery, historianFree) where
+module Main (main, generateJson, historianNew, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
 
+import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Text (Text)
+import qualified Data.Text.Encoding as TE
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)
-import Foreign.Marshal.Alloc (mallocBytes)
+import Foreign.Marshal.Alloc (free, mallocBytes)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (castPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (poke)
-import Historian.Engine (queryEntity, stepAutonomous)
-import Historian.Json (encodeQueryResult, encodeStepResult, encodeWorld)
+import Historian.Engine (RuleSpec (rsName), nextSlotFromPool, queryEntity, rulesFor, stepAutonomous)
+import Historian.Json (encodeNextSlotFromPool, encodeQueryResult, encodeRulesFor, encodeStepResult, encodeWorld)
 import Historian.Rules (generate, genesisWorld, ruleSpecs)
 import Historian.Types (EntityId (..), World)
 
@@ -93,6 +100,73 @@ historianQuery :: Handle -> Int -> IO CString
 historianQuery sp eid = do
   w <- readIORef =<< deRefStablePtr sp
   bsToCString (BSL.toStrict (encodeQueryResult w (queryEntity w ruleSpecs (EntityId eid))))
+
+foreign export ccall "historian_rules_for" historianRulesFor :: Handle -> CString -> IO CString
+
+-- | The handle's current 'World', every 'RuleSpec' the given entity pool
+-- could use (@poolJson@: a JSON array of entity ids, e.g. @"[1,2,5]"@),
+-- ranked — see 'Historian.Engine.rulesFor'\/'encodeRulesFor'. A malformed
+-- @poolJson@ is treated as an empty pool rather than trapping: every real
+-- 'RuleSpec' scores 0 against an empty pool, the same answer a host
+-- asking "what could an empty selection do" should get.
+historianRulesFor :: Handle -> CString -> IO CString
+historianRulesFor sp poolJson = do
+  w <- readIORef =<< deRefStablePtr sp
+  pool <- decodePool poolJson
+  bsToCString (BSL.toStrict (encodeRulesFor (rulesFor w ruleSpecs pool)))
+
+foreign export ccall "historian_next_slot" historianNextSlot :: Handle -> CString -> CString -> IO CString
+
+-- | The handle's current 'World', the next open slot of the named rule
+-- given an (unordered) entity pool — see
+-- 'Historian.Engine.nextSlotFromPool'\/'encodeNextSlotFromPool'. An
+-- unrecognised @ruleName@ or malformed @poolJson@ both come back as the
+-- @"done"@ shape (nothing to resolve) rather than trapping — there is no
+-- distinct "rule not found" wire shape, since a host holding a rule name
+-- it got from 'historian_rules_for' can never actually hit this case.
+historianNextSlot :: Handle -> CString -> CString -> IO CString
+historianNextSlot sp ruleNameC poolJson = do
+  w <- readIORef =<< deRefStablePtr sp
+  ruleName <- cstringToText ruleNameC
+  pool <- decodePool poolJson
+  case [rs | rs <- ruleSpecs, rsName rs == ruleName] of
+    (rs : _) -> bsToCString (BSL.toStrict (encodeNextSlotFromPool w (nextSlotFromPool w ruleSpecs rs pool)))
+    [] -> bsToCString (BSL.toStrict (encodeNextSlotFromPool w (Right Nothing)))
+
+-- | Like 'Foreign.C.String.peekCString', but decoded as UTF-8 rather than
+-- byte-by-byte as Latin-1 — the input-side mirror of 'bsToCString's own
+-- care on the way out.
+cstringToText :: CString -> IO Text
+cstringToText cs = TE.decodeUtf8 <$> BS.packCString cs
+
+-- | @poolJson@ decoded as a JSON array of entity ids. Never fails outward
+-- — see the callers' own Haddocks for why an empty pool is always a safe
+-- fallback here.
+decodePool :: CString -> IO [EntityId]
+decodePool poolJson = do
+  bs <- BS.packCString poolJson
+  pure (maybe [] (map EntityId) (Aeson.decode (BSL.fromStrict bs)))
+
+foreign export ccall "historian_alloc" historianAlloc :: Int -> IO CString
+
+-- | The other new piece 'historianRulesFor'\/'historianNextSlot' need
+-- that no earlier function here did: a way for the *host* to get a
+-- string argument onto this module's own heap in the first place, since
+-- nothing before them ever took a 'CString' as input. A host writes its
+-- UTF-8 bytes (plus a trailing NUL) into the @n@ bytes returned here,
+-- then passes the pointer straight through — no different from any other
+-- C ABI's @malloc@\/@free@ discipline, and paired with 'historianDealloc'
+-- the same way 'historian_new'\/'historian_free' are already paired.
+historianAlloc :: Int -> IO CString
+historianAlloc n = castPtr <$> mallocBytes n
+
+foreign export ccall "historian_dealloc" historianDealloc :: CString -> IO ()
+
+-- | Releases a buffer obtained from @historian_alloc@. Must be called
+-- exactly once per @historian_alloc@, same discipline as
+-- @historian_free@\/@historian_new@ — see this module's ownership note.
+historianDealloc :: CString -> IO ()
+historianDealloc = free . castPtr
 
 foreign export ccall "historian_free" historianFree :: Handle -> IO ()
 

@@ -13,14 +13,14 @@
 -- chains, which are generator-internal bookkeeping with no business
 -- leaving Haskell. Only entities, events, and facts — the queryable
 -- output — cross the boundary.
-module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult) where
+module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult, encodeRulesFor, encodeNextSlotFromPool) where
 
 import Data.Aeson (Value (..), object, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
-import Historian.Engine (EntityDossier (..))
+import Historian.Engine (EntityDossier (..), PoolAmbiguity (..), RuleSpec (..), Slot (..))
 import Historian.Types
 import Historian.World (dateOf, nameIn, propertyOf)
 
@@ -62,18 +62,57 @@ encodeStepResult before after =
 -- of the stateful-handle boundary, alongside 'encodeStepResult'.
 encodeQueryResult :: World -> Maybe EntityDossier -> BSL.ByteString
 encodeQueryResult _ Nothing = Aeson.encode Null
-encodeQueryResult w (Just d) =
-  Aeson.encode $
-    object
-      [ "id" .= unEntityId (edId d)
-      , "kind" .= kindText (edKind d)
-      , "name" .= edName d
-      , "culture" .= unCulture (edCulture d)
-      , "born" .= unEpoch (edBorn d)
-      , "bornDate" .= dateOf w (edBorn d)
-      , "facts" .= map (factJson w) (edFacts d)
-      , "satisfiesSlotOf" .= edSatisfiesSlotOf d
-      ]
+encodeQueryResult w (Just d) = Aeson.encode (dossierJson w d)
+
+dossierJson :: World -> EntityDossier -> Value
+dossierJson w d =
+  object
+    [ "id" .= unEntityId (edId d)
+    , "kind" .= kindText (edKind d)
+    , "name" .= edName d
+    , "culture" .= unCulture (edCulture d)
+    , "born" .= unEpoch (edBorn d)
+    , "bornDate" .= dateOf w (edBorn d)
+    , "facts" .= map (factJson w) (edFacts d)
+    , "satisfiesSlotOf" .= edSatisfiesSlotOf d
+    ]
+
+-- | 'Historian.Engine.rulesFor's own wire shape — every 'RuleSpec' that
+-- could use at least one entity from the given pool, ranked by
+-- 'Historian.Engine.bestPoolUse'. Never used offline; a host with an
+-- entity selection in hand calls this to know which rules are even worth
+-- offering.
+encodeRulesFor :: [(RuleSpec, Int)] -> BSL.ByteString
+encodeRulesFor ranked =
+  Aeson.encode
+    [object ["rule" .= rsName rs, "score" .= n] | (rs, n) <- ranked]
+
+-- | 'Historian.Engine.nextSlotFromPool's own wire shape. Three distinct
+-- outcomes, matched to three JSON shapes rather than one loosely-typed
+-- object, so a host can dispatch without probing which fields are
+-- present: an ambiguous pool (@"ambiguous"@, with every competing
+-- binding shape as parallel-array entity ids\/nulls, so a host can show
+-- the actual choice rather than just a count); a rule the pool already
+-- fully resolves (@"done"@); or the next open slot with its real
+-- candidates (@"slot"@, reusing 'dossierJson' — the exact 'EntityDossier'
+-- shape 'encodeQueryResult' already exposes, not a second parallel one).
+encodeNextSlotFromPool :: World -> Either PoolAmbiguity (Maybe (Int, Slot, [EntityDossier])) -> BSL.ByteString
+encodeNextSlotFromPool w = \case
+  Left (PoolAmbiguity shapes) ->
+    Aeson.encode $
+      object
+        [ "status" .= ("ambiguous" :: Text)
+        , "shapes" .= map (map (fmap unEntityId)) shapes
+        ]
+  Right Nothing -> Aeson.encode (object ["status" .= ("done" :: Text)])
+  Right (Just (i, slot, candidates)) ->
+    Aeson.encode $
+      object
+        [ "status" .= ("slot" :: Text)
+        , "slotIndex" .= i
+        , "slotKind" .= kindText (slotKind slot)
+        , "candidates" .= map (dossierJson w) candidates
+        ]
 
 entityJson :: World -> Entity -> Value
 entityJson w e =
@@ -152,6 +191,7 @@ predicateText = \case
   Leads -> "Leads"
   Rivalry -> "Rivalry"
   Terminated -> "Terminated"
+  TrainedBy -> "TrainedBy"
 
 referentJson :: Referent -> Value
 referentJson = \case

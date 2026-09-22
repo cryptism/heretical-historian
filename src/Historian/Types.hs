@@ -170,6 +170,15 @@ data Predicate
     -- candidate. What 'ruleTrialByCombat' consumes; what 'ruleCoronation'
     -- produces for a passed-over candidate. See Decision 19.
     Rivalry
+  | -- | Person-to-person, the positive counterpart to 'Rivalry''s shape:
+    -- subject was mentored by object. Recorded only for a schism's fresh
+    -- heresiarch, naming the parent society's own leader at the moment of
+    -- the split (see 'Historian.Rules.fireSchism'). Consumed by
+    -- 'Historian.Rules.ruleMiracle': a candidate for a fresh society's own
+    -- miracle-saint slot who was 'TrainedBy' someone is weighted toward
+    -- being chosen, the same candidate-list-replication idiom
+    -- 'Historian.World.cultureBoost' already uses. See Decision 39.
+    TrainedBy
   deriving stock (Eq, Ord, Show)
 
 -- | What a fact's object slot points at. Almost always another entity; a

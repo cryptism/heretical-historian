@@ -3286,3 +3286,186 @@ entries that narrate a specific seed under the old name (e.g. "seed 4326
 (Mesoamerican)") — that file is a historical record of what was true when
 it was written, not a live index, so it stays exactly as it was rather
 than being retroactively edited to match the new label.
+
+## Decision 38: culture mixing — drift, same-culture affinity, and fused merger names
+
+**Needed for:** the user's own stated model — "There is no one culture per
+world, potentially all cultures can be seen in a world, however,
+interactions have higher chances of happening within cultures than
+outside them" — plus "consider mixing the naming logic of relics, sites
+when societies have merged."
+
+**A real prerequisite gap was found before any weighting could matter at
+all: checked, and no generated world ever contained more than one
+culture.** `genesis` is the only call site in the entire codebase that
+ever drew a culture fresh from `Historian.Corpus.allCultures`; every
+other society-minting path — `fireSchism` (`cultureOf w s`, the parent's
+own), `fireMerger`'s `MergerFounding` branch (one of the two merging
+parents'), `generateCultFor` (`cultureOf w ward`, the ward's own) —
+strictly *inherits* an already-existing entity's culture. Since every
+society after the first one is reached by schism or merger, and every
+person\/site\/item is minted in whichever culture its commissioning
+society already has, a generated world was monocultural by construction:
+"higher chance within cultures" was vacuously 100%\/0%, and there was
+nothing for a naming blend to ever blend. This had to be fixed first, not
+worked around — see Decision 27's own precedent for "found a real gap
+mid-plan, built the prerequisite rather than reinterpreting the ask."
+
+**`driftCulture` (`Historian.World`) is the fix: a weighted deviation
+(`tnCultureDriftChance`, 12) at exactly the two "fresh society, would
+otherwise simply inherit" call sites in the ordinary generation path —
+`fireSchism`'s new splinter and `generateCultFor`'s freshly-generated
+cult.** Deliberately *not* applied to `fireMerger`'s culture-inheritance
+(a merger already has an explicit, meaningful choice — which parent's
+tradition dominates — drift would just be noise on top of it) or to the
+standalone backdated-minting PoC (`newSocietyAt vaurethine epoch`, item
+14 — hardcoded to Vaurethine specifically, deliberately never wired into
+`generate`, unrelated to this feature). The heresiarch themselves stays
+minted in the parent's own culture in `fireSchism` — they're a member of
+it right up until the moment of the split; only the *society* they found
+can end up somewhere else.
+
+**Same-culture affinity is candidate-list replication, not a
+probability** — the one idiom every self-weighting mechanism in this
+codebase already uses (`ruleWeight`, and now `Historian.World.cultureBoost`
+/`apprenticeBoost` below), rather than inventing a second weighting
+mechanism alongside it. `ruleMerger`'s own candidate list comprehension
+gained one clause, `_ <- replicate (cultureBoost defaultTuning w a b) ()`
+— a same-culture pairing appears `1 + tnSameCultureBoost` (2) times in the
+pooled list `step` picks from uniformly, a cross-culture one appears
+once, same as before this existed. Scoped to `ruleMerger` only, not
+battle\/dispute\/assassination\/theft target selection: those all draw
+from *already-established* `Grievance`\/regard relationships (checked
+directly — `holdsGrievance` gates every one of them), not a fresh,
+unconstrained society-to-society pairing the way merger's
+`sharesGrievanceTarget w a b || sharesVeneration w a b` precondition does.
+Applying a culture bias to an already-decided relationship would be
+incoherent; merger is the one place in the whole rule set where two
+previously-unrelated societies are freely paired at all.
+
+**Fused merger naming (`generateMergedSocietyName`) is scoped to the
+merger's own founding name, not a persistent dual-heritage record.** When
+`MergerFounding`'s two parent cultures genuinely differ, the new
+society's stem is `markovWord primary <> "-" <> markovWord secondary`
+(verified: contains a literal `-`, which no existing corpus word list or
+grammar ever produces on its own) instead of drawing on one parent's
+tradition alone; when they match, it's byte-for-byte
+`generateSocietyName` unchanged. The new society still stores exactly one
+`Culture` on its own `Entity` (`primary`, decided by the existing
+`cultFromA` coin flip `fireMerger` already had) — a persistent "this
+society has two heritages" record that every *future* relic\/site it
+mints could also draw on would need a new `Entity` field threaded through
+`corpusFor`\/`nameGrammarFor`\/every downstream mint call site, a
+materially larger change than one fused name at the moment of founding.
+Deliberately not attempted here; `MergerAbsorption` (the other merger
+outcome, one society simply absorbing the other) doesn't rename at all
+either way, so there was nothing to blend there regardless.
+
+**RNG-cascade fallout, found and fixed the same way every prior one in
+this file was, but compounding with Decision 39's own fallout since both
+landed in the same session:** new `chance`\/`coin`\/`pickOr` draws inside
+`fireSchism` itself (`driftCulture`, plus Decision 39's
+`foundingPurposeClaim`\/`apprenticeshipClaim`) reshuffle the cascade for
+*every* schism in *every* seed — schism being common enough that this
+touched nearly everything downstream of the first one. `seeds`' own
+witness moved twice in the same session (99 → 4 → 5, the middle move
+Decision 39's fallout, not this one); `richWorld`'s seed moved 14 → 2,
+found not via a hand-copied scratch reproduction (too many
+richWorld-dependent assertions across too many check blocks by this point
+to transcribe reliably without a transcription error of its own) but by
+running the real, complete `test/Spec.hs` check set against a handful of
+candidate seeds directly until one passed everything at once — a real
+departure from the "always use a scratch binary" precedent, and a better
+one now that the richWorld surface is this large: the authoritative check
+set is the actual check set, not a hand-maintained copy of it.
+`cabal test` 245 to 265 checks (Decision 38\/39 combined:
+`cultureChecks` and `backstoryChecks`).
+
+## Decision 39: backstory expansion — apprenticeship, founding purpose, ruins naming, site framing
+
+**Needed for:** the user's own brainstormed list from the prior session
+(notable person, relic, site, society backstories) plus "we'll expand
+upon them next iteration" — one concrete, well-scoped mechanic chosen per
+entity type rather than attempting the full brainstormed list at once.
+
+**Predicate count stayed almost flat on purpose — one new constructor,
+`TrainedBy`, not four.** `Predicate`'s own Haddock is explicit that new
+ones are meant to be rare and each earn a real precondition use, so three
+of the four backstories below were deliberately designed to reuse
+existing predicates or stay at the *naming* layer (no `Fact` at all)
+rather than default to "invent a predicate per backstory":
+
+- **Society (founding purpose):** `foundingPurposeClaim`
+  (`Historian.Rules`) — a fresh splinter's `tnFoundingPurposeChance` (25)
+  chance of having its own founding purpose drawn from the *parent's*
+  current regard toward some Ward (`regardedThings`), either continuing
+  it (`Venerates`\/`Shuns` mirrored) or reacting against it (`flipRegard`
+  — "we split off to renounce what our parent held dear"). Zero new
+  predicates; reuses `Venerates`\/`Shuns` exactly as `regardClaim`
+  already asserts them elsewhere. Additive to the splinter's own ordinary
+  `backfillPatron` roll (already inside `newSociety`), not a replacement
+  for it.
+- **Notable person (apprenticeship):** the one genuinely new predicate.
+  `apprenticeshipClaim` gives a fresh heresiarch a `tnApprenticeshipChance`
+  (30) chance of being recorded `TrainedBy` the parent's current
+  `currentLeader`, gated on `fresh` at the call site — a retroactive claim
+  about someone who already existed would be a different, weaker kind of
+  backstory than a newly-invented character's own. Consumed by
+  `ruleMiracle`'s own saint-candidate list via `apprenticeBoost`, the same
+  replication idiom Decision 38's `cultureBoost` uses: a `TrainedBy`
+  candidate is weighted toward being recognized as saintly too.
+- **Relic (ruins-recovered naming):** `ruinsItemName` — a second-tier
+  naming option in `newItem`, consulted only once `themedItemName` has
+  already come back empty, naming a fresh item after a terminated
+  society's ruins ("The Chalice, recovered from the ruins of...") instead
+  of an arbitrary stem. Zero new predicates or facts at all — purely a
+  naming-layer effect, the same shape `themedItemName` itself already
+  established.
+- **Site (built vs. discovered):** `siteNounFor` — `tnSiteOriginChance`
+  (30) chance of drawing the site's noun from a flavored
+  `constructedSiteNouns`\/`naturalSiteNouns` pool (`Historian.Corpus`,
+  new) instead of the plain `siteNouns`. Also zero new predicates; the
+  existing, undifferentiated `siteNouns` list was left untouched rather
+  than re-audited word-by-word into "built" vs. "natural" (several of its
+  entries — Ossuary, Barrow, Ruins, Ferry — don't cleanly sort either
+  way), so the two new lists are additive alternatives, not a
+  reclassification of the original.
+
+**One real design correction, found the same way Decision 36's own
+correction was — by tracing what the fresh mint's other consequences
+actually are, not just what it's initially minted as.** Early in scoping
+apprenticeship, "promote a mundane bystander into the fresh heresiarch"
+was considered and rejected: `excludeMundane` (Decision 36) exists
+specifically so a mundane entity can never be picked back up by a later
+rule's candidate pool, and `newMundanePerson`\/`newMundaneItem` never get
+an `Embodies`\/backfill chance in the first place — reusing one as a
+schism's heresiarch would need a special-cased pool that bypasses
+`excludeMundane`, directly contradicting the "permanent dead end"
+contract that same decision documents and tests. Dropped; apprenticeship
+instead always mints an ordinary fresh `newPerson`, same as before.
+
+**`Predicate` gained exactly one new constructor (`TrainedBy`) and
+`verbFor`\/`predicateText` both needed the matching case — caught by
+`-Wall`'s exhaustiveness check at every existing call site, not found by
+inspection.** No `Referent` change was needed (`TrainedBy`'s object is an
+ordinary `ROf EntityId`, the same shape `Rivalry` already has).
+
+**RNG-cascade fallout:** see Decision 38's own account — both decisions'
+new draws land inside `fireSchism` and compounded in the same session, so
+the witness-seed hunt (`seeds`, `richWorld`) covers both at once rather
+than being narrated twice.
+
+**Deliberately not attempted:** the rest of the prior session's
+brainstormed list (birth omens tied to the calendar — would need
+invariant 8's own deliberate future decision about letting the calendar
+influence generation, not something to back into here; a false/forged
+relic whose authenticity gets disputed; a site contested from founding by
+two claimants) — one mechanic per entity type was the scope, not the full
+brainstormed set; a persistent dual-culture record for a merged society's
+future minting (Decision 38's own deferred item); and extending
+`TrainedBy` to any consumer beyond `ruleMiracle`'s saint slot (e.g.
+`ruleCoronation` was considered as a second consumer and dropped — a
+society's only member-acquisition paths are founding\/schism\/merger-
+transfer, so there's no "ordinary new citizen joins" moment for an
+apprenticeship to attach to outside the schism-heresiarch case already
+built).

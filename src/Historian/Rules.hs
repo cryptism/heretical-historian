@@ -118,8 +118,19 @@ fireSchism w s mh = do
     Nothing -> do
       p <- newPerson cult
       pure (p, True)
-  (c, concept) <- newSociety cult
-  let outcome = SchismOutcome s h fresh c (patronClaims c concept)
+  -- The heresiarch is still minted in the parent's own culture — they're
+  -- a member of it right up until the split. 'driftCulture' only ever
+  -- applies to the *society* a schism founds, per Decision 38: this is
+  -- one of the two places (alongside 'generateCultFor') a fresh society
+  -- can end up in a different culture from the one that produced it.
+  splitCult <- driftCulture defaultTuning cult
+  (c, concept) <- newSociety splitCult
+  purposeClaims <- foundingPurposeClaim defaultTuning w s c
+  -- Apprenticeship is a backstory for a newly-invented character, not a
+  -- retroactive claim about someone who already existed — see
+  -- 'apprenticeshipClaim's own Haddock.
+  trainedClaims <- if fresh then apprenticeshipClaim defaultTuning w s h else pure []
+  let outcome = SchismOutcome s h fresh c (patronClaims c concept ++ purposeClaims ++ trainedClaims)
   disputes <- maybeDispute s
   pure (Schism outcome : disputes)
 
@@ -373,9 +384,19 @@ defileSpec =
 -- also appends 'regardReactions', where 'Shuns' and 'Disavows' actually
 -- get exercised. See .claude/docs/DESIGN.md for why that's an additive query
 -- rather than a change to 'venerates' itself.
+-- | The saint-slot candidate list replicates a 'TrainedBy' candidate
+-- extra times ('apprenticeBoost') — see Decision 39 — the same
+-- list-replication idiom 'ruleMerger' already uses for 'cultureBoost'.
+-- Never applied to the 'Nothing' (fresh saint) candidate itself.
 ruleMiracle :: Rule
 ruleMiracle = rule "miracle" $ \w ->
-  [fireMiracleSaint defaultTuning w s site msaint | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, msaint <- Nothing : map Just (livingMembers w s ++ deadMembers w s)]
+  [ fireMiracleSaint defaultTuning w s site msaint
+  | s <- activeSocieties w
+  , site <- entitiesOf Site w
+  , venerates w s site
+  , msaint <- Nothing : map Just (livingMembers w s ++ deadMembers w s)
+  , _ <- replicate (maybe 1 (apprenticeBoost defaultTuning w) msaint) ()
+  ]
     ++ [fireMiracleRelic defaultTuning w s site mrelic | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, mrelic <- Nothing : map Just (activeItems w)]
     ++ [ fireMiracleOn w s site actor target
        | s <- activeSocieties w
@@ -384,6 +405,42 @@ ruleMiracle = rule "miracle" $ \w ->
        , actor <- livingMembers w s ++ deadMembers w s
        , target <- filter (/= actor) (excludeMundane w (entitiesOf Person w) ++ activeItems w)
        ]
+
+-- | A fresh splinter's own founding purpose, drawn from the parent's
+-- *current* regard rather than invented from nothing: with
+-- 'tnFoundingPurposeChance', the splinter either continues the parent's
+-- existing stance toward some Ward or reacts against it ('flipRegard') —
+-- "we split off to keep faith with what our parent already holds dear"
+-- or "...to renounce it". 'Nothing' when the parent has no current
+-- Venerates\/Shuns stance to draw from at all. Purely additive to the
+-- splinter's ordinary 'backfillPatron' chance (already rolled inside
+-- 'newSociety') — this can fire on top of, not instead of, that one.
+foundingPurposeClaim :: Tuning -> World -> EntityId -> EntityId -> Chronicle [Claim]
+foundingPurposeClaim cfg w parent splinter = case pool of
+  [] -> pure []
+  (p : ps) -> do
+    inherits <- chance (tnFoundingPurposeChance cfg)
+    if not inherits
+      then pure []
+      else do
+        (ward, regard) <- pickOr p (p : ps)
+        mirror <- coin
+        pure [regardClaim splinter ward (if mirror then regard else flipRegard regard)]
+  where
+    (venerated, shunned) = regardedThings w parent
+    pool = map (,Venerated) venerated ++ map (,Shunned) shunned
+
+-- | A fresh heresiarch's chance of being recorded as trained by the
+-- parent society's own current leader — see 'Historian.Types.TrainedBy'.
+-- 'Nothing' when the parent currently has no leader to name (shouldn't
+-- happen for any society that's ever fired a coronation\/founding, but
+-- 'currentLeader' is already partial, so this stays honest about it).
+apprenticeshipClaim :: Tuning -> World -> EntityId -> EntityId -> Chronicle [Claim]
+apprenticeshipClaim cfg w parent heresiarch = case currentLeader w parent of
+  Nothing -> pure []
+  Just mentor -> do
+    trained <- chance (tnApprenticeshipChance cfg)
+    pure [Claim heresiarch TrainedBy (Just (ROf mentor)) (Just parent) Nothing | trained]
 
 -- | @saintMundane@ tracks whether a freshly-minted saint came back
 -- mundane ('newMundanePerson' rather than 'newPerson') — when it did, it's
@@ -1077,6 +1134,11 @@ assassinateSpec =
 -- veneration is scoped out: the sketch only mentions allegiances and
 -- grievances, and the site/person a parent venerated stays inspectable
 -- under the parent's own name regardless.
+-- | Same-culture pairings are replicated ('cultureBoost') in the
+-- candidate list itself so 'step's uniform pool-and-pick favors them,
+-- rather than adding a probability check `fireMerger` would have to
+-- thread through both its own callers (the legacy list and 'mergerSpec')
+-- — see Decision 38.
 ruleMerger :: Rule
 ruleMerger = rule "merger" $ \w ->
   [ fireMerger w a b
@@ -1085,6 +1147,7 @@ ruleMerger = rule "merger" $ \w ->
   , a < b
   , not (holdsGrievance w a b || holdsGrievance w b a)
   , sharesGrievanceTarget w a b || sharesVeneration w a b
+  , _ <- replicate (cultureBoost defaultTuning w a b) ()
   ]
 
 fireMerger :: World -> EntityId -> EntityId -> Chronicle [Outcome]
@@ -1093,7 +1156,9 @@ fireMerger w a b = do
   if formNew
     then do
       cultFromA <- coin
-      (new, concept) <- newSociety (if cultFromA then cultureOf w a else cultureOf w b)
+      let primary = if cultFromA then cultureOf w a else cultureOf w b
+          secondary = if cultFromA then cultureOf w b else cultureOf w a
+      (new, concept) <- newMergedSociety primary secondary
       let outcome = MergerFounding a b new (patronClaims new concept)
       disputes <- maybeDispute a
       pure (Merger outcome : disputes)

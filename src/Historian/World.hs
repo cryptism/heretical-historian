@@ -196,6 +196,54 @@ data Tuning = Tuning
   -- when no existing Ward was offered for the slot — the same
   -- "only the fresh branch has a choice to make" shape 'mintBackdatedSaint'
   -- and 'themedItemName' already have.
+  , tnCultureDriftChance :: Int
+  -- ^ 'driftCulture': chance out of 100 that a fresh society minted where
+  -- culture would otherwise simply be inherited (a schismatic offshoot,
+  -- 'Historian.Rules.fireSchism'; a backfill-generated cult,
+  -- 'generateCultFor') instead picks a different culture at random from
+  -- 'Historian.Corpus.allCultures'. Without this, every society in a
+  -- generated world shares one culture forever — 'genesis' is the only
+  -- call site that ever drew one fresh, and every other society-minting
+  -- path inherits an existing entity's. See Decision 38.
+  , tnSameCultureBoost :: Int
+  -- ^ 'Historian.Rules.ruleMerger': how many *extra* times a same-culture
+  -- merger candidate pairing is replicated in the rule's own candidate
+  -- list, on top of the one copy every valid pairing already gets — the
+  -- same "weighting is candidate-list replication, not a bolted-on
+  -- probability" idiom every other self-weighting rule in this codebase
+  -- already uses (`ruleWeight`, `step`'s own uniform pool-and-pick). A
+  -- cross-culture pairing still gets exactly one copy; 0 disables the
+  -- boost entirely without disabling merger itself.
+  , tnFoundingPurposeChance :: Int
+  -- ^ 'Historian.Rules.fireSchism': chance out of 100 that a fresh
+  -- splinter's own founding purpose is recorded as inherited from the
+  -- parent's current regard toward some Ward — either continuing it or
+  -- reacting against it — rather than founding with no stated purpose at
+  -- all (the splinter still gets its own ordinary 'backfillPatron' chance
+  -- either way, via 'newSociety'). Only consulted when the parent
+  -- actually has some current Venerates\/Shuns stance to draw from. See
+  -- Decision 39.
+  , tnRuinsNameChance :: Int
+  -- ^ 'ruinsItemName': chance out of 100 that a freshly-minted item with
+  -- no themed name ('themedItemName' either found nothing to draw on or
+  -- simply missed) is instead named as recovered from a terminated
+  -- society's ruins, rather than an arbitrary stem. Only consulted when
+  -- at least one society has actually terminated. See Decision 39.
+  , tnSiteOriginChance :: Int
+  -- ^ 'siteNounFor': chance out of 100 that a freshly-minted site's noun
+  -- is drawn from a built-vs-discovered-flavored pool
+  -- ('constructedSiteNouns'\/'naturalSiteNouns', 'Historian.Corpus')
+  -- instead of the plain, unflavored 'Historian.Corpus.siteNouns'. See
+  -- Decision 39.
+  , tnApprenticeshipChance :: Int
+  -- ^ 'Historian.Rules.fireSchism': chance out of 100 that a fresh
+  -- heresiarch is recorded as 'TrainedBy' the parent society's own
+  -- current leader, when it has one.
+  , tnApprenticeBoost :: Int
+  -- ^ 'Historian.Rules.ruleMiracle': how many *extra* times a
+  -- 'TrainedBy' candidate is replicated in the miracle-saint candidate
+  -- list — the same list-replication idiom 'tnSameCultureBoost' already
+  -- uses, applied here instead of a bolted-on probability.
   }
 
 defaultTuning :: Tuning
@@ -212,6 +260,13 @@ defaultTuning =
     , tnOmitChance = 4
     , tnThemedItemNameChance = 40
     , tnMundaneMiracleChance = 35
+    , tnCultureDriftChance = 12
+    , tnSameCultureBoost = 2
+    , tnFoundingPurposeChance = 25
+    , tnRuinsNameChance = 15
+    , tnSiteOriginChance = 30
+    , tnApprenticeshipChance = 30
+    , tnApprenticeBoost = 2
     }
 
 -- | Sample up to @n@ distinct elements from a list, without replacement —
@@ -494,6 +549,72 @@ generateSocietyName c = do
   nn <- pickOr "Order" societyNouns
   pure ("The " <> modifier <> " " <> nn <> " of " <> stem)
 
+-- | A fresh society's culture where inheritance would otherwise be
+-- automatic — a weighted deviation ('tnCultureDriftChance'), not a free
+-- choice: the vast majority of the time this returns @inherited@
+-- unchanged, same as before this existed. See Decision 38 for why this
+-- needed to exist at all (nothing previously drew a second culture into
+-- an already-running world).
+driftCulture :: Tuning -> Culture -> Chronicle Culture
+driftCulture cfg inherited = do
+  drift <- chance (tnCultureDriftChance cfg)
+  if not drift
+    then pure inherited
+    else pickOr inherited (filter (/= inherited) allCultures)
+
+-- | How many times a candidate pairing should be replicated in a rule's
+-- own candidate list — the self-weighting idiom every other weighted rule
+-- in this codebase already uses (list length *is* the weight;
+-- 'Historian.Rules.step' pools every rule's candidates and picks
+-- uniformly), applied here to bias 'Historian.Rules.ruleMerger' toward
+-- same-culture pairings without touching 'step' itself. One copy for
+-- every valid pairing regardless (matches today's unboosted behavior when
+-- 'tnSameCultureBoost' is 0), plus 'tnSameCultureBoost' more when the two
+-- share a culture.
+cultureBoost :: Tuning -> World -> EntityId -> EntityId -> Int
+cultureBoost cfg w a b
+  | cultureOf w a == cultureOf w b = 1 + tnSameCultureBoost cfg
+  | otherwise = 1
+
+-- | Whether @p@ is the subject of any 'TrainedBy' fact at all — the
+-- candidate-side half of 'apprenticeBoost'.
+wasTrained :: World -> EntityId -> Bool
+wasTrained w p = any (\f -> factPred f == TrainedBy && factSubject f == p) (wFacts w)
+
+-- | 'cultureBoost's mirror for 'Historian.Rules.ruleMiracle's own
+-- saint-candidate list: a person 'TrainedBy' someone is replicated
+-- 'tnApprenticeBoost' extra times, biasing the miracle toward recognizing
+-- an apprentice as saintly too, without touching 'step' itself.
+apprenticeBoost :: Tuning -> World -> EntityId -> Int
+apprenticeBoost cfg w p
+  | wasTrained w p = 1 + tnApprenticeBoost cfg
+  | otherwise = 1
+
+-- | 'generateSocietyName', but for a society formed by merging two
+-- previously-independent ones ('Historian.Rules.fireMerger's
+-- @MergerFounding@ branch) — when the two parents' cultures genuinely
+-- differ, the stem itself is a fusion (one culture's 'markovWord' hyphen-
+-- joined to the other's) rather than picking one parent's tradition and
+-- discarding the other's entirely. Falls back to plain
+-- 'generateSocietyName' when both parents share a culture (the common
+-- case, especially pre-'driftCulture' — nothing to blend). Deliberately
+-- scoped to the merger's own founding name only: a merged society still
+-- stores exactly one 'Culture' on its own 'Entity' (@primary@ here), so
+-- any *future* relic\/site it mints reads that one culture like any other
+-- society — a persistent dual-heritage record would need a new 'Entity'
+-- field threaded through every 'corpusFor'\/'nameGrammarFor' call site,
+-- a much larger structural change than one fused name at the moment of
+-- founding. See Decision 38.
+generateMergedSocietyName :: Culture -> Culture -> Chronicle Text
+generateMergedSocietyName primary secondary
+  | primary == secondary = generateSocietyName primary
+  | otherwise = do
+      stemA <- markovWord primary
+      stemB <- markovWord secondary
+      modifier <- societyModifier
+      nn <- pickOr "Order" societyNouns
+      pure ("The " <> modifier <> " " <> nn <> " of " <> stemA <> "-" <> stemB)
+
 -- | Every society gets an independent patron concept from the moment it
 -- exists. Returns the concept alongside the society so the caller can add
 -- the 'Embodies' claim (unattested, intrinsic) and an initial 'Venerates'
@@ -508,6 +629,23 @@ newSociety c = do
   s <- mint Society c name defaultMintOptions {moVoice = Just voice}
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
+  backfillPatron defaultTuning s
+  pure (s, concept)
+
+-- | 'newSociety', but for a merger's @MergerFounding@ branch: @primary@
+-- becomes the new society's own recorded 'Culture' (everything else about
+-- it — future minting, 'corpusFor'\/'nameGrammarFor' lookups — behaves
+-- exactly like any other society of that culture from here on), while the
+-- founding name itself draws on both parents via
+-- 'generateMergedSocietyName'. See its own Haddock for why this doesn't
+-- go further than the one founding name.
+newMergedSociety :: Culture -> Culture -> Chronicle (EntityId, EntityId)
+newMergedSociety primary secondary = do
+  name <- generateMergedSocietyName primary secondary
+  voice <- rollVoice
+  s <- mint Society primary name defaultMintOptions {moVoice = Just voice}
+  conceptName <- pickOr "the Unnamed" conceptNames
+  concept <- conceptNamed primary conceptName
   backfillPatron defaultTuning s
   pure (s, concept)
 
@@ -648,7 +786,12 @@ backfillPatron cfg cult = do
 generateCultFor :: EntityId -> Chronicle EntityId
 generateCultFor ward = do
   w <- get
-  (cult, concept) <- newSociety (cultureOf w ward)
+  -- The other of Decision 38's two drift points: a freshly-generated cult
+  -- for an existing Ward doesn't have to share the Ward's own culture —
+  -- a foreign tradition discovering and taking up veneration of something
+  -- is exactly the "second culture enters the world" case this exists for.
+  cultureChoice <- driftCulture defaultTuning (cultureOf w ward)
+  (cult, concept) <- newSociety cultureChoice
   w' <- get
   record
     "backstory"
@@ -676,10 +819,25 @@ newPersonAt c epoch = do
   useByname <- coin
   mint Person c (if useByname then stem <> " " <> bn else stem) defaultMintOptions {moBornOverride = Just epoch}
 
+-- | A site's own origin backstory, at mint time: built deliberately or
+-- discovered as a natural feature — 'tnSiteOriginChance', or the plain
+-- unflavored 'siteNouns' the rest of the time (unchanged from before this
+-- existed). Which of the two flavors, when it applies, is a coin flip:
+-- there's no existing signal at mint time (no commissioning cult the way
+-- 'themedItemName' has one) to bias it either way.
+siteNounFor :: Tuning -> Chronicle Text
+siteNounFor cfg = do
+  framed <- chance (tnSiteOriginChance cfg)
+  if not framed
+    then pickOr "Stair" siteNouns
+    else do
+      built <- coin
+      pickOr "Stair" (if built then constructedSiteNouns else naturalSiteNouns)
+
 newSite :: Culture -> Chronicle EntityId
 newSite c = do
   stem <- markovWord c
-  nn <- pickOr "Stair" siteNouns
+  nn <- siteNounFor defaultTuning
   st <- mint Site c ("The " <> nn <> " of " <> stem) defaultMintOptions
   backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) st
   pure st
@@ -703,6 +861,25 @@ newSite c = do
 -- which knows a battle's two combatant societies but not which of them
 -- ends up regarding the relic) pick one at random themselves before
 -- calling in.
+-- | A fresh item's chance of being named as recovered from a defunct
+-- society's ruins instead of an arbitrary stem — 'newItem's second-tier
+-- naming option, consulted only once 'themedItemName' has already come
+-- back empty (no known commissioning cult, or that cult has nothing to
+-- theme against). 'Nothing' whenever no society has terminated yet, same
+-- "never leaves the caller without its ordinary fallback" shape
+-- 'themedItemName' has.
+ruinsItemName :: Tuning -> World -> Chronicle (Maybe Text)
+ruinsItemName cfg w = case [s | s <- entitiesOf Society w, isTerminated w s] of
+  [] -> pure Nothing
+  ruins@(firstRuin : _) -> do
+    fromRuins <- chance (tnRuinsNameChance cfg)
+    if not fromRuins
+      then pure Nothing
+      else do
+        soc <- pickOr firstRuin ruins
+        nn <- pickOr "Relic" itemNouns
+        pure (Just ("The " <> nn <> ", recovered from the ruins of " <> nameIn w soc))
+
 newItem :: Culture -> Maybe EntityId -> Chronicle (EntityId, EntityId)
 newItem c mCult = do
   mThemed <- case mCult of
@@ -713,13 +890,20 @@ newItem c mCult = do
   -- name verbatim ("The Chalice of Cat" legitimately contains "Cat"), so
   -- that discipline's "reject the candidate if it's a substring of an
   -- existing name" rejection would veto every themed name on principle,
-  -- not just accidental near-duplicates.
+  -- not just accidental near-duplicates. Same reasoning covers a ruins
+  -- name below (it's supposed to contain the ruined society's own name
+  -- verbatim too).
+  mRuins <- case mThemed of
+    Just _ -> pure Nothing
+    Nothing -> get >>= ruinsItemName defaultTuning
   name <- case mThemed of
     Just nm -> pure nm
-    Nothing -> do
-      stem <- syllableName c
-      nn <- pickOr "Relic" itemNouns
-      pure ("The " <> nn <> " of " <> stem)
+    Nothing -> case mRuins of
+      Just nm -> pure nm
+      Nothing -> do
+        stem <- syllableName c
+        nn <- pickOr "Relic" itemNouns
+        pure ("The " <> nn <> " of " <> stem)
   modifier <- roll (-2, 4)
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName

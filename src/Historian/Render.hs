@@ -75,6 +75,7 @@ verbFor = \case
   Leads -> "is the leader of"
   Rivalry -> "holds a rivalry against"
   Terminated -> "reached its end"
+  TrainedBy -> "was trained by"
 
 -- \^ The one predicate 'verbFor' can't phrase well on its own: a
 -- dissolved society "passed from history" but a destroyed relic "was

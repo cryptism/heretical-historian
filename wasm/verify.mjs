@@ -1,8 +1,11 @@
-// Verifies a patched historian-wasm.wasm (see wasm/patch-reactor.nu) end to
-// end against a real Node WASI host, both the batch entry point
-// (generateJson) and the stateful-handle family (historian_new/step/
-// query/free) — see .claude/docs/DESIGN.md Decision 7 and its Decision 33
-// follow-up.
+// Verifies a patched historian-wasm.wasm (see wasm/patch-reactor.sh) end to
+// end against a real Node WASI host: the batch entry point (generateJson),
+// the stateful-handle family (historian_new/step/query/free), and the
+// item 21/22 query surface (historian_rules_for/historian_next_slot, plus
+// the historian_alloc/historian_dealloc pair that lets a host write a
+// CString argument onto this module's heap in the first place) — see
+// .claude/docs/DESIGN.md Decision 7, its Decision 33 follow-up, and
+// Decision 39.
 //
 // Requires Node's WASI module (--experimental-wasi-unstable-preview1 not
 // needed on recent Node; the `WASI` import below is enough). Run with:
@@ -89,6 +92,66 @@ check(
 
 const missingDossier = readJson(instance.exports.historian_query(handle, 999999));
 check("historian_query on a nonexistent id returns JSON null", missingDossier === null);
+
+// --- historian_rules_for / historian_next_slot: the item 21/22 query
+// surface (Decision 39). Both take string arguments, the first anything
+// here has ever needed — historian_alloc/historian_dealloc are the
+// pieces that make that possible at all from a host with no other way
+// onto this module's heap. ---
+function writeCString(str) {
+  const bytes = Buffer.from(str, "utf8");
+  const ptr = instance.exports.historian_alloc(bytes.length + 1);
+  const view = new Uint8Array(memory.buffer, ptr, bytes.length + 1);
+  view.set(bytes);
+  view[bytes.length] = 0;
+  return ptr;
+}
+
+const handle2 = instance.exports.historian_new(42);
+// Drive it forward until at least one society exists to build a pool from.
+let poolEntityId = null;
+for (let i = 0; i < 5 && poolEntityId === null; i++) {
+  const r = readJson(instance.exports.historian_step(handle2));
+  const society = r.newEntities.find((e) => e.kind === "Society");
+  if (society) poolEntityId = society.id;
+}
+check("drove historian_step until at least one Society existed", poolEntityId !== null);
+
+const poolPtr = writeCString(JSON.stringify([poolEntityId]));
+const rulesForResult = readJson(instance.exports.historian_rules_for(handle2, poolPtr));
+instance.exports.historian_dealloc(poolPtr);
+check(
+  "historian_rules_for returns a non-empty array of {rule, score}",
+  Array.isArray(rulesForResult) && rulesForResult.length > 0 && typeof rulesForResult[0].rule === "string" && typeof rulesForResult[0].score === "number",
+);
+
+const ruleNamePtr = writeCString("schism");
+const poolPtr2 = writeCString(JSON.stringify([poolEntityId]));
+const nextSlotResult = readJson(instance.exports.historian_next_slot(handle2, ruleNamePtr, poolPtr2));
+instance.exports.historian_dealloc(ruleNamePtr);
+instance.exports.historian_dealloc(poolPtr2);
+check(
+  "historian_next_slot('schism', [society]) returns a recognized status",
+  nextSlotResult !== null && ["ambiguous", "done", "slot"].includes(nextSlotResult.status),
+);
+check(
+  "historian_next_slot's 'slot' shape (when returned) has slotIndex/slotKind/candidates",
+  nextSlotResult.status !== "slot" || (typeof nextSlotResult.slotIndex === "number" && typeof nextSlotResult.slotKind === "string" && Array.isArray(nextSlotResult.candidates)),
+);
+
+const emptyPoolPtr = writeCString("[]");
+const emptyRulesFor = readJson(instance.exports.historian_rules_for(handle2, emptyPoolPtr));
+instance.exports.historian_dealloc(emptyPoolPtr);
+check("historian_rules_for([]) returns an empty array, not a trap", Array.isArray(emptyRulesFor) && emptyRulesFor.length === 0);
+
+const unknownRulePtr = writeCString("not-a-real-rule");
+const emptyPoolPtr2 = writeCString("[]");
+const unknownRuleResult = readJson(instance.exports.historian_next_slot(handle2, unknownRulePtr, emptyPoolPtr2));
+instance.exports.historian_dealloc(unknownRulePtr);
+instance.exports.historian_dealloc(emptyPoolPtr2);
+check("historian_next_slot with an unrecognised rule name comes back 'done', not a trap", unknownRuleResult && unknownRuleResult.status === "done");
+
+instance.exports.historian_free(handle2);
 
 instance.exports.historian_free(handle);
 check("historian_free did not trap", true);

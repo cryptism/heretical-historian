@@ -463,6 +463,37 @@ siteNouns =
   , "Hospital"
   ]
 
+-- | 'Historian.World.siteNounFor's "built" branch — a site whose origin
+-- backstory is deliberate construction, not discovery. Distinct from the
+-- unflavored 'siteNouns' above rather than a subset of it, so neither
+-- list needs re-auditing for which of its existing entries already leans
+-- one way or the other.
+constructedSiteNouns :: [Text]
+constructedSiteNouns =
+  [ "Hall"
+  , "Vault"
+  , "Bastion"
+  , "Cloister"
+  , "Archive"
+  , "Foundry"
+  , "Rampart"
+  , "Scriptorium"
+  ]
+
+-- | 'Historian.World.siteNounFor's "discovered" branch — a natural
+-- feature later sanctified, not built.
+naturalSiteNouns :: [Text]
+naturalSiteNouns =
+  [ "Grotto"
+  , "Spring"
+  , "Hollow"
+  , "Cavern"
+  , "Grove"
+  , "Fen"
+  , "Hotspring"
+  , "Sinkhole"
+  ]
+
 itemNouns :: [Text]
 itemNouns =
   [ "Chalice"

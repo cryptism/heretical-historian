@@ -17,11 +17,12 @@ import Data.Maybe (catMaybes, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Historian.Corpus (hailWords, meanderClauses, mundaneItems, mundanePersons, omissionTexts, vaurethine)
+import Historian.Corpus (constructedSiteNouns, hailWords, hollowtongue, meanderClauses, mundaneItems, mundanePersons, naturalSiteNouns, omissionTexts, siteNouns, vaurethine)
 import Historian.Engine
 import Historian.Json (encodeQueryResult, encodeStepResult, encodeWorld)
 import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice)
 import Historian.Rules (
+  apprenticeshipClaim,
   assassinateSpec,
   battleSpec,
   coronationSpec,
@@ -34,6 +35,7 @@ import Historian.Rules (
   fireMiracleSaint,
   fireSanctify,
   fireSchism,
+  foundingPurposeClaim,
   generate,
   generateViaEngine,
   genesis,
@@ -90,13 +92,15 @@ instance FromJSON WireWorld where
 -- 17's RNG additions — rollVoice/pickNarrator/backfillWard — reshuffled
 -- the cascade enough that neither produced a schism within `steps`
 -- anymore, even out to 20; verified 2 and 3 still pass every other
--- checksFor assertion, not just this one). 99 replaced with 4 the same
--- way: the mundane-entity RNG additions (a new `chance` roll inside
--- `fireMiracleSaint`\/`fireMiracleRelic`'s fresh branch) reshuffled the
--- cascade enough that 99 stopped producing a schism within `steps`;
--- verified 4 still passes every other checksFor assertion too.
+-- checksFor assertion, not just this one). 99 replaced with 4, then 4
+-- itself replaced with 5: the mundane-entity RNG additions (a new
+-- `chance` roll inside `fireMiracleSaint`\/`fireMiracleRelic`'s fresh
+-- branch) knocked out 99; the culture-mixing and backstory RNG additions
+-- inside `fireSchism` itself (`driftCulture`, `foundingPurposeClaim`,
+-- `apprenticeshipClaim`) knocked out 4 in turn. Verified 5 still passes
+-- every other checksFor assertion too.
 seeds :: [Int]
-seeds = [1, 2, 3, 42, 4]
+seeds = [1, 2, 3, 42, 5]
 
 -- | A much wider pool used only by the aggregate existence checks below.
 -- Every rule or RNG-consumption change reshuffles the entire downstream
@@ -330,7 +334,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -679,9 +683,19 @@ buildRichWorld = do
   advanceEpoch
   pure (s0, s1, s2, st0, item, p0, p1, p2, deadSoc, dissolvable)
 
+-- | Seed 14 (was 7 before that) replaced with 2: the culture-mixing and
+-- backstory RNG additions inside 'fireSchism' itself ('driftCulture',
+-- 'foundingPurposeClaim', 'apprenticeshipClaim') reshuffled the cascade
+-- enough that 14 no longer produced the exact structural shape below
+-- expects (a single venerator\/shunner on the shared item, both splinters
+-- still active, the expected grievance\/rivalry pairings intact). Found
+-- by running the real, complete `test/Spec.hs` check set against a
+-- handful of candidates directly (not a hand-copied subset in a scratch
+-- binary — too many richWorld-dependent checks across too many blocks to
+-- transcribe reliably) until one passed all of them at once.
 richIds :: (EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId, EntityId)
 richWorld :: World
-(richIds, richWorld) = runState buildRichWorld (emptyWorld 14)
+(richIds, richWorld) = runState buildRichWorld (emptyWorld 2)
 
 rS0, rS1, rS2, rSt0, rItem, rP0, rP1, rP2, rDeadSoc, rDissolvable :: EntityId
 (rS0, rS1, rS2, rSt0, rItem, rP0, rP1, rP2, rDeadSoc, rDissolvable) = richIds
@@ -1297,6 +1311,140 @@ ordinaryItemWorld = execState (newItem vaurethine Nothing) richWorld
 
 ordinaryItemId :: EntityId
 ordinaryItemId = newestEntity ordinaryItemWorld
+
+-- | Decision 38: culture mixing. 'mixedWorld' gives 'cultureBoost' a
+-- genuine cross-culture pair to compare against a same-culture one,
+-- something 'richWorld' alone can't (every society in it shares one
+-- culture).
+mixedIds :: (EntityId, EntityId)
+mixedWorld :: World
+(mixedIds, mixedWorld) =
+  runState
+    ( do
+        (a, _) <- newSociety vaurethine
+        (b, _) <- newSociety hollowtongue
+        pure (a, b)
+    )
+    (emptyWorld 5)
+
+mixA, mixB :: EntityId
+(mixA, mixB) = mixedIds
+
+cultureDriftAlways, cultureDriftNever :: Tuning
+cultureDriftAlways = defaultTuning {tnCultureDriftChance = 100}
+cultureDriftNever = defaultTuning {tnCultureDriftChance = 0}
+
+cultureChecks :: [(Bool, Text)]
+cultureChecks =
+  [
+    ( evalState (driftCulture cultureDriftNever vaurethine) richWorld == vaurethine
+    , "Direct: driftCulture with chance 0 never drifts"
+    )
+  ,
+    ( evalState (driftCulture cultureDriftAlways vaurethine) richWorld /= vaurethine
+    , "Direct: driftCulture with chance 100 always drifts to a different culture"
+    )
+  ,
+    ( cultureBoost defaultTuning mixedWorld mixA mixB == 1
+    , "Direct: cultureBoost gives no boost to a cross-culture pairing"
+    )
+  ,
+    ( cultureBoost defaultTuning mixedWorld mixA mixA == 1 + tnSameCultureBoost defaultTuning
+    , "Direct: cultureBoost gives the full boost to a same-culture pairing"
+    )
+  ,
+    ( not (T.isInfixOf "-" (evalState (generateMergedSocietyName vaurethine vaurethine) richWorld))
+    , "Direct: generateMergedSocietyName doesn't fuse a stem when both parents share a culture"
+    )
+  ,
+    ( T.isInfixOf "-" (evalState (generateMergedSocietyName vaurethine hollowtongue) richWorld)
+    , "Direct: generateMergedSocietyName fuses both parents' stems when their cultures differ"
+    )
+  ,
+    ( entCulture (wEntities newMergedWorld M.! newMergedId) == vaurethine
+    , "Direct: newMergedSociety records the primary culture on the entity itself, not the secondary"
+    )
+  ]
+  where
+    (newMergedId, newMergedWorld) = runState (fst <$> newMergedSociety vaurethine hollowtongue) mixedWorld
+
+-- | Decision 39: backstory expansion — apprenticeship (notable person),
+-- founding purpose (society), and ruins-recovered naming (relic). Site
+-- framing ('siteNounFor') is covered separately below since it needs no
+-- hand-built world at all. All forced to deterministic edges, not
+-- sampled, per the same discipline 'mundaneChecks' already established.
+foundingPurposeAlways, foundingPurposeNever :: Tuning
+foundingPurposeAlways = defaultTuning {tnFoundingPurposeChance = 100}
+foundingPurposeNever = defaultTuning {tnFoundingPurposeChance = 0}
+
+apprenticeshipAlways, apprenticeshipNever :: Tuning
+apprenticeshipAlways = defaultTuning {tnApprenticeshipChance = 100}
+apprenticeshipNever = defaultTuning {tnApprenticeshipChance = 0}
+
+ruinsAlways, ruinsNever :: Tuning
+ruinsAlways = defaultTuning {tnRuinsNameChance = 100}
+ruinsNever = defaultTuning {tnRuinsNameChance = 0}
+
+trainedWorld :: World
+trainedWorld = execState (record "test-setup" "" [Claim rP0 TrainedBy (Just (ROf rP1)) (Just rS0) Nothing]) richWorld
+
+backstoryChecks :: [(Bool, Text)]
+backstoryChecks =
+  [
+    ( not (null (evalState (foundingPurposeClaim foundingPurposeAlways richWorld rS0 rS1) richWorld))
+    , "Direct: foundingPurposeClaim with chance 100 always produces a claim when the parent has current regard"
+    )
+  ,
+    ( null (evalState (foundingPurposeClaim foundingPurposeNever richWorld rS0 rS1) richWorld)
+    , "Direct: foundingPurposeClaim with chance 0 never produces a claim"
+    )
+  ,
+    ( all (\c -> clSubject c == rS1 && clPred c `elem` [Venerates, Shuns]) (evalState (foundingPurposeClaim foundingPurposeAlways richWorld rS0 rS1) richWorld)
+    , "Direct: foundingPurposeClaim's claim, when produced, is asserted by the splinter itself, toward whatever the parent regards"
+    )
+  ,
+    ( null (evalState (foundingPurposeClaim foundingPurposeAlways (emptyWorld 1) (EntityId 999) (EntityId 998)) (emptyWorld 1))
+    , "Direct: foundingPurposeClaim produces nothing when the parent has no current regard to draw from at all, regardless of chance"
+    )
+  ,
+    ( case evalState (apprenticeshipClaim apprenticeshipAlways richWorld rS0 rP0) richWorld of
+        [c] -> clSubject c == rP0 && clPred c == TrainedBy && clObject c == Just (ROf rP1) && clAttestedBy c == Just rS0
+        _ -> False
+    , "Direct: apprenticeshipClaim with chance 100 always names the parent's current leader as mentor"
+    )
+  ,
+    ( null (evalState (apprenticeshipClaim apprenticeshipNever richWorld rS0 rP0) richWorld)
+    , "Direct: apprenticeshipClaim with chance 0 never produces a claim"
+    )
+  ,
+    ( wasTrained trainedWorld rP0 && not (wasTrained richWorld rP0)
+    , "Direct: wasTrained finds a recorded TrainedBy fact and only a recorded one"
+    )
+  ,
+    ( apprenticeBoost defaultTuning trainedWorld rP0 == 1 + tnApprenticeBoost defaultTuning && apprenticeBoost defaultTuning richWorld rP0 == 1
+    , "Direct: apprenticeBoost gives the full boost only to a trained candidate"
+    )
+  ,
+    ( maybe False (T.isInfixOf "recovered from the ruins of") (evalState (ruinsItemName ruinsAlways richWorld) richWorld)
+    , "Direct: ruinsItemName with chance 100 names the item as recovered from a terminated society's ruins"
+    )
+  ,
+    ( isNothing (evalState (ruinsItemName ruinsNever richWorld) richWorld)
+    , "Direct: ruinsItemName with chance 0 never produces a name"
+    )
+  ,
+    ( isNothing (evalState (ruinsItemName ruinsAlways (emptyWorld 1)) (emptyWorld 1))
+    , "Direct: ruinsItemName finds nothing to draw on when no society has terminated, regardless of chance"
+    )
+  ,
+    ( evalState (siteNounFor (defaultTuning {tnSiteOriginChance = 100})) richWorld `elem` (constructedSiteNouns ++ naturalSiteNouns)
+    , "Direct: siteNounFor with chance 100 always draws from the flavored built/natural pools"
+    )
+  ,
+    ( evalState (siteNounFor (defaultTuning {tnSiteOriginChance = 0})) richWorld `elem` ("Stair" : siteNouns)
+    , "Direct: siteNounFor with chance 0 always draws from the plain unflavored pool"
+    )
+  ]
 
 -- | Work queue item 15's wasm stateful-handle follow-up (.claude/docs/DESIGN.md
 -- Decision 33): 'Historian.Engine.intelligentStep's 'StepAny'\/

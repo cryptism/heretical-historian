@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (245 checks — seeds 1/2/3/42/4 for
+Builds and passes `cabal test` (265 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-11000, precomputed once as `veryWideResults`, in parallel — see
@@ -115,6 +115,30 @@ named; Baboon untouched, never a real-world name to begin with.
 `.claude/docs/DESIGN.md` Decision 37. Interface/FFI surface (CLI, wasm
 boundary, and the Haskell query surface from items 21/22) is now written
 up in one place: `.claude/docs/INTERFACE.md`.
+
+Three more, same session's own next-iteration follow-up: **culture
+mixing** — a real prerequisite gap found first (every generated world was
+monocultural; `genesis` was the only call site that ever drew a culture
+fresh, everything else inherited), fixed by `driftCulture`
+(`tnCultureDriftChance`, schism and backfill-generated cults), then
+same-culture merger candidates weighted via list replication
+(`cultureBoost`/`tnSameCultureBoost`, the same idiom `ruleWeight` already
+uses) and fused bilingual naming when a merger's two parents' cultures
+differ (`generateMergedSocietyName`). `.claude/docs/DESIGN.md` Decision
+38. **Backstory expansion** — one mechanic per entity type from the prior
+session's brainstormed list: a splinter's founding purpose inherited from
+its parent's current regard (society), apprenticeship under the parent's
+leader feeding into future miracle-saint odds (`TrainedBy`, the one new
+predicate, notable person), ruins-recovered relic naming (relic), and
+built-vs-discovered site framing (site). `.claude/docs/DESIGN.md`
+Decision 39. **The item 21/22 query surface reaches the wasm boundary
+too** — `historian_rules_for`/`historian_next_slot`, plus the
+`historian_alloc`/`historian_dealloc` pair a host needs to pass a string
+argument in at all (the first functions here that ever took one),
+verified end-to-end against a real Node WASI host the same way every
+other wasm FFI addition has been (`wasm/verify.mjs`). `.claude/docs/DESIGN.md`
+Decision 38's own account covers the RNG-cascade fallout these three
+shared (`seeds`' witness moved 99→4→5, `richWorld`'s moved 14→2).
 
 **`.claude/docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
