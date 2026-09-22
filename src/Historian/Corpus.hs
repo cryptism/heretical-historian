@@ -16,31 +16,40 @@ hollowtongue = Culture "Hollowtongue"
 -- | Invented, not transliterated — evokes Amharic/Ge'ez phonology (soft,
 -- vowel-final syllables, occasional gemination) the same way 'vaureWords'
 -- evokes Latin without being real Latin. See Decision 21 in .claude/docs/DESIGN.md.
+-- The culture's own label is invented too, not the real ethnonym — see
+-- Decision 37: every culture whose *name*, not just its phonology, used to
+-- double as a real-world one got renamed the same way 'vaurethine'\/
+-- 'hollowtongue' already were.
 ethiopian :: Culture
-ethiopian = Culture "Ethiopian"
+ethiopian = Culture "Ghenzai"
 
 -- | Evokes Sanskrit/Dravidian phonology — consonant clusters, vowel-final
 -- roots, common name-forming morphemes ("-endra", "chandra-") used as
--- generic sound-shapes, not any single real name.
+-- generic sound-shapes, not any single real name. See Decision 37 for why
+-- the culture's own label reads as invented rather than "South Asian".
 southAsian :: Culture
-southAsian = Culture "SouthAsian"
+southAsian = Culture "Vindrasha"
 
 -- | Evokes Arabic/Hebrew root-and-pattern phonology — the prefixes are
 -- genuine cross-family grammatical particles ("al-", "ibn-", "bar-": "the",
 -- "son of") rather than any specific person's name, the same register as
--- "Mac-"/"O'-" in a Gaelic-flavored corpus.
+-- "Mac-"/"O'-" in a Gaelic-flavored corpus. See Decision 37 for why the
+-- culture's own label reads as invented rather than "Semitic".
 semitic :: Culture
-semitic = Culture "Semitic"
+semitic = Culture "Zabreth"
 
 -- | Evokes Nahuatl/Maya phonology — "tl"/"tz"/"x" clusters, vowel-heavy
 -- roots, and "-tzin"/"-tlan" as generic honorific/locative suffix shapes
--- rather than any specific deity or ruler's name.
+-- rather than any specific deity or ruler's name. See Decision 37 for why
+-- the culture's own label reads as invented rather than "Mesoamerican".
 mesoamerican :: Culture
-mesoamerican = Culture "Mesoamerican"
+mesoamerican = Culture "Tzalapec"
 
 -- | A joke culture: the Baboons of Caves of Qud, whose entire vocabulary
 -- is hooting. No real-world phonology — just vowels, "h", and a very high
--- 'ngHyphenChance' so names read as a chant ("Oo-Ee-Ahoo-Waa").
+-- 'ngHyphenChance' so names read as a chant ("Oo-Ee-Ahoo-Waa"). Not
+-- renamed by Decision 37 — it was never a real-world ethnonym to begin
+-- with.
 baboon :: Culture
 baboon = Culture "Baboon"
 
@@ -51,10 +60,10 @@ allCultures = [vaurethine, hollowtongue, ethiopian, southAsian, semitic, mesoame
 -- crashing, which matters once cultures are minted at runtime.
 corpusFor :: Culture -> [String]
 corpusFor (Culture "Hollowtongue") = hollowWords
-corpusFor (Culture "Ethiopian") = ethiopianWords
-corpusFor (Culture "SouthAsian") = southAsianWords
-corpusFor (Culture "Semitic") = semiticWords
-corpusFor (Culture "Mesoamerican") = mesoamericanWords
+corpusFor (Culture "Ghenzai") = ethiopianWords
+corpusFor (Culture "Vindrasha") = southAsianWords
+corpusFor (Culture "Zabreth") = semiticWords
+corpusFor (Culture "Tzalapec") = mesoamericanWords
 corpusFor (Culture "Baboon") = baboonWords
 corpusFor _ = vaureWords
 
@@ -288,10 +297,10 @@ data NameGrammar = NameGrammar
 -- | Total by construction, mirroring 'corpusFor' exactly.
 nameGrammarFor :: Culture -> NameGrammar
 nameGrammarFor (Culture "Hollowtongue") = hollowGrammar
-nameGrammarFor (Culture "Ethiopian") = ethiopianGrammar
-nameGrammarFor (Culture "SouthAsian") = southAsianGrammar
-nameGrammarFor (Culture "Semitic") = semiticGrammar
-nameGrammarFor (Culture "Mesoamerican") = mesoamericanGrammar
+nameGrammarFor (Culture "Ghenzai") = ethiopianGrammar
+nameGrammarFor (Culture "Vindrasha") = southAsianGrammar
+nameGrammarFor (Culture "Zabreth") = semiticGrammar
+nameGrammarFor (Culture "Tzalapec") = mesoamericanGrammar
 nameGrammarFor (Culture "Baboon") = baboonGrammar
 nameGrammarFor _ = vaureGrammar
 
@@ -636,6 +645,51 @@ conceptNames =
     ++ monsterConcepts
     ++ mundaneConcepts
     ++ mathsConcepts
+
+-- | 'Historian.World.newMundanePerson's filler text — a bystander a
+-- miracle happens near, not a name: no culture, no phonology, no byname.
+-- Deliberately plain register (contrast 'bynames'), so it reads as the
+-- opposite of a proper name on sight.
+mundanePersons :: [Text]
+mundanePersons =
+  [ "a young widow"
+  , "an old fisherman"
+  , "a passing pilgrim"
+  , "a bewildered goatherd"
+  , "a tired midwife"
+  , "a one-armed beggar"
+  , "a travelling tinker"
+  , "a sleepless watchman"
+  , "a drunk gravedigger"
+  , "a child gathering firewood"
+  , "a limping shepherd"
+  , "a market-day thief"
+  , "a mute laundress"
+  , "a half-blind scribe"
+  , "a footsore courier"
+  ]
+
+-- | 'Historian.World.newMundaneItem's filler text — a prop, not a relic:
+-- no stem, no noun-of-stem grammar, nothing 'themedItemName' could ever
+-- catch onto.
+mundaneItems :: [Text]
+mundaneItems =
+  [ "a rusty spoon"
+  , "a cracked water jug"
+  , "a moth-eaten blanket"
+  , "a length of frayed rope"
+  , "a broken cartwheel"
+  , "a tallow candle stub"
+  , "a chipped clay bowl"
+  , "a bent iron nail"
+  , "a threadbare sandal"
+  , "a stray dog's collar"
+  , "a warped wooden ladle"
+  , "a torn fishing net"
+  , "a handful of spilled grain"
+  , "a cracked roof tile"
+  , "a stub of chalk"
+  ]
 
 bynames :: [Text]
 bynames =

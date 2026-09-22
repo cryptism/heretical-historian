@@ -519,18 +519,23 @@ defileClaims o =
   , Claim (dfDeposed o) Grievance (Just (ROf (dfClaimant o))) (Just (dfDeposed o)) Nothing
   ]
 
-miracleSaintClaims :: MiracleSaintOutcome -> [Claim]
-miracleSaintClaims o =
-  [ Claim (msSite o) Sanctified (Just (ROf (msSociety o))) (Just (msSociety o)) Nothing
-  , Claim (msSociety o) Venerates (Just (ROf (msSaint o))) (Just (msSociety o)) Nothing
-  ]
+-- | Takes 'World' only to check 'isMundane' on the freshly-minted saint —
+-- a mundane one ("a young widow") never gets the officiant's permanent
+-- Venerates claim, the one thing that would actually promote it out of
+-- mundane-ness. The site's own 'Sanctified' claim is unaffected either
+-- way. See 'Historian.Rules.fireMiracleSaint'.
+miracleSaintClaims :: World -> MiracleSaintOutcome -> [Claim]
+miracleSaintClaims w o =
+  Claim (msSite o) Sanctified (Just (ROf (msSociety o))) (Just (msSociety o)) Nothing
+    : [Claim (msSociety o) Venerates (Just (ROf (msSaint o))) (Just (msSociety o)) Nothing | not (isMundane w (msSaint o))]
     ++ msExtraClaims o
 
-miracleRelicClaims :: MiracleRelicOutcome -> [Claim]
-miracleRelicClaims o =
-  [ Claim (mrSite o) Sanctified (Just (ROf (mrSociety o))) (Just (mrSociety o)) Nothing
-  , Claim (mrSociety o) Venerates (Just (ROf (mrRelic o))) (Just (mrSociety o)) Nothing
-  ]
+-- | 'miracleSaintClaims's mirror for a fresh mundane relic — see
+-- 'Historian.Rules.fireMiracleRelic'.
+miracleRelicClaims :: World -> MiracleRelicOutcome -> [Claim]
+miracleRelicClaims w o =
+  Claim (mrSite o) Sanctified (Just (ROf (mrSociety o))) (Just (mrSociety o)) Nothing
+    : [Claim (mrSociety o) Venerates (Just (ROf (mrRelic o))) (Just (mrSociety o)) Nothing | not (isMundane w (mrRelic o))]
     ++ mrExtraClaims o
 
 miracleOnClaims :: MiracleOnOutcome -> [Claim]
@@ -661,9 +666,11 @@ outcomeKind = \case
   Coup _ -> "coup"
 
 -- | Dispatches to the @xClaims@ function above matching each constructor.
--- Takes 'World' only because 'mergerClaims' genuinely needs it
--- ('transferClaims'\/'inheritedGrievanceClaims' look up the pre-existing
--- parents' current members\/grievances) — every other case ignores it.
+-- Takes 'World' because 'mergerClaims' needs it ('transferClaims'\/
+-- 'inheritedGrievanceClaims' look up the pre-existing parents' current
+-- members\/grievances) and 'miracleSaintClaims'\/'miracleRelicClaims' need
+-- it to check 'isMundane' on a freshly-minted ward — every other case
+-- ignores it.
 outcomeClaims :: World -> Outcome -> [Claim]
 outcomeClaims w = \case
   Founding o -> foundingClaims o
@@ -672,8 +679,8 @@ outcomeClaims w = \case
   Dispute o -> disputeClaims o
   Sanctify o -> sanctifyClaims o
   Defile o -> defileClaims o
-  MiracleSaint o -> miracleSaintClaims o
-  MiracleRelic o -> miracleRelicClaims o
+  MiracleSaint o -> miracleSaintClaims w o
+  MiracleRelic o -> miracleRelicClaims w o
   MiracleOn o -> miracleOnClaims o
   Theft o -> theftClaims o
   Gift o -> giftClaims o

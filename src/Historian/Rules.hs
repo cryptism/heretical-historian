@@ -375,23 +375,34 @@ defileSpec =
 -- rather than a change to 'venerates' itself.
 ruleMiracle :: Rule
 ruleMiracle = rule "miracle" $ \w ->
-  [fireMiracleSaint w s site msaint | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, msaint <- Nothing : map Just (livingMembers w s ++ deadMembers w s)]
-    ++ [fireMiracleRelic w s site mrelic | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, mrelic <- Nothing : map Just (activeItems w)]
+  [fireMiracleSaint defaultTuning w s site msaint | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, msaint <- Nothing : map Just (livingMembers w s ++ deadMembers w s)]
+    ++ [fireMiracleRelic defaultTuning w s site mrelic | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, mrelic <- Nothing : map Just (activeItems w)]
     ++ [ fireMiracleOn w s site actor target
        | s <- activeSocieties w
        , site <- entitiesOf Site w
        , venerates w s site
        , actor <- livingMembers w s ++ deadMembers w s
-       , target <- filter (/= actor) (entitiesOf Person w ++ activeItems w)
+       , target <- filter (/= actor) (excludeMundane w (entitiesOf Person w) ++ activeItems w)
        ]
 
-fireMiracleSaint :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
-fireMiracleSaint w s site msaint = do
-  (saint, saintFresh) <- case msaint of
-    Just p -> pure (p, False)
-    Nothing -> (, True) <$> newPerson (cultureOf w s)
+-- | @saintMundane@ tracks whether a freshly-minted saint came back
+-- mundane ('newMundanePerson' rather than 'newPerson') — when it did, it's
+-- dropped from 'wardParticipants' before 'regardReactions' runs (a
+-- spectator cult can't spontaneously form a Venerates\/Shuns opinion about
+-- something 'entMundane', any more than the officiant's own Venerates
+-- claim below can name one — see 'Historian.Render.miracleSaintClaims',
+-- which independently re-derives the same "is this mundane" check off the
+-- committed 'World' rather than needing this flag threaded that far).
+fireMiracleSaint :: Tuning -> World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
+fireMiracleSaint cfg w s site msaint = do
+  (saint, saintFresh, saintMundane) <- case msaint of
+    Just p -> pure (p, False, False)
+    Nothing -> do
+      mundane <- chance (tnMundaneMiracleChance cfg)
+      p <- if mundane then newMundanePerson (cultureOf w s) else newPerson (cultureOf w s)
+      pure (p, True, mundane)
   (mrelicItem, embodiesClaims) <- optionalRelicFor w (cultureOf w s) [s]
-  let wardParticipants = [site, saint] ++ maybe [] (pure . fst) mrelicItem
+  let wardParticipants = site : [saint | not saintMundane] ++ maybe [] (pure . fst) mrelicItem
   reactions <- regardReactions s wardParticipants
   let extraClaims = embodiesClaims ++ reactions
       relicMoment = (\(item, fresh) -> RelicMoment item fresh extraClaims (Just site)) <$> mrelicItem
@@ -399,14 +410,19 @@ fireMiracleSaint w s site msaint = do
   disputes <- maybeDispute s
   pure (MiracleSaint outcome : disputes)
 
-fireMiracleRelic :: World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
-fireMiracleRelic w s site mrelic = do
-  (relic, relicFresh, embodiesClaim) <- case mrelic of
-    Just it -> pure (it, False, [])
+fireMiracleRelic :: Tuning -> World -> EntityId -> EntityId -> Maybe EntityId -> Chronicle [Outcome]
+fireMiracleRelic cfg w s site mrelic = do
+  (relic, relicFresh, relicMundane, embodiesClaim) <- case mrelic of
+    Just it -> pure (it, False, False, [])
     Nothing -> do
-      (it, concept) <- newItem (cultureOf w s) (Just s)
-      pure (it, True, [Claim it Embodies (Just (ROf concept)) Nothing Nothing])
-  reactions <- regardReactions s [site, relic]
+      mundane <- chance (tnMundaneMiracleChance cfg)
+      if mundane
+        then (,True,True,[]) <$> newMundaneItem (cultureOf w s)
+        else do
+          (it, concept) <- newItem (cultureOf w s) (Just s)
+          pure (it, True, False, [Claim it Embodies (Just (ROf concept)) Nothing Nothing])
+  let wardParticipants = site : [relic | not relicMundane]
+  reactions <- regardReactions s wardParticipants
   let outcome = MiracleRelicOutcome s site relic relicFresh (embodiesClaim ++ reactions)
   disputes <- maybeDispute s
   pure (MiracleRelic outcome : disputes)
@@ -453,7 +469,7 @@ miracleSaintSpec =
       (s : _) -> saint `elem` livingMembers w s ++ deadMembers w s
       [] -> False
     fire w assignment = case assignment of
-      [Just s, Just site, msaint] -> fireMiracleSaint w s site msaint
+      [Just s, Just site, msaint] -> fireMiracleSaint defaultTuning w s site msaint
       _ -> pure []
 
 miracleRelicSpec :: RuleSpec
@@ -465,7 +481,7 @@ miracleRelicSpec =
     }
   where
     fire w assignment = case assignment of
-      [Just s, Just site, mrelic] -> fireMiracleRelic w s site mrelic
+      [Just s, Just site, mrelic] -> fireMiracleRelic defaultTuning w s site mrelic
       _ -> pure []
 
 miracleOnPersonSpec :: RuleSpec
@@ -1249,7 +1265,7 @@ ruleProphesy :: Rule
 ruleProphesy = rule "prophesy" $ \w ->
   [ fireProphesy target prophet
   | prophet <- activeSocieties w
-  , target <- entitiesOf Society w ++ entitiesOf Person w ++ entitiesOf Site w ++ activeItems w
+  , target <- entitiesOf Society w ++ excludeMundane w (entitiesOf Person w) ++ entitiesOf Site w ++ activeItems w
   , target /= prophet
   , not (hasProphesied w prophet target)
   ]

@@ -188,6 +188,14 @@ data Tuning = Tuning
   -- already venerates or shuns, rather than an arbitrary stem — checked
   -- only once the cult is confirmed to have at least one current
   -- Venerates\/Shuns stance to draw on at all.
+  , tnMundaneMiracleChance :: Int
+  -- ^ 'Historian.Rules.fireMiracleSaint'\/'fireMiracleRelic': chance out
+  -- of 100 that a miracle's freshly-minted saint\/relic is mundane
+  -- background dressing ('newMundanePerson'\/'newMundaneItem') rather
+  -- than a full, backfill-eligible 'newPerson'\/'newItem'. Only consulted
+  -- when no existing Ward was offered for the slot — the same
+  -- "only the fresh branch has a choice to make" shape 'mintBackdatedSaint'
+  -- and 'themedItemName' already have.
   }
 
 defaultTuning :: Tuning
@@ -203,6 +211,7 @@ defaultTuning =
     , tnMeanderChance = 10
     , tnOmitChance = 4
     , tnThemedItemNameChance = 40
+    , tnMundaneMiracleChance = 35
     }
 
 -- | Sample up to @n@ distinct elements from a list, without replacement —
@@ -433,10 +442,11 @@ data MintOptions = MintOptions
   { moModifier :: Maybe Int
   , moBornOverride :: Maybe Epoch
   , moVoice :: Maybe Voice
+  , moMundane :: Bool
   }
 
 defaultMintOptions :: MintOptions
-defaultMintOptions = MintOptions {moModifier = Nothing, moBornOverride = Nothing, moVoice = Nothing}
+defaultMintOptions = MintOptions {moModifier = Nothing, moBornOverride = Nothing, moVoice = Nothing, moMundane = False}
 
 -- | 'moModifier' is relic data — meaningful only for 'Item' — rolled
 -- here, at creation, rather than filled in later: entities are never
@@ -452,7 +462,7 @@ mint k c nm opts = do
   i <- freshEntityId
   now <- gets wEpoch
   let ep = fromMaybe now (moBornOverride opts)
-  modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep (moModifier opts) (moVoice opts)) (wEntities w)}
+  modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep (moModifier opts) (moVoice opts) (moMundane opts)) (wEntities w)}
   pure i
 
 -- | The modifier phrase before a society's noun, guaranteeing exactly one
@@ -550,8 +560,11 @@ backfillWard cfg depth ward
 -- | Every Ward currently in the world (Person\/Site\/Item combined) — the
 -- candidate pool 'backfillPatron' picks an existing veneration target
 -- from, the mirror of 'backfillWard's own @entitiesOf Society@ pool.
+-- 'excludeMundane'-filtered: a mundane Person\/Item is never eligible to
+-- be picked up as a fresh cult's patron Ward (Site is never mundane, so
+-- the filter is a no-op there).
 wardsOf :: World -> [EntityId]
-wardsOf w = entitiesOf Person w ++ entitiesOf Site w ++ entitiesOf Item w
+wardsOf w = excludeMundane w (entitiesOf Person w ++ entitiesOf Site w ++ entitiesOf Item w)
 
 -- | Mint a fresh Ward (uniformly, Person\/Site\/Item) for a freshly-
 -- founded society's own veneration — 'backfillPatron's GenerateFresh
@@ -714,6 +727,29 @@ newItem c mCult = do
   backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) item
   pure (item, concept)
 
+-- | A mundane person: background dressing for someone else's event, not a
+-- namesake. Deliberately skips everything 'newPerson' does beyond the
+-- mint itself — no 'syllableName'\/byname (the filler phrase *is* the
+-- name), no 'backfillWard' (a mundane person can never already be
+-- venerated\/shunned by a cult; that's the entire point of
+-- 'Historian.Types.entMundane'). Culture is still recorded (an entity
+-- always has one — invariant-adjacent, not meaningfully used since
+-- there's no name generation left to drive with it here) but plays no
+-- role in which phrase gets picked, unlike every other 'Kind'.
+newMundanePerson :: Culture -> Chronicle EntityId
+newMundanePerson c = do
+  nm <- pickOr "a stranger" mundanePersons
+  mint Person c nm defaultMintOptions {moMundane = True}
+
+-- | A mundane item: a prop, not a relic-in-waiting. Skips 'newItem's
+-- modifier roll and 'Embodies' concept link along with its
+-- 'backfillWard' — a mundane item never becomes relic-eligible, so
+-- nothing would ever read either.
+newMundaneItem :: Culture -> Chronicle EntityId
+newMundaneItem c = do
+  nm <- pickOr "an ordinary object" mundaneItems
+  mint Item c nm defaultMintOptions {moMundane = True}
+
 -- | Every distinct thing @cult@ currently venerates or shuns — latest
 -- 'Venerates'\/'Shuns'\/'Disavows' fact wins per object, same discipline
 -- as 'regardOf', just run over every object the cult has ever gone on
@@ -749,7 +785,7 @@ themedItemName cfg w cult =
           -- between them first — a cult with three shunned things and one
           -- venerated one should lean toward theming off a shunned thing,
           -- not draw the two pools evenly.
-          mChoice <- pick (map (, True) venerated ++ map (, False) shunned)
+          mChoice <- pick (map (,True) venerated ++ map (,False) shunned)
           case mChoice of
             Nothing -> pure Nothing
             Just (target, True) -> do
@@ -1081,7 +1117,29 @@ activeSocieties w = [s | s <- entitiesOf Society w, not (isDefunct w s)]
 -- 'entitiesOf Item', the same relationship 'activeSocieties' has to
 -- 'entitiesOf Society'.
 activeItems :: World -> [EntityId]
-activeItems w = [i | i <- entitiesOf Item w, not (isTerminated w i)]
+activeItems w = excludeMundane w [i | i <- entitiesOf Item w, not (isTerminated w i)]
+
+-- | Whether an entity is background dressing rather than a real candidate
+-- — see 'Entity' 'entMundane'. False (not just absent) for any id that
+-- doesn't resolve, matching every other total query in this module.
+isMundane :: World -> EntityId -> Bool
+isMundane w i = maybe False entMundane (M.lookup i (wEntities w))
+
+-- | Drops every mundane entity from a candidate list — the enforcement
+-- half of the Mundane contract ('newMundanePerson'\/'newMundaneItem' are
+-- the minting half): a miracle's throwaway bystander or prop can never be
+-- picked back up by a later rule as a target, a ward to venerate\/shun, or
+-- anything else. 'activeItems' routes through this so every existing
+-- item-candidate call site gets it for free; a 'Person'-kind pool drawn
+-- straight from 'entitiesOf' (there's no @activePersons@ choke point the
+-- way there is for items — most rules draw people from society membership
+-- lists instead, which mundane people are never added to) needs to wrap
+-- itself in this explicitly, as 'Historian.Rules.ruleMiracle'\/
+-- 'ruleProphesy' do. 'Historian.Engine.candidatesFor' applies this
+-- unconditionally too, so every 'RuleSpec' slot gets it for free
+-- regardless of 'Kind'.
+excludeMundane :: World -> [EntityId] -> [EntityId]
+excludeMundane w = filter (not . isMundane w)
 
 -- | Whether @reviver@ has already claimed to revive @defunct@ — guards
 -- 'ruleRevive' against the same claimant repeating an identical claim.

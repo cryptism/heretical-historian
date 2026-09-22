@@ -68,10 +68,13 @@ data RuleSpec = RuleSpec
   }
 
 -- | Every existing entity satisfying one slot, given what's already been
--- resolved for earlier slots in the same rule.
+-- resolved for earlier slots in the same rule. 'excludeMundane'-filtered
+-- unconditionally (harmless for a 'Kind' that's never mundane) so every
+-- 'RuleSpec', present or future, gets the "mundane entities are a dead
+-- end" guarantee for free — see 'Historian.Types' 'entMundane'.
 candidatesFor :: World -> [EntityId] -> Slot -> [EntityId]
 candidatesFor w resolved slot =
-  [i | i <- entitiesOf (slotKind slot) w, slotConstraint slot w resolved i]
+  [i | i <- excludeMundane w (entitiesOf (slotKind slot) w), slotConstraint slot w resolved i]
 
 -- | A conservative, cheap runnability check: every required slot has at
 -- least one candidate *considered on its own*, ignoring what a later slot
@@ -301,7 +304,7 @@ queryEntity w specs eid = do
       , edSatisfiesSlotOf = [rsName rs | rs <- specs, any (satisfies e) (rsSlots rs)]
       }
   where
-    satisfies e slot = entKind e == slotKind slot && slotConstraint slot w [] eid
+    satisfies e slot = not (entMundane e) && entKind e == slotKind slot && slotConstraint slot w [] eid
 
 -- | Every way (some or all of) the given pool can be consistently bound
 -- to 'rs'\'s slots, walked in declared order, backtracking when an
@@ -331,7 +334,7 @@ poolAssignments w = go []
       ]
       where
         matches ctx e = case M.lookup e (wEntities w) of
-          Just ent -> entKind ent == slotKind slot && slotConstraint slot w ctx e
+          Just ent -> not (entMundane ent) && entKind ent == slotKind slot && slotConstraint slot w ctx e
           Nothing -> False
 
 -- | How many 'Just's one 'poolAssignments' binding sets — the "how much

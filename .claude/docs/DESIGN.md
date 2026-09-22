@@ -3126,3 +3126,163 @@ the start and not reopened here: per-rule/per-society weighting of which
 `poolAssignments` shape gets picked (uniform via `pickOr` is the only
 policy built), and a defensive size cap on the search itself (still
 unneeded — every real `rsSlots` list stays at 1-3 slots).
+
+## Decision 36: mundane entities — a dead end for a miracle's incidental bystanders and props
+
+**Needed for:** the user's own observation, mid-conversation, that a
+miracle's freshly-minted saint/relic always goes through the full
+`newPerson`/`newItem` path — a real name, a `backfillWard` chance at
+being venerated by some other cult, eligible to be drawn into any later
+rule's candidate pool — when sometimes what a miracle actually touches is
+incidental: "a young widow", "a rusty spoon". Wanted: a real `Entity`
+with an id (inspectable, nameable in prose) that's nonetheless a
+guaranteed dead end — never further backstory, never venerated/shunned,
+never drawn into another cult's affairs.
+
+**`entMundane :: Bool` on `Entity` itself, not a separate `Kind` or a
+wrapper type.** A `Kind`-level split (`MundanePerson` alongside `Person`)
+would have doubled every `Slot`/`candidatesFor`/`entitiesOf` call site
+that currently reads `Kind` to also know about mundane-ness; a scalar flag
+next to `entModifier`/`entVoice` (the same "no entity reference inside it,
+fine as a plain field" shape those two already have) needed exactly one
+new predicate-free choke point instead: `Historian.World.excludeMundane`,
+which every Person/Item candidate pool routes through. `activeItems`
+already *was* that choke point for items (`isTerminated` filtering already
+lived there); items got it for free by wrapping the existing definition.
+Person has no equivalent single choke point — most rules draw people from
+society membership lists, which a mundane person is never added to — so
+the two rules that draw raw `entitiesOf Person` (`ruleMiracle`'s own
+`fireMiracleOn` target list, `ruleProphesy`) needed the filter added by
+hand. `Historian.Engine.candidatesFor` — the *other* half of the
+codebase's candidate-drawing surface, `RuleSpec`'s own — got the same
+filter unconditionally, once, covering every present and future `Slot`
+regardless of `Kind`, rather than auditing each `RuleSpec` individually
+the way the legacy `Rule` list needed.
+
+**The one real design correction, found by working through the
+implementation rather than anticipated up front: a mundane saint/relic
+can't just reuse the ordinary "fresh ward" slot, because that slot's
+whole job is producing something the officiating society permanently
+venerates.** `miracleSaintClaims`/`miracleRelicClaims` record a `Venerates`
+claim on the fresh ward unconditionally — the actual mechanism that turns
+a name into a relic/saint. Minting a mundane person into that same slot
+and then still recording `Venerates` on it would directly contradict
+`entMundane`'s own contract the instant the outcome committed. Fixed by
+threading `World` into both claims functions (`outcomeClaims` already
+threads it for `mergerClaims`, so this reused an existing precedent rather
+than introducing a new one) and making the `Venerates` claim conditional
+on `not (isMundane w theWard)` — the site's own `Sanctified` claim is
+unaffected either way, since sanctity transfers to the *society*, not the
+ward. `regardReactions`'s `wardParticipants` list drops a mundane
+saint/relic before any spectator cult gets a chance to independently form
+a `Venerates`/`Shuns` opinion about it, for the same reason.
+
+**`tnMundaneMiracleChance` (default 35) had to become an explicit `Tuning`
+parameter on `fireMiracleSaint`/`fireMiracleRelic`, not a `defaultTuning`
+read inline — matching the convention Decision 31 already established
+for exactly this reason.** Every other tunable weight in this codebase
+(`backfillWard`, `mintBackdatedSaint`, `pickNarrator`,
+`applyIdiosyncrasies`) takes `Tuning` explicitly so a test can force the
+odds to 0 or 100 and assert the deterministic edge, rather than sampling
+across seeds and hoping. `fireMiracleSaint cfg w s site msaint` first cut
+hardcoded `defaultTuning` internally; caught in review against Decision
+31's own stated rule before it shipped, not after — fixed by adding
+`Tuning` as the leading parameter (mirroring `backfillWard`'s own
+`Tuning -> Int -> EntityId -> Chronicle ()` shape) and updating all four
+call sites (the legacy `rule`'s two list-comprehension productions, both
+`RuleSpec` `fire` functions) to pass `defaultTuning` unchanged — a pure
+refactor with no RNG-cascade cost of its own, since the value threaded is
+identical to what was being read inline before.
+
+**Verified with the same discipline `feedback_verify_dont_sample` already
+demands** (`mundaneChecks`, `test/Spec.hs`): `tnMundaneMiracleChance`
+forced to 100/0 to assert `fireMiracleSaint`/`fireMiracleRelic` always/
+never produce a mundane fresh ward; a hand-built `MiracleSaintOutcome`/
+`MiracleRelicOutcome` naming a mundane ward directly, with no RNG
+involved at all, to assert `miracleSaintClaims`/`miracleRelicClaims` never
+records `Venerates` on it (and the mirror check, that an ordinary ward
+still gets it); `candidatesFor` and `activeItems` both directly asserted
+to exclude a freshly-minted mundane entity, plus one sanity check in the
+other direction (an ordinary item is still found in the same otherwise-
+identical slot, so the exclusion isn't overzealous). `cabal test` 230 to
+245 checks.
+
+**RNG-cascade fallout, found and fixed the same way every prior one in
+this file was:** the new `chance` roll inside `fireMiracleSaint`/
+`fireMiracleRelic`'s fresh branch reshuffled the downstream stream for
+every seed that ever takes it — which is most of them, by `steps`/
+`longSteps`. Seed 99 (one of the five `checksFor` witnesses) stopped
+producing a schism within `steps`; replaced with seed 4 (schisms turned
+out to be common — the first several dozen seeds all produce one — so
+this was a five-minute swap, not a hunt), following the exact precedent
+already recorded here for seeds 7/13. Trial-by-combat's own witness
+(`veryWideSeeds`, the "does this ever happen across a wide pool" check
+shared with coup) moved out past the existing 1..6000 bound entirely — a
+fresh scan (a standalone scratch binary against the built library, not
+`ghci`, which is far too slow for a 6000+-seed sweep at `longSteps`) found
+its first instance at seed 10047, comfortably confirmed by widening
+`veryWideSeeds` to 1..11000; coup's own first instance (1143) never
+moved. One deliberate, permanent exception to the "every entity is
+inspectable" check (`checksFor`) rather than forcing a fact onto a mundane
+entity just to satisfy it: `entMundane` entities are *supposed* to have
+empty `historyOf` — their only textual trace is the miracle's own
+narrated prose, which already names them by their filler phrase — so
+adding a never-reused-as-a-precondition fact just to pass the check would
+have cut directly against `Predicate`'s own stated discipline ("deliberately
+few... each one must be usable as a precondition by some rule, or history
+stalls"). The check itself was narrowed to `every non-mundane entity is
+inspectable`, with the reasoning recorded inline rather than silently
+carving out an exception a future reader would have to rediscover.
+
+**Deliberately not attempted:** extending mundane-ness to any rule beyond
+`ruleMiracle`'s own fresh-saint/fresh-relic slots (the only two the user
+named); a `Tuning`-level split between "mundane person" and "mundane
+item" odds (both share `tnMundaneMiracleChance` — the choice is which
+slot fired, not a separate roll); and `optionalRelicFor`'s own bonus-relic
+draw (used by battle/assassination as well as `fireMiracleSaint`) staying
+exactly as it was — always a full `newItem`, never mundane — since
+touching a shared helper for a miracle-only request would have widened
+the blast radius well past what was asked.
+
+## Decision 37: culture labels stop doubling as real-world ethnonyms
+
+**Needed for:** the user asking for the cultures to be "named... based on
+real-world cultures [but] something different" — `vaurethine`/
+`hollowtongue` were already invented labels evoking a real phonology
+without literally being named after one; `ethiopian`/`southAsian`/
+`semitic`/`mesoamerican` (the culture *value*, not the Haskell binding)
+were not — their `Culture` text was the literal real-world name
+(`"Ethiopian"`, `"South Asian"`, `"Semitic"`, `"Mesoamerican"`), the exact
+asymmetry the request was about.
+
+**Renamed the `Culture Text` value only, not the Haskell bindings, the
+corpus word lists, or the phonology each one evokes.** `ethiopian`,
+`ethiopianWords`, `ethiopianGrammar` etc. all keep their existing
+identifiers — internal names, never surfaced to output — while
+`ethiopian = Culture "Ghenzai"` (was `"Ethiopian"`), `southAsian = Culture
+"Vindrasha"` (was `"SouthAsian"`), `semitic = Culture "Zabreth"` (was
+`"Semitic"`), `mesoamerican = Culture "Tzalapec"` (was `"Mesoamerican"`).
+`baboon` untouched — it was never a real-world ethnonym, just an
+in-fiction joke culture, so there was nothing to fix. Grepped first to
+confirm the old string literals appeared nowhere outside
+`Historian.Corpus` itself (`corpusFor`/`nameGrammarFor`'s own pattern
+matches) before renaming — a real risk, since `Culture` is a bare `Text`
+newtype with no smart constructor, so a stray hardcoded string literal
+elsewhere would have silently fallen back to `vaureWords` (`corpusFor`'s
+catch-all) rather than failing to compile.
+
+**Zero RNG-cascade cost, unlike almost everything else in this file** —
+a `Culture`'s text value is never fed into `wGen`, only used as a lookup
+key (`corpusFor`/`nameGrammarFor`'s pattern match) and echoed back out
+verbatim in rendered names/JSON, so renaming it changes what a culture is
+*called* without changing what it *generates*. No seed re-verification
+needed, confirmed by running the full suite unchanged before touching
+anything else.
+
+**Deliberately not attempted:** renaming `baboon` (never a real-world
+name); changing which real-world phonology each culture evokes (the
+brief was the label, not the sound); touching `HISTORY.md`'s own past
+entries that narrate a specific seed under the old name (e.g. "seed 4326
+(Mesoamerican)") — that file is a historical record of what was true when
+it was written, not a live index, so it stays exactly as it was rather
+than being retroactively edited to match the new label.

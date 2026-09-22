@@ -85,6 +85,15 @@ data Entity = Entity
   -- ^ Rolled once at creation for every 'Society' ('Nothing' for every
   -- other 'Kind') — the same "scalar, no entity reference inside it, fine
   -- as a plain field" shape 'entModifier' already has.
+  , entMundane :: Bool
+  -- ^ True only for a 'Person'\/'Item' minted as background dressing for
+  -- someone else's event ('Historian.World.newMundanePerson'\/
+  -- 'newMundaneItem') — "a young widow", "a rusty spoon". Still a real
+  -- 'Entity' with an id, still inspectable (invariant 2 still applies:
+  -- 'entName' is minted once, here too), but never a candidate for
+  -- further backstory: 'Historian.World.excludeMundane' is what every
+  -- Person\/Item candidate pool routes through to keep it that way. False
+  -- for every other mint path, including every other 'Kind'.
   }
   deriving stock (Show)
 

@@ -19,10 +19,10 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (230 checks — seeds 1/2/3/42/99 for
+Builds and passes `cabal test` (245 checks — seeds 1/2/3/42/4 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
-(1-6000, precomputed once as `veryWideResults`, in parallel — see
+(1-11000, precomputed once as `veryWideResults`, in parallel — see
 below) for the two rarest — trial by combat and a coup — plus two
 hand-built worlds, `schismSpec`/`sanctifySpec`'s and the richer
 `richWorld`, covering direct-construction checks for the `RuleSpec`
@@ -98,6 +98,23 @@ sampling across real generated worlds turned up suspiciously few
 (every society's patron `Concept`) should be. Fixed by dropping the
 collision check for the themed branch entirely — it was never the right
 guard for this shape of name. `.claude/docs/HISTORY.md` covers the full account.
+
+Also built beyond any numbered work-queue item, at the user's request:
+mundane entities (`entMundane` on `Entity`, `Historian.World.excludeMundane`)
+— a fresh miracle's saint/relic slot now has a `tnMundaneMiracleChance`
+(35, `Tuning`) chance of coming back as background dressing ("a young
+widow", "a rusty spoon") instead of a fully namesake-eligible
+`newPerson`/`newItem`: a real, inspectable `Entity` with an id, but a
+permanent dead end — never `Venerates`/`Shuns`, never drawn into any
+future rule's candidate pool. `.claude/docs/DESIGN.md` Decision 36. Also,
+the four cultures whose *label* (not just their evoked phonology) used to
+double as a real-world ethnonym — Ethiopian, South Asian, Semitic,
+Mesoamerican — now carry invented names instead (Ghenzai, Vindrasha,
+Zabreth, Tzalapec), matching how Vaurethine/Hollowtongue were already
+named; Baboon untouched, never a real-world name to begin with.
+`.claude/docs/DESIGN.md` Decision 37. Interface/FFI surface (CLI, wasm
+boundary, and the Haskell query surface from items 21/22) is now written
+up in one place: `.claude/docs/INTERFACE.md`.
 
 **`.claude/docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
