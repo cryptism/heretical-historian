@@ -9,12 +9,14 @@ import Control.Monad.State.Strict (evalState, execState, get, runState)
 import Control.Parallel.Strategies (parListChunk, rdeepseq, using)
 import Data.Aeson (FromJSON (..), withObject, (.:))
 import qualified Data.Aeson as Aeson
+import Data.Bifunctor (first)
+import Data.List (nub)
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as M
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (catMaybes, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Data.List.NonEmpty as NE
 import Historian.Corpus (hailWords, meanderClauses, omissionTexts, vaurethine)
 import Historian.Engine
 import Historian.Json (encodeQueryResult, encodeStepResult, encodeWorld)
@@ -317,7 +319,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -442,6 +444,153 @@ engineChecks =
     , "Engine: queryEntity reports the society can fill both schismSpec's and sanctifySpec's slots"
     )
   ]
+
+-- | 'rulesFor'\/'poolAssignments'\/'nextSlotCandidates' checks (work queue
+-- items 21-22, .claude/docs/DESIGN.md Decision 35 and its exact-matching
+-- follow-up). Reuses 'engineWorld'\/'engineSociety'\/'engineFounder'\/
+-- 'schismSpec'\/'sanctifySpec' for the schism-shaped checks; 'matchWorld'
+-- (below) is a second, small hand-built world purpose-built for
+-- 'battleSpec', whose two dependent 'Society' slots are what actually
+-- exercises backtracking — 'schismSpec's two slots never compete for the
+-- same pool entity, since they're different 'Kind's.
+matchingChecks :: [(Bool, Text)]
+matchingChecks =
+  [
+    ( let matched = map (rsName . fst) (rulesFor engineWorld [schismSpec, sanctifySpec] [engineSociety])
+       in "schism" `elem` matched && "sanctify" `elem` matched
+    , "Engine: rulesFor finds both schismSpec and sanctifySpec for a lone active society"
+    )
+  ,
+    ( isNothing (lookup "schism" (map (first rsName) (rulesFor engineWorld [schismSpec] [engineFounder])))
+    , "Engine: rulesFor correctly scores 0 for the founder alone — no poolAssignments binding can place a Person into schismSpec's Person slot without a Society also resolved first"
+    )
+  ,
+    ( lookup "schism" (map (first rsName) (rulesFor engineWorld [schismSpec] [engineSociety, engineFounder])) == Just 2
+    , "Engine: rulesFor's exact score for schismSpec is 2 for [society, founder] together — poolAssignments finds the binding that resolves the society first, so the founder legitimately qualifies for the person slot (the old cheap version undercounted this at 1, .claude/docs/DESIGN.md Decision 35)"
+    )
+  ,
+    ( let assignments = poolAssignments matchWorld (rsSlots battleSpec) [matchC, matchA, matchB]
+       in maximum (0 : [length [() | Just _ <- a] | a <- assignments]) == 2
+    , "Engine: poolAssignments finds the full (grievant, target) pairing for battleSpec even with an unrelated third society in the pool — the backtracking case rulesFor's old per-entity check couldn't reach"
+    )
+  ,
+    ( all (\a -> let js = catMaybes a in length js == length (nub js)) (poolAssignments matchWorld (rsSlots battleSpec) [matchC, matchA, matchB])
+    , "Engine: no poolAssignments binding ever reuses the same pool entity across two slots"
+    )
+  ,
+    ( let scoreFor pool = maximum (0 : [length [() | Just _ <- a] | a <- poolAssignments matchWorld (rsSlots battleSpec) pool])
+       in scoreFor [matchC, matchA, matchB] == scoreFor [matchB, matchC, matchA]
+    , "Engine: poolAssignments' best score for battleSpec doesn't depend on the order the pool is given in"
+    )
+  ,
+    ( case nextSlotCandidates engineWorld [schismSpec] schismSpec [Nothing, Nothing] of
+        Just (0, slot, ds) -> slotKind slot == Society && map edId ds == [engineSociety]
+        _ -> False
+    , "Engine: nextSlotCandidates finds the society as schismSpec's first unresolved slot"
+    )
+  ,
+    ( case nextSlotCandidates engineWorld [schismSpec] schismSpec [Just engineSociety, Nothing] of
+        Just (1, slot, ds) -> slotKind slot == Person && engineFounder `elem` map edId ds
+        _ -> False
+    , "Engine: nextSlotCandidates threads the resolved society through so the founder qualifies for the person slot, given positional hints rather than an unordered pool"
+    )
+  ,
+    ( isNothing (nextSlotCandidates engineWorld [schismSpec] schismSpec [Just engineSociety, Just engineFounder])
+    , "Engine: nextSlotCandidates reports Nothing once every slot already has a hint"
+    )
+  , -- Work queue item 22's own follow-up (.claude/docs/DESIGN.md Decision 35's
+    -- second follow-up): 'nextSlotFromPool' (the unordered-pool
+    -- counterpart to 'nextSlotCandidates') and 'resolveAllExact'\/
+    -- 'StepEntities' (the real firing path rebased onto 'poolAssignments').
+
+    ( case nextSlotFromPool engineWorld [schismSpec] schismSpec [engineSociety] of
+        Right (Just (1, slot, ds)) -> slotKind slot == Person && engineFounder `elem` map edId ds
+        _ -> False
+    , "Engine: nextSlotFromPool infers the society's binding from an unordered one-entity pool and reports the person slot as next, with world-wide (not pool-restricted) candidates"
+    )
+  ,
+    ( case nextSlotFromPool engineWorld [schismSpec] schismSpec [engineSociety, engineFounder] of
+        Right Nothing -> True
+        _ -> False
+    , "Engine: nextSlotFromPool reports Right Nothing once an unordered pool already fully explains schismSpec"
+    )
+  ,
+    ( case nextSlotFromPool ambiguityWorld [ambiguitySpec] ambiguitySpec [ambiguityP1, ambiguityP2] of
+        Left (PoolAmbiguity shapes) -> length shapes == 2
+        Right _ -> False
+    , "Engine: nextSlotFromPool reports Left/PoolAmbiguity for a pool with two genuinely different maximal binding shapes, rather than silently picking one"
+    )
+  ,
+    ( let w' = execState (intelligentStep [battleSpec] matchWorld (StepEntities [matchC, matchA, matchB])) matchWorld
+          battles = [bo | ev <- M.elems (wEvents w'), Just (Battle bo) <- [evOutcome ev]]
+       in case battles of
+            [bo] -> (btVictor bo, btVanquished bo) `elem` [(matchA, matchB), (matchB, matchA)]
+            _ -> False
+    , "Engine: StepEntities/resolveAllExact fires battleSpec between matchA and matchB, never matchC, using the exact pool binding poolAssignments found"
+    )
+  ]
+
+-- | A fourth, minimal hand-built world purely for 'nextSlotFromPool's
+-- genuine-ambiguity check, plus a test-only 'RuleSpec' to go with it: two
+-- symmetric, unconstrained optional 'Person' slots. No production
+-- 'RuleSpec' has this shape (every real two-same-'Kind'-slot rule has a
+-- real distinguishing constraint between its slots — 'battleSpec's own
+-- grievance-pair check, for instance), so a purpose-built one is the only
+-- way to exercise the ambiguity branch at all.
+buildAmbiguityWorld :: Chronicle (EntityId, EntityId)
+buildAmbiguityWorld = do
+  p1 <- newPerson vaurethine
+  p2 <- newPerson vaurethine
+  pure (p1, p2)
+
+ambiguityIds :: (EntityId, EntityId)
+ambiguityWorld :: World
+(ambiguityIds, ambiguityWorld) = runState buildAmbiguityWorld (emptyWorld 34)
+
+ambiguityP1, ambiguityP2 :: EntityId
+(ambiguityP1, ambiguityP2) = ambiguityIds
+
+ambiguitySpec :: RuleSpec
+ambiguitySpec =
+  RuleSpec
+    { rsName = "ambiguity-test"
+    , rsSlots =
+        [ Slot Person (\_ _ _ -> True) False
+        , Slot Person (\_ _ _ -> True) False
+        ]
+    , rsFire = \_ _ -> pure []
+    }
+
+-- | A third, small hand-built world purpose-built for
+-- 'matchingChecks'\'s 'poolAssignments'\/'battleSpec' checks: three
+-- active societies, only two of which ('matchA'\/'matchB') actually hold
+-- a 'Grievance' against each other. 'matchC' is deliberately unrelated to
+-- either — the "irrelevant entity in the pool" a real web-app selection
+-- would routinely include — so a correct search has to find the one
+-- binding that pairs 'matchA' with 'matchB' rather than getting stuck on
+-- whichever society a naive, non-backtracking walk tried for
+-- 'battleSpec's first slot.
+buildMatchWorld :: Chronicle (EntityId, EntityId, EntityId)
+buildMatchWorld = do
+  (a, ca) <- newSociety vaurethine
+  (b, cb) <- newSociety vaurethine
+  (c, cc) <- newSociety vaurethine
+  record
+    "test-setup"
+    ""
+    [ Claim a Embodies (Just (ROf ca)) Nothing Nothing
+    , Claim b Embodies (Just (ROf cb)) Nothing Nothing
+    , Claim c Embodies (Just (ROf cc)) Nothing Nothing
+    , Claim a Grievance (Just (ROf b)) (Just a) Nothing
+    ]
+  pure (a, b, c)
+
+matchIds :: (EntityId, EntityId, EntityId)
+matchWorld :: World
+(matchIds, matchWorld) = runState buildMatchWorld (emptyWorld 21)
+
+matchA, matchB, matchC :: EntityId
+(matchA, matchB, matchC) = matchIds
 
 -- | 'head' with a labeled error instead of a partial-function warning —
 -- every call site below is asserting "this step of building the world
@@ -943,28 +1092,36 @@ allIdiosyncrasiesOff = defaultTuning {tnAllCapsChance = 0, tnHailChance = 0, tnM
 
 idiosyncrasyChecks :: [(Bool, Text)]
 idiosyncrasyChecks =
-  [ ( evalState (applyIdiosyncrasies allIdiosyncrasiesOff idiosyncrasyBase) richWorld == idiosyncrasyBase
+  [
+    ( evalState (applyIdiosyncrasies allIdiosyncrasiesOff idiosyncrasyBase) richWorld == idiosyncrasyBase
     , "Direct: applyIdiosyncrasies with every chance at 0 leaves the reading unchanged"
     )
-  , ( evalState (applyIdiosyncrasies allCapsOnly idiosyncrasyBase) richWorld == T.toUpper idiosyncrasyBase
+  ,
+    ( evalState (applyIdiosyncrasies allCapsOnly idiosyncrasyBase) richWorld == T.toUpper idiosyncrasyBase
     , "Direct: applyIdiosyncrasies with allCapsChance 100 (others 0) shouts the whole reading"
     )
-  , ( any (`T.isPrefixOf` evalState (applyIdiosyncrasies hailOnly idiosyncrasyBase) richWorld) (NE.toList hailWords)
+  ,
+    ( any (`T.isPrefixOf` evalState (applyIdiosyncrasies hailOnly idiosyncrasyBase) richWorld) (NE.toList hailWords)
     , "Direct: applyIdiosyncrasies with hailChance 100 (others 0) opens with a hailing word"
     )
-  , ( any (`T.isInfixOf` evalState (applyIdiosyncrasies meanderOnly idiosyncrasyBase) richWorld) (NE.toList meanderClauses)
+  ,
+    ( any (`T.isInfixOf` evalState (applyIdiosyncrasies meanderOnly idiosyncrasyBase) richWorld) (NE.toList meanderClauses)
     , "Direct: applyIdiosyncrasies with meanderChance 100 (others 0) tacks on a meandering clause"
     )
-  , ( evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) richWorld `elem` NE.toList omissionTexts
+  ,
+    ( evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) richWorld `elem` NE.toList omissionTexts
     , "Direct: applyIdiosyncrasies with omitChance 100 replaces the reading with a stand-in, not the actual account"
     )
-  , ( all (\i -> not (T.null (evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) (richWorld {wGen = mkStdGen i})))) [1 .. 50]
+  ,
+    ( all (\i -> not (T.null (evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) (richWorld {wGen = mkStdGen i})))) [1 .. 50]
     , "Direct: an omitted reading is never empty text, even though it isn't the actual account, across 50 independent RNG trials"
     )
-  , ( any (\i -> evalState (applyIdiosyncrasies defaultTuning idiosyncrasyBase) (richWorld {wGen = mkStdGen i}) /= idiosyncrasyBase) [1 .. 200]
+  ,
+    ( any (\i -> evalState (applyIdiosyncrasies defaultTuning idiosyncrasyBase) (richWorld {wGen = mkStdGen i}) /= idiosyncrasyBase) [1 .. 200]
     , "Direct: applyIdiosyncrasies with defaultTuning's actual (modest) weights sometimes changes the reading across 200 independent RNG trials"
     )
-  , ( all
+  ,
+    ( all
         ( \i ->
             let w = genesisWorld i
                 ev = firstOrErr "genesis produced no event" (M.elems (wEvents w))

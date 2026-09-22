@@ -19,8 +19,9 @@ module Historian.Engine where
 
 import Control.Applicative ((<|>))
 import Control.Monad.State.Strict (execState, get)
+import Data.List (delete, nubBy)
 import qualified Data.Map.Strict as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Historian.Corpus (vaurethine)
 import Historian.Render (commitOutcomes)
@@ -193,8 +194,10 @@ data StepRequest
     -- resolve it.
     StepRule RuleSpec [Maybe EntityId]
   | -- | No rule specified — pick a runnable\/useful 'RuleSpec' weighted
-    -- toward how many of these entities it can actually use, then resolve
-    -- the rest of its slots from the same pool where types match.
+    -- toward how many of these entities a single consistent binding can
+    -- actually, jointly use ('bestPoolUse'), then fire it against one of
+    -- those maximal bindings ('resolveAllExact'), filling everything the
+    -- pool didn't cover via 'resolveAll'\'s ordinary pick\/generate\/omit.
     StepEntities [EntityId]
 
 -- | 'StepRequest's own three constructors are all unambiguous by
@@ -251,14 +254,13 @@ intelligentStep _ w (StepRule rs hints) = do
 intelligentStep specs _ (StepEntities es) = do
   advanceEpoch
   w <- get
-  let usefulness rs = length [() | slot <- rsSlots rs, e <- es, matchesKind e slot]
-      matchesKind e slot = maybe False ((== slotKind slot) . entKind) (M.lookup e (wEntities w))
+  let usefulness rs = bestPoolUse w (rsSlots rs) es
       candidates = [rs | rs <- specs, runnable w rs || usefulness rs > 0]
   case candidates of
     [] -> pure ()
     _ -> do
       rs <- weighted [(1 + usefulness rs', rs') | rs' <- candidates]
-      resolved <- resolveAll w (rsSlots rs) (replicate (length (rsSlots rs)) Nothing) es
+      resolved <- resolveAllExact w (rsSlots rs) es
       rsFire rs w resolved >>= commitOutcomes
 
 -- | 'intelligentStep' run once, autonomously, and applied directly — the
@@ -300,3 +302,141 @@ queryEntity w specs eid = do
       }
   where
     satisfies e slot = entKind e == slotKind slot && slotConstraint slot w [] eid
+
+-- | Every way (some or all of) the given pool can be consistently bound
+-- to 'rs'\'s slots, walked in declared order, backtracking when an
+-- earlier choice forecloses a later slot — the real cross-slot-dependency
+-- search 'candidatesFor'\/'runnable' deliberately don't attempt (.claude/docs/plans/
+-- 22-consistent-entity-rule-matching.md). A required slot with no pool
+-- candidate still contributes 'Nothing' here rather than failing the
+-- whole search: it's always satisfiable via 'resolveSlot'\'s own
+-- generate-on-demand guarantee at firing time, so leaving it unfilled by
+-- the pool is a valid node, not a dead end. An optional slot may also
+-- contribute 'Nothing'. What's actually searched is only how the *given*
+-- pool's entities distribute across slots — unbounded generation never
+-- branches this search, since it's never a wrong choice, just a deferred
+-- one. Same extensional-enumeration style 'allAssignments' already uses,
+-- restricted to a shrinking pool instead of the whole world, which is
+-- what turns this into a real assignment search rather than every slot
+-- independently drawing from an unbounded candidate list.
+poolAssignments :: World -> [Slot] -> [EntityId] -> [[Maybe EntityId]]
+poolAssignments w = go []
+  where
+    go _ [] _ = [[]]
+    go resolved (slot : rest) remaining =
+      [ opt : restAssignment
+      | opt <- Nothing : [Just e | e <- remaining, matches resolved e]
+      , let remaining' = maybe remaining (`delete` remaining) opt
+      , restAssignment <- go (resolved ++ maybe [] pure opt) rest remaining'
+      ]
+      where
+        matches ctx e = case M.lookup e (wEntities w) of
+          Just ent -> entKind ent == slotKind slot && slotConstraint slot w ctx e
+          Nothing -> False
+
+-- | How many 'Just's one 'poolAssignments' binding sets — the "how much
+-- of the pool did this placement use" score every pool-based query below
+-- shares, so it's pulled out once rather than reimplemented per caller.
+usedCount :: [Maybe EntityId] -> Int
+usedCount a = length [() | Just _ <- a]
+
+-- | The most pool entities any single consistent 'poolAssignments'
+-- binding for these slots can place at once.
+bestPoolUse :: World -> [Slot] -> [EntityId] -> Int
+bestPoolUse w slots pool = maximum (0 : map usedCount (poolAssignments w slots pool))
+
+-- | The web-app-facing query surface's other half: given a set of
+-- entities someone has already picked, every 'RuleSpec' that could use
+-- them, ranked by 'bestPoolUse' — not an independent per-entity count,
+-- which is why this can correctly score 0 for a set that only looks
+-- plausible slot-by-slot but can't actually be jointly bound (a schism's
+-- heresiarch must belong to *this* schism's own society; a founder handed
+-- in without that society also present can't be placed by any assignment
+-- 'poolAssignments' finds, so it scores 0 here exactly as it should, not
+-- 1 the way an isolated per-slot check would say).
+rulesFor :: World -> [RuleSpec] -> [EntityId] -> [(RuleSpec, Int)]
+rulesFor w specs es =
+  [ (rs, n) | rs <- specs, let n = bestPoolUse w (rsSlots rs) es, n > 0
+  ]
+
+-- | Every distinct maximal way the given pool can be bound to a rule's
+-- slots — "distinct" meaning a different (slot index, entity) placement,
+-- not merely a different choice of which untouched optional slot stays
+-- 'Nothing'. Two uses: detecting a genuinely ambiguous pool
+-- ('nextSlotFromPool') and picking a real binding to fire
+-- ('resolveAllExact').
+maximalPoolAssignments :: World -> [Slot] -> [EntityId] -> [[Maybe EntityId]]
+maximalPoolAssignments w slots pool = nubBy (\a b -> placement a == placement b) top
+  where
+    all' = poolAssignments w slots pool
+    best = maximum (0 : map usedCount all')
+    top = filter ((== best) . usedCount) all'
+    placement a = [(i, e) | (i, Just e) <- zip [0 :: Int ..] a]
+
+-- | Pick one of the pool's maximal binding shapes — uniformly, via the
+-- same 'pickOr' idiom 'StepAny' already uses to break a tie among several
+-- equally-good options — when more than one exists, rather than silently
+-- favoring enumeration order.
+pickPoolShape :: World -> [Slot] -> [EntityId] -> Chronicle [Maybe EntityId]
+pickPoolShape w slots pool = case maximalPoolAssignments w slots pool of
+  [] -> pure (replicate (length slots) Nothing)
+  (s : ss) -> pickOr s (s : ss)
+
+-- | The exact counterpart to 'resolveAll' for a caller-supplied pool: pick
+-- one of the pool's maximal consistent bindings (backtracking via
+-- 'poolAssignments', not 'resolveAll'\'s own greedy one-pass pool
+-- consumption), then hand it to 'resolveAll' as positional hints with an
+-- empty remaining pool — so every slot the pool didn't cover still gets
+-- 'resolveAll'\'s ordinary world-wide pick\/generate\/omit resolution,
+-- exactly as 'StepEntities' already relied on before this existed.
+resolveAllExact :: World -> [Slot] -> [EntityId] -> Chronicle [Maybe EntityId]
+resolveAllExact w slots pool = do
+  shape <- pickPoolShape w slots pool
+  resolveAll w slots shape []
+
+-- | The other direction: given a rule and the slots already chosen
+-- ('StepRule'\'s own hint shape — positional, 'Nothing' for "not yet
+-- picked"), the first slot still unresolved and every entity that could
+-- fill it *given what's already chosen for the slots before it* —
+-- 'resolveAll's own resolved-context threading, exposed one slot at a
+-- time instead of walking the whole rule at once, so a caller (a web
+-- form filling one slot per step) can show live candidates before
+-- committing to a full 'StepRule' request. Entities come back as
+-- 'EntityDossier's via 'queryEntity' rather than bare 'EntityId's, since a
+-- caller showing a picker needs the name\/'Kind' to display, not just an
+-- id. 'Nothing' means every slot already has a hint — the rule is ready
+-- to fire via 'resolveAll'\/'StepRule' as-is.
+nextSlotCandidates :: World -> [RuleSpec] -> RuleSpec -> [Maybe EntityId] -> Maybe (Int, Slot, [EntityDossier])
+nextSlotCandidates w specs rs hints = go 0 [] (rsSlots rs) (hints ++ repeat Nothing)
+  where
+    go _ _ [] _ = Nothing
+    go i resolved (slot : rest) (h : hs) = case h of
+      Just e -> go (i + 1) (resolved ++ [e]) rest hs
+      Nothing -> Just (i, slot, mapMaybe (queryEntity w specs) (candidatesFor w resolved slot))
+    go _ _ (_ : _) [] = Nothing
+
+-- | A pool admits more than one genuinely different way to bind it to a
+-- rule's slots — surfaced explicitly by 'nextSlotFromPool' rather than
+-- guessed, the same "the only real failure is ambiguity, named" discipline
+-- 'chooseRule'\/'AmbiguousRule' already established for rule selection.
+-- Each inner list is one competing full (slot-length) binding shape.
+newtype PoolAmbiguity = PoolAmbiguity [[Maybe EntityId]]
+
+-- | The unordered-pool counterpart to 'nextSlotCandidates': given a rule
+-- and a set of entities the caller has already picked without pinning
+-- them to slot positions, the first slot still open under whichever
+-- consistent binding the pool admits, and its candidates. Candidates are
+-- world-wide ('candidatesFor', via 'nextSlotCandidates' itself), not
+-- pool-restricted — a caller picking the *next* slot should see every real
+-- option, not just what they've already selected for a *different* slot.
+-- 'Left' when the pool itself admits more than one distinct binding shape
+-- ('maximalPoolAssignments'); the caller can fall back to
+-- 'nextSlotCandidates' with explicit positional hints to disambiguate by
+-- hand rather than have this guess for them. 'Right' 'Nothing' means the
+-- pool already fully explains the rule — nothing left to pick, same as
+-- 'nextSlotCandidates'\'s own 'Nothing'.
+nextSlotFromPool :: World -> [RuleSpec] -> RuleSpec -> [EntityId] -> Either PoolAmbiguity (Maybe (Int, Slot, [EntityDossier]))
+nextSlotFromPool w specs rs pool = case maximalPoolAssignments w (rsSlots rs) pool of
+  [shape] -> Right (nextSlotCandidates w specs rs shape)
+  [] -> Right (nextSlotCandidates w specs rs (replicate (length (rsSlots rs)) Nothing))
+  shapes -> Left (PoolAmbiguity shapes)

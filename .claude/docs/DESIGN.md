@@ -2898,3 +2898,231 @@ answered before anything touched `main`: it didn't — `Nothing` at every
 call site `richWorld` exercises costs zero extra RNG draws, confirmed by
 `cabal test` staying at 217/217 straight through the merge. `main` then
 fast-forwarded onto the merge commit cleanly, no further changes needed.
+
+## Decision 35: a cheap entity↔rule matching surface, exact matching deferred
+
+**Needed for:** the user's own framing of the next feature a future web
+app will need — a function that, given some entities, reports which
+`RuleSpec`s could use them, and a function that, given a rule and the
+slots already picked, reports which entities could fill the next one. The
+user explicitly accepted that a first cut doesn't need to be exact.
+
+**Chosen: two new pure query functions in `Historian.Engine`,
+`rulesFor`/`nextSlotCandidates`, built from logic that already existed in
+slightly different shapes rather than new machinery.** `rulesFor :: World
+-> [RuleSpec] -> [EntityId] -> [(RuleSpec, Int)]` generalizes
+`intelligentStep`'s own `StepEntities` `usefulness` scoring (which only
+checked `Kind`) to also check `slotConstraint`, matching `queryEntity`'s
+`edSatisfiesSlotOf` precision — a rule counts if some given entity
+matches some slot's `Kind` *and* constraint, considered alone, ranked by
+how many entities it could use. `nextSlotCandidates :: World ->
+[RuleSpec] -> RuleSpec -> [Maybe EntityId] -> Maybe (Int, Slot,
+[EntityDossier])` pulls `resolveAll`'s resolved-context threading out
+into a callable single step: given the same positional-hint shape
+`StepRule` already takes, find the first slot still `Nothing` and return
+`candidatesFor` there, in the context of whatever's already `Just`
+before it. Candidates come back as `EntityDossier`s (via `queryEntity`)
+rather than bare `EntityId`s, since the user's own framing was explicit
+that a web-app caller needs the entity typed (`Kind`, name) to display a
+picker, not just an id — no new type needed, `EntityDossier` already
+covers it.
+
+**Both are the same conservative, empty-context, single-slot-at-a-time
+check `runnable`/`edSatisfiesSlotOf` already accept, named explicitly as
+a limitation rather than treated as a hidden gap.** `rulesFor`'s
+per-entity match is checked in isolation, exactly like `runnable`'s own
+"every required slot has *a* candidate, considered on its own" — it can
+say a rule "matches" a set of entities that can't actually be jointly
+bound once real cross-slot dependency kicks in (a schism's heresiarch
+must belong to *this* schism's own society; `schismSpec`'s own
+`heresiarchConstraint` returns `False` outright on an empty `resolved`
+list, so a founder handed to `rulesFor` alone scores zero for `schism`
+even though the same founder qualifies immediately once the society is
+already resolved — proven directly by this decision's own test, not
+just described). The exact version — real backtracking across the given
+entity set so order-dependent constraints are actually honored — is
+planned, not built: `.claude/docs/plans/22-consistent-entity-rule-matching.md`.
+`nextSlotCandidates` doesn't have this gap for its *own* slot (it
+threads real resolved context exactly like `resolveAll`), but it also
+doesn't attempt any lookahead into what a *later* slot might additionally
+require of the candidate it returns for the current one — the same
+`candidatesFor`/`allAssignments` limitation Decision 23 itself already
+names, not a new one.
+
+**Not wired into `intelligentStep`/`StepEntities` at all — purely
+additive query functions, same discipline Decision 23 established for
+`Historian.Engine` from the start.** `StepEntities`'s own `usefulness`
+logic is left exactly as it was rather than rebased onto `rulesFor`,
+since the two currently answer close-but-different questions (`rulesFor`
+is "could this set be used," `StepEntities`'s own check is "could this
+set be used, *or* does the rule not need any of it at all" — it also
+counts self-sufficient rules) and rebasing one onto the other would
+reshuffle `intelligentStep`'s existing candidate weighting for zero
+warranted benefit here.
+
+**Verified with hand-built-world checks against the existing
+`engineWorld`/`schismSpec`/`sanctifySpec`, not a new world** — nothing
+asked of these two functions needed a shape `engineChecks`'s world didn't
+already have. Six new checks (`matchingChecks`): `rulesFor` finds both
+`schismSpec` and `sanctifySpec` for the lone society; `rulesFor` scores
+`schismSpec` at 0 for the founder alone and exactly 1 (not 2) for
+`[society, founder]` together, pinning down the named empty-context
+limitation above as an observed fact rather than a claim; and
+`nextSlotCandidates` finds the society as the first unresolved slot, then
+(once the society is hinted) finds the founder qualifies for the person
+slot — the direct contrast with `rulesFor`'s own empty-context miss on
+the same founder — and finally reports `Nothing` once every slot has a
+hint. `cabal test` 217 to 223 checks; no RNG-cascade concern, since
+nothing existing calls either new function.
+
+## Decision 35 follow-up: `poolAssignments`, the exact version of `rulesFor` (work queue item 22)
+
+**Needed for:** the user asking to build the plan Decision 35 itself
+deferred — `.claude/docs/plans/22-consistent-entity-rule-matching.md` —
+right after that decision landed, rather than leaving it queued.
+
+**Chosen: exactly the plan's own shape, no changes found necessary once
+actually built.** `poolAssignments :: World -> [Slot] -> [EntityId] ->
+[[Maybe EntityId]]`, a DFS over `rsSlots` in declared order that threads
+real `resolved` context the same way `resolveAll`/`allAssignments`
+already do, but draws each slot's candidates from a *shrinking pool*
+(`Data.List.delete` removes a chosen entity before recursing into the
+rest) instead of `candidatesFor`'s unbounded `entitiesOf` — that
+shrinking-pool-with-backtracking combination is the one piece
+`allAssignments` and `resolveAll` each individually lack: the former
+draws every slot independently from the whole world, the latter never
+backtracks once a slot's greedy pick turns out to foreclose a later one.
+`rulesFor` was rebuilt on top of it directly — same name and signature
+(`World -> [RuleSpec] -> [EntityId] -> [(RuleSpec, Int)]`) rather than
+shipping a parallel `rulesForExact`, per the plan's own "leaning toward
+outright replacement" call: grepped first and confirmed nothing outside
+`Historian.Engine` itself and this session's own tests called it, so
+there was nothing depending on the cheap version's specific (wrong)
+scoring to preserve.
+
+**The score itself changed meaning, not just gained accuracy: "most pool
+entities any single consistent binding can place at once"
+(`maximum (0 : [count of Justs | a <- poolAssignments w (rsSlots rs) es])`),
+not an independent per-entity sum.** Concretely on the exact example
+Decision 35's own tests already used: `rulesFor engineWorld [schismSpec]
+[engineSociety, engineFounder]` now scores **2**, not 1 — `poolAssignments`
+finds the binding that resolves the society first, at which point
+`heresiarchConstraint` (which returns `False` outright against an empty
+`resolved` list) correctly sees the founder qualifies. The founder-alone
+case is unchanged at 0, correctly — no binding exists that seats a Person
+into `schismSpec`'s Person slot without a Society resolved first, and
+`poolAssignments` doesn't invent an unbounded search to work around a
+pool that's genuinely missing what the rule needs; it only searches how
+the *given* pool distributes.
+
+**A second, dedicated hand-built world (`matchWorld`) was needed for the
+backtracking-proper test — `schismSpec` alone can't exercise it.**
+`schismSpec`'s two slots (`Society`, `Person`) never compete for the same
+pool entity, since they're different `Kind`s; the case that actually
+needs backtracking is two slots of the *same* `Kind` where an earlier
+choice can foreclose a later one, which is exactly `battleSpec`'s shape
+(Decision 23's own migration-batch note: its second slot's constraint
+"reaches back into the first slot's own resolved binding to check the
+pair actually holds"). `matchWorld` is three freshly-minted societies,
+only two of which (`matchA`/`matchB`) hold a real `Grievance` against
+each other, plus an unrelated third (`matchC`) standing in for "the
+irrelevant entity a real web-app selection would routinely include."
+Three checks: `poolAssignments`'s best `battleSpec` binding over
+`[matchC, matchA, matchB]` places 2, not fewer (proves the search finds
+the `(matchA, matchB)` pairing despite `matchC` sitting in the pool); no
+returned binding ever reuses the same pool entity across two slots
+(guards `delete`'s own correctness); and the best score is unchanged
+across two different orderings of the same pool (guards against an
+enumeration-order-dependent bug masquerading as a correct answer). `cabal
+test` 223 to 226 checks.
+
+**Both items 21 and 22's own explicitly-deferred lists stay deferred —
+nothing here reopened them.** `StepEntities`/`resolveAll` are untouched,
+on purpose (Decision 35's own §5 reasoning: rebasing the actual firing
+path onto a real search risks reshuffling `intelligentStep`'s existing
+weighting for a property nothing reported as broken); the unordered-pool
+shape of `nextSlotCandidates` (item 21's own §4) still has no caller
+asking for it; no size cap was added to `poolAssignments`'s search, since
+every real `rsSlots` list stays at 1-3 slots and nothing yet calls this
+from somewhere pool size isn't already bounded by a web form.
+
+## Decision 35, second follow-up: the two remaining named-but-deferred pieces, both built
+
+**Needed for:** the user asking to scope, then build, the two pieces the
+first follow-up above explicitly left named-but-not-done: the
+unordered-pool shape of `nextSlotCandidates`, and rebasing
+`StepEntities`/`resolveAll` onto the real search. Scoped first (in
+conversation, not a written plan file — both were judged small enough,
+and the second carried zero risk per the point below, that a full
+`.claude/docs/plans/` document wasn't warranted the way item 22's own
+first pass needed one), then built once the user confirmed.
+
+**`nextSlotFromPool`, the unordered-pool counterpart to
+`nextSlotCandidates`, resolves its one real design question — what to do
+when the pool admits more than one *shape* of maximal binding — by
+following a discipline this engine already has, not inventing a new one.**
+`maximalPoolAssignments :: World -> [Slot] -> [EntityId] -> [[Maybe
+EntityId]]` filters `poolAssignments`'s output down to the assignments
+tied for the highest `usedCount`, then dedupes by actual `(slot index,
+entity)` placement — two assignments differing only in which untouched
+optional slot stays `Nothing` aren't a real competing shape. Exactly one
+shape survives: delegate straight to `nextSlotCandidates` with that shape
+as positional hints (the two functions share their entire tail this way,
+no duplicated candidate-lookup logic). More than one shape survives: a
+genuinely ambiguous pool (built and confirmed directly — two entities
+that could each fill either of two symmetric, unconstrained slots).
+Rather than pick one arbitrarily, this is surfaced as `Left (PoolAmbiguity
+[[Maybe EntityId]])`, the same "the only real failure is ambiguity,
+named, never silently guessed" discipline `chooseRule`/`AmbiguousRule`
+already established for rule selection (Decision 23) — the caller falls
+back to positional `nextSlotCandidates` to disambiguate by hand. No
+production `RuleSpec` actually has the symmetric shape needed to trigger
+this branch (every real two-same-`Kind`-slot rule has a genuine
+distinguishing constraint, `battleSpec`'s grievance pair among them), so
+a small test-only `RuleSpec` (`ambiguitySpec`, two unconstrained optional
+`Person` slots) and a fourth hand-built world (`ambiguityWorld`, two
+plain people) were built specifically to exercise it — the only way to
+prove the branch is reachable at all, not just plausible by inspection.
+
+**`resolveAllExact`/`StepEntities` is the one place this session changed
+existing runtime behavior rather than adding a new pure query, and it
+carried zero risk doing it — checked, not assumed.** Grepped first (same
+discipline the `rulesFor`-replacement decision above used) and confirmed
+`StepEntities` had no call site anywhere — not `generate`/`step`, not
+`stepAutonomous`/wasm's `historian_step` (those only ever issue
+`StepAny`), not any existing test. So unlike every other "don't touch the
+firing path casually" caution this project's history repeats (Decision
+23's own `rulesFromSpecs`-vs-`rules` call, Decision 35's own §5), there
+was no existing weighting to protect. `resolveAllExact :: World -> [Slot]
+-> [EntityId] -> Chronicle [Maybe EntityId]` picks uniformly (via
+`pickOr`, the exact idiom `StepAny` already uses for its own tie-break)
+among `maximalPoolAssignments`'s shapes, then hands the winner to
+`resolveAll` as positional hints with an empty remaining pool — which
+means every slot the pool didn't cover still gets `resolveAll`'s
+ordinary world-wide pick/generate/omit fallback, unchanged. `StepEntities`'s
+rule-ranking also moved from the old Kind-only `usefulness` onto
+`bestPoolUse` (the same score `rulesFor` now uses), so the rule chosen is
+the one that can actually, jointly use the most of the pool, not just
+share a `Kind` with something in it.
+
+**Verified with a firing-level check, not just the pure functions
+underneath it** — `matchWorld`/`battleSpec` (already built for Decision
+35's first follow-up) reused directly: `intelligentStep [battleSpec]
+matchWorld (StepEntities [matchC, matchA, matchB])` reliably fires a
+battle between `matchA` and `matchB`, checked by extracting the actual
+`BattleOutcome` and confirming `matchC` never appears as victor or
+vanquished. `battleSpec`'s own two-slot symmetry (either `(matchA,
+matchB)` or `(matchB, matchA)` is a valid maximal binding, since
+`bConstraint`'s `min`/`max` normalization doesn't care which slot each
+landed in) means this check only asserts the *pair* is right, not a
+specific victor/vanquished order — the right thing to assert, since
+`fireBattle`'s own RNG (not slot assignment order) is what decides who
+wins. `cabal test` 226 to 230 checks (the ambiguity check, the two
+`nextSlotFromPool` checks, and this firing check).
+
+**Both items 21 and 22's own deferred lists are now fully closed** — the
+only things still explicitly out of scope are the ones named as such from
+the start and not reopened here: per-rule/per-society weighting of which
+`poolAssignments` shape gets picked (uniform via `pickOr` is the only
+policy built), and a defensive size cap on the search itself (still
+unneeded — every real `rsSlots` list stays at 1-3 slots).

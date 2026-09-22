@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (217 checks — seeds 1/2/3/42/99 for
+Builds and passes `cabal test` (230 checks — seeds 1/2/3/42/99 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-6000, precomputed once as `veryWideResults`, in parallel — see
@@ -553,6 +553,32 @@ unbuilt rule.
     weight profiles (every society currently shares one global `Tuning`),
     and parameterizing `commitOutcomes`'s own hardcoded `defaultTuning` —
     real follow-ups, not needed to answer whether the layer works at all.
+21. ~~A cheap entity↔rule matching query surface for a future web app.~~
+    Done — `Historian.Engine.rulesFor`/`nextSlotCandidates`. Given some
+    entities, `rulesFor` reports which `RuleSpec`s could use them; given a
+    rule and the slots already picked, `nextSlotCandidates` reports the
+    candidates for the first slot still open, as `EntityDossier`s. Purely
+    additive, not wired into `intelligentStep`. Deliberately the *cheap*
+    version — `rulesFor`'s own empty-context check can say a rule matches
+    a set that can't actually be bound jointly once order-dependent
+    constraints are considered. `.claude/docs/DESIGN.md` Decision 35.
+22. ~~The exact version of item 21.~~ Done — `Historian.Engine.poolAssignments`,
+    a backtracking search over how a given entity pool distributes across
+    a rule's slots; `rulesFor` rebuilt on top of it (same name/signature,
+    replacing the cheap version outright — nothing else called it).
+    Score is now "most pool entities one consistent binding can place at
+    once," not an independent per-entity count: `[society, founder]`
+    against `schismSpec` now correctly scores 2, not 1. Plan followed
+    as written: `.claude/docs/plans/22-consistent-entity-rule-matching.md`,
+    full account `.claude/docs/DESIGN.md` Decision 35's own follow-up.
+    **Both pieces the plan named as deliberately deferred are now built
+    too:** `nextSlotFromPool` (the unordered-pool counterpart to
+    `nextSlotCandidates`, surfacing a genuinely ambiguous pool as `Left
+    PoolAmbiguity` rather than guessing, `chooseRule`/`AmbiguousRule`'s
+    own discipline) and `resolveAllExact` (rebases `StepEntities` onto
+    the real search — the one place this touched actual firing behavior,
+    done with zero risk since nothing called `StepEntities` yet). Full
+    account: `.claude/docs/DESIGN.md` Decision 35's second follow-up.
 
 ## Things not to do
 
