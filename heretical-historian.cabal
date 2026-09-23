@@ -108,6 +108,8 @@ executable historian-wasm
       -optl-Wl,--export=historian_new_tuned
       -optl-Wl,--export=historian_default_tuning
       -optl-Wl,--export=historian_add_society
+      -optl-Wl,--export=historian_generate_word
+      -optl-Wl,--export=historian_generate_name
       -optl-Wl,--export=historian_step
       -optl-Wl,--export=historian_query
       -optl-Wl,--export=historian_rules_for

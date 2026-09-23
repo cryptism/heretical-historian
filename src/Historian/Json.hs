@@ -162,7 +162,51 @@ factJson w f =
     , "date" .= dateOf w (factEpoch f)
     , "source" .= unEventId (factSource f)
     , "attestedBy" .= fmap unEntityId (factAttestedBy f)
+    , "significance" .= significanceOf (factPred f)
     ]
+
+-- | How narratively load-bearing a fact tends to be, on a fixed 1-5 scale
+-- — a pure function of 'Predicate' alone, additive to the existing wire
+-- format (work item 24, Tier 1: @.claude/docs/plans/24-ttrpg-cult-export.md@
+-- §2). 'historian_query's dossier already returns every fact, oldest
+-- first, with no sense of which ones matter for a table-ready summary;
+-- scoring which predicates are rare or terminal is domain knowledge only
+-- this generator has (a fact about its own rule weights), so it stays
+-- here rather than asking a frontend to guess. A frontend sorts\/filters
+-- on this field itself to curate "major beats" — nothing here decides
+-- that, same "score, don't curate" split 'dossierJson' already draws for
+-- 'edSatisfiesSlotOf'. Hand-authored like 'predicateText', not derived
+-- from an actual rarity count across generated worlds — Tier 3's own
+-- fallback-chain logic (plan §5 Axis B) already leans on real per-cult
+-- facts for texture, so this only needs to be a reasonable ranking, not
+-- an exact one. 5 = pivotal/rare (a society or relic's permanent end, a
+-- death, a schism, a declared heretic); 1 = routine bookkeeping a dossier
+-- accumulates constantly (bare membership, a concept's intrinsic link).
+significanceOf :: Predicate -> Int
+significanceOf = \case
+  Founded -> 5
+  SplitFrom -> 5
+  Terminated -> 5
+  MergedInto -> 5
+  Slain -> 5
+  BattledAt -> 4
+  Heretic -> 4
+  Sanctified -> 4
+  Fulfilled -> 4
+  Prophesied -> 3
+  Revives -> 3
+  TrainedBy -> 2
+  Leads -> 2
+  Named -> 2
+  Grievance -> 2
+  Reconciled -> 2
+  Rivalry -> 2
+  Venerates -> 2
+  Shuns -> 2
+  Disavows -> 1
+  Disputes -> 1
+  LeaderOf -> 1
+  Embodies -> 1
 
 -- | Spelled out explicitly, not derived from 'Show': this is a wire format
 -- other programs will parse, so a future constructor rename shouldn't

@@ -3805,3 +3805,130 @@ already-verified stopping point, and the plan itself says as much
 ("Tier 1 alone is a completely acceptable, valuable stopping point").
 Left for a follow-up round rather than rushed alongside Tier 1 under the
 same time pressure that shaped this one.
+
+## Decision 45: TTRPG cult export, Tiers 1-2 — `significance`,
+`historian_generate_word`/`historian_generate_name`, and a practices/
+rituals corpus register
+
+**Needed for:** work item 24 (`.claude/docs/plans/24-ttrpg-cult-export.md`),
+Tiers 1-2 of the plan's own revised phasing — the significance-scored
+dossier field and the two seed-scoped generation primitives, plus the
+plan's own explicit third piece of Tier 2, "the practices/rituals corpus
+register content itself." Built by a fork dispatched once the plan file
+itself was refined and committed (`f5ea99e`) with the parent session's
+explicit direction not to touch Tier 3 (the interactive 3×d10 roller and
+fact-file assembly), which stays `hh-site`-side work for later.
+
+**Tier 1: `significance :: Int` is a hand-authored, pure function of
+`Predicate` alone (`Historian.Json.significanceOf`), wired into the
+existing `factJson`.** A 1-5 scale — 5 for pivotal/rare/terminal facts
+(`Founded`, `SplitFrom`, `Terminated`, `MergedInto`, `Slain`), 4 for
+dramatic-but-not-terminal ones (`BattledAt`, `Heretic`, `Sanctified`,
+`Fulfilled`), down to 1 for routine bookkeeping a dossier accumulates
+constantly regardless of anything notable happening (`LeaderOf`,
+`Embodies`). Additive to every existing consumer of `factJson`
+(`encodeWorld`, `encodeStepResult`, `dossierJson`) rather than scoped to
+just `historian_query`'s own shape — the plan's own text names
+`historian_query`'s dossier specifically, but `factJson` is one shared
+function across all three wire shapes, and there's no reason the batch
+and step-delta shapes shouldn't get the same additive field for free.
+Same "spelled out explicitly, not derived" discipline `predicateText`
+already established for this module — a hand-authored ranking, not one
+derived from an actual measured rarity count across generated worlds
+(the plan's own text calls this "optionally" rarity-weighted; a fixed,
+reasoned table was enough to answer whether the split works at all). A
+frontend sorts/filters on this field to curate "major beats" — nothing
+here decides that, matching the plan's "heretical-historian scores, the
+frontend curates" split.
+
+**Tier 2a: `historian_generate_word`/`historian_generate_name`, exactly
+the plan's own C signatures — handle-free, seed-scoped, never touching a
+live handle's `wGen`.** `Historian.World.generateWordSeeded`/
+`generateNameSeeded :: Int -> Maybe Culture -> Text` run `markovWord`/
+`syllableName` against a throwaway `emptyWorld seed` via `evalState`,
+the same fully-decorrelated-context technique `yearMonths`/
+`calendarParams` already use to keep the calendar off `wGen` (invariant
+8) — reused here one level up, at the stateful-handle boundary, for
+exactly the reason the plan itself gives: calling `markovWord` against a
+live `historian_new`/`historian_new_tuned` handle would consume a roll
+from that handle's own stream, silently perturbing whatever its *next*
+`historian_step` produces. `pickCulture` picks uniformly from
+`allCultures` for `Nothing`, the same fallback `genesis`/`addSociety`
+already use — `wasm/Main.hs`'s `decodeCultureArg` mirrors
+`historianAddSociety`'s own null-or-string JSON convention exactly (find
+by label, fall back rather than trap on `null`/unrecognised/malformed).
+Registered in `heretical-historian.cabal`'s wasm `--export=` list, same
+as every prior wasm addition — the established, previously-bitten-by
+gotcha (an unregistered export gets silently stripped by wasm-ld) this
+project already knows to check.
+
+**Tier 2b: a new practices/rituals corpus register
+(`Historian.Corpus.practiceFrames`) and fill function
+(`Historian.World.practiceText`), built but deliberately not yet wired
+to a third wasm export.** Template-fill, not a new Markov register
+(invariant 6): one `NonEmpty (Text -> Text)` list per `VoiceRegister`,
+the same lexical-substitution axis `foundingVoicing`/`miracleSaintVoicing`
+already establish, each frame a plain Haskell function splicing a
+caller-supplied `focus` in via `<>` concatenation — matching
+`themedItemName`/`baneName`'s own style rather than a printf-style
+placeholder, which this codebase has never used anywhere. `practiceText`
+picks one frame via `pick1` and fills it. This is real scope-resolution,
+not an oversight: the plan's own "Proposed shape" section (the later,
+explicitly-flagged-as-authoritative revision, "the single biggest change
+this round") lists only two new wasm functions as Tier 2's surface and
+says the practices *text* is `hh-site`'s own job to assemble, seasoned by
+calling the two generation primitives — but the plan's own "Suggested
+phasing" section, not fully reconciled with that later revision, still
+names "the practices/rituals corpus register content itself" as part of
+Tier 2, and the parent session's own dispatch directive for this fork
+repeated that phrasing directly. A genuinely useful `focus` argument is
+per-cult dossier data a caller must already have in hand (a patron
+`Concept`, a currently venerated/shunned Ward, a held relic's name) —
+that part stays frontend territory, matching "Proposed shape." But
+picking *which frame* needs an RNG roll, which raises the exact same
+cross-talk concern `historian_generate_word`/`historian_generate_name`
+were built seed-scoped to avoid — so a live-handle-based export would
+have been the wrong shape regardless. A seed-scoped
+`historian_practice_text` export is the obvious next step, but it would
+need a `VoiceRegister` to cross the wire for the first time ever
+(`entityJson` doesn't currently expose `entVoice` at all — nothing has
+needed a society's own voice register client-side before this), which is
+new wire-format surface the plan never sketched and this pass didn't
+invent unprompted. Built and tested as real corpus content now,
+deliberately left unreachable from wasm until that follow-up is actually
+designed — flagged here rather than silently dropped, and flagged again
+in the work queue below.
+
+**Verified with `cabal test` (284 → 296 checks, `ttrpgExportChecks`) and
+a real wasm build.** The new checks: every scanned fact's significance
+falls in the documented 1-5 range and is a pure function of predicate
+(every fact sharing a predicate shares a significance, checked across
+`aggregateSeeds` at `longSteps`) with specific top/bottom-of-scale spot
+checks (`Founded` at 5, `Embodies` at 1); `generateWordSeeded`/
+`generateNameSeeded` are deterministic for a fixed seed+culture, produce
+real text when the culture is unspecified, and actually consult the
+culture argument (not all cultures collapse to the same word/name for a
+fixed seed); `practiceText` always splices its focus in verbatim, for
+every `VoiceRegister`, and varies its chosen frame across seeds. No
+RNG-cascade fallout: every one of these three additions is either a pure
+function of existing wire data (`significanceOf`) or runs against a
+throwaway `emptyWorld`/never touches `Chronicle` at all from any live
+handle's perspective — `cabal test` passed clean on the first run,
+including the full `veryWideSeeds` scan, no witness-seed hunt needed.
+Cross-compiled via `wasm32-wasi-ghc`, patched, and exercised against a
+real Node WASI host (`wasm/verify.mjs`): the batch `generateJson` shape
+now carries `significance` on every fact; `historian_generate_word`/
+`historian_generate_name` are deterministic for a fixed seed/culture,
+produce real non-empty text, and `null`-culture falls back rather than
+trapping — checked with no `historian_new` call anywhere nearby, proving
+the handle-free contract holds in the actual compiled artifact, not just
+by type in the Haskell source.
+
+**Deliberately not attempted:** Tier 3 (the 3×d10 hook table, the
+interactive roller, and fact-file assembly) — explicitly out of scope for
+this fork, `hh-site`-side work for a follow-up once this interface is
+settled; a third wasm export for practice text (see Tier 2b above — real
+follow-up, blocked on a `VoiceRegister`-over-the-wire design decision
+nobody's made yet, not on anything built here); a Foundry-`RollTable`-
+shaped export (the plan's own Research section flags this as a good idea
+if Foundry interop ever becomes a real ask, never scoped into any tier).

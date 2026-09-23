@@ -4,10 +4,11 @@
 // item 21/22 query surface (historian_rules_for/historian_next_slot, plus
 // the historian_alloc/historian_dealloc pair that lets a host write a
 // CString argument onto this module's heap in the first place),
-// configurable Tuning (historian_default_tuning/historian_new_tuned), and
-// user-addable societies (historian_add_society) — see
-// .claude/docs/DESIGN.md Decision 7, its Decision 33 follow-up,
-// Decision 39, Decision 42, and Decision 44.
+// configurable Tuning (historian_default_tuning/historian_new_tuned),
+// user-addable societies (historian_add_society), and the seed-scoped
+// generation primitives (historian_generate_word/historian_generate_name)
+// — see .claude/docs/DESIGN.md Decision 7, its Decision 33 follow-up,
+// Decision 39, Decision 42, Decision 44, and Decision 45.
 //
 // Requires Node's WASI module (--experimental-wasi-unstable-preview1 not
 // needed on recent Node; the `WASI` import below is enough). Run with:
@@ -64,6 +65,10 @@ check(
   Array.isArray(genWorld.entities) && Array.isArray(genWorld.events) && Array.isArray(genWorld.facts),
 );
 check("generateJson(1, 5) actually produced entities", genWorld.entities.length > 0);
+check(
+  "every fact carries the new significance field, 1-5 (work item 24, Tier 1)",
+  genWorld.facts.length > 0 && genWorld.facts.every((f) => Number.isInteger(f.significance) && f.significance >= 1 && f.significance <= 5),
+);
 
 // --- the stateful handle: historian_new/step/query/free ---
 const handle = instance.exports.historian_new(42);
@@ -212,6 +217,25 @@ check(
 );
 
 instance.exports.historian_free(addHandle);
+
+// --- historian_generate_word / historian_generate_name (work item 24,
+// Tier 2) — handle-free, seed-scoped: no historian_new call anywhere near
+// these three checks, on purpose. ---
+const cultPtr = writeCString(JSON.stringify("Ghenzai"));
+const word1 = readCString(instance.exports.historian_generate_word(7, cultPtr));
+const word2 = readCString(instance.exports.historian_generate_word(7, cultPtr));
+instance.exports.historian_dealloc(cultPtr);
+check("historian_generate_word is deterministic for the same seed/culture", word1.length > 0 && word1 === word2);
+
+const cultPtr2 = writeCString(JSON.stringify("Ghenzai"));
+const name1 = readCString(instance.exports.historian_generate_name(7, cultPtr2));
+instance.exports.historian_dealloc(cultPtr2);
+check("historian_generate_name returns real, non-empty text", name1.length > 0);
+
+const nullCultPtr = writeCString("null");
+const wordFallback = readCString(instance.exports.historian_generate_word(9, nullCultPtr));
+instance.exports.historian_dealloc(nullCultPtr);
+check("historian_generate_word(seed, null) falls back to a random culture rather than trapping", wordFallback.length > 0);
 
 instance.exports.historian_free(handle);
 check("historian_free did not trap", true);

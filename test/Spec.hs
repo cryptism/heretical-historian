@@ -17,7 +17,7 @@ import Data.Maybe (catMaybes, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Historian.Corpus (constructedSiteNouns, hailWords, hollowtongue, meanderClauses, mundaneItems, mundanePersons, naturalSiteNouns, omissionTexts, siteNouns, vaurethine)
+import Historian.Corpus (allCultures, constructedSiteNouns, hailWords, hollowtongue, meanderClauses, mundaneItems, mundanePersons, naturalSiteNouns, omissionTexts, siteNouns, vaurethine)
 import Historian.Engine
 import Historian.Json (decodeTuningOverride, encodeQueryResult, encodeStepResult, encodeTuning, encodeWorld)
 import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice)
@@ -243,6 +243,22 @@ instance FromJSON WireDossier where
   parseJSON = withObject "Dossier" $ \o ->
     WireDossier <$> o .: "id" <*> o .: "facts" <*> o .: "satisfiesSlotOf"
 
+-- | Work item 24, Tier 1's own wire addition — enough of a fact to check
+-- 'Historian.Json.significanceOf' round-trips correctly: predicate name
+-- plus the new field.
+data WireFact = WireFact
+  { wfPredicate :: Text
+  , wfSignificance :: Int
+  }
+
+instance FromJSON WireFact where
+  parseJSON = withObject "Fact" $ \o -> WireFact <$> o .: "predicate" <*> o .: "significance"
+
+newtype WireWorldFacts = WireWorldFacts {unWireWorldFacts :: [WireFact]}
+
+instance FromJSON WireWorldFacts where
+  parseJSON = withObject "World" $ \o -> WireWorldFacts <$> o .: "facts"
+
 -- | A dying curse, not a normal prophecy: a 'Prophesied' fact whose omen
 -- is 'Shuns' — currently only 'Historian.Rules.fireDyingWords' ever
 -- produces one, since no 'prophecyFramings' line offers 'Shuns' as an
@@ -363,7 +379,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -1597,6 +1613,76 @@ addSocietyChecks =
       pure (o1, o2)
     oneFounding [Founding o] = o
     oneFounding _ = error "addSocietyChecks: addSociety didn't produce exactly one Founding outcome"
+
+-- | Work item 24 (@.claude/docs/plans/24-ttrpg-cult-export.md@), Tiers 1-2:
+-- the additive @significance@ wire field, the two seed-scoped generation
+-- primitives, and the new practices\/rituals corpus register.
+ttrpgExportChecks :: [(Bool, Text)]
+ttrpgExportChecks =
+  [
+    ( all (\f -> wfSignificance f >= 1 && wfSignificance f <= 5) allWireFacts
+    , "Wire: every fact's significance falls within the documented 1-5 range, across every seed scanned"
+    )
+  ,
+    ( all
+        (\preds -> length (nub (map wfSignificance preds)) == 1)
+        (M.elems (M.fromListWith (++) [(wfPredicate f, [f]) | f <- allWireFacts]))
+    , "Wire: significance is a pure function of predicate — every fact sharing a predicate shares a significance, across every seed scanned"
+    )
+  ,
+    ( any (\f -> wfPredicate f == "Founded" && wfSignificance f == 5) allWireFacts
+    , "Wire: a Founded fact is scored at the top of the significance scale"
+    )
+  ,
+    ( any (\f -> wfPredicate f == "Embodies" && wfSignificance f == 1) allWireFacts
+    , "Wire: an Embodies fact (intrinsic, asserted for every entity) is scored at the bottom of the significance scale"
+    )
+  , -- Seed-scoped generation primitives (plan §3): same seed and culture
+    -- always gives the same word\/name, and the culture argument is
+    -- actually consulted, not ignored.
+
+    ( all (\s -> generateWordSeeded s (Just hollowtongue) == generateWordSeeded s (Just hollowtongue)) [1 .. 10]
+    , "Direct: generateWordSeeded is deterministic for a fixed seed and culture"
+    )
+  ,
+    ( all (\s -> generateNameSeeded s (Just hollowtongue) == generateNameSeeded s (Just hollowtongue)) [1 .. 10]
+    , "Direct: generateNameSeeded is deterministic for a fixed seed and culture"
+    )
+  ,
+    ( not (any T.null [generateWordSeeded s Nothing | s <- [1 .. 20]])
+    , "Direct: generateWordSeeded (culture unspecified) always produces some text"
+    )
+  ,
+    ( not (any T.null [generateNameSeeded s Nothing | s <- [1 .. 20]])
+    , "Direct: generateNameSeeded (culture unspecified) always produces some text"
+    )
+  ,
+    ( length (nub [generateWordSeeded 1 (Just c) | c <- allCultures]) > 1
+    , "Direct: generateWordSeeded's culture argument is actually consulted — different cultures, same seed, don't all collapse to one word"
+    )
+  ,
+    ( length (nub [generateNameSeeded 1 (Just c) | c <- allCultures]) > 1
+    , "Direct: generateNameSeeded's culture argument is actually consulted, same shape as generateWordSeeded's own check"
+    )
+  , -- Practices/rituals corpus register (plan §3): every register
+    -- genuinely slots the caller-supplied focus in, for every voice.
+
+    ( all
+        (\(vr, seed) -> "the Gnawing Dark" `T.isInfixOf` evalState (practiceText vr "the Gnawing Dark") (emptyWorld seed))
+        [(vr, seed) | vr <- [Plain, Fervent, Grim], seed <- [1 .. 5]]
+    , "Direct: practiceText always splices the caller's focus into the rendered practice, for every VoiceRegister"
+    )
+  ,
+    ( length (nub [evalState (practiceText Grim "Fire") (emptyWorld s) | s <- [1 .. 20]]) > 1
+    , "Direct: practiceText varies its frame across seeds rather than always picking the same one"
+    )
+  ]
+  where
+    allWireFacts =
+      concat
+        [ maybe [] unWireWorldFacts (Aeson.decode (encodeWorld (generate s longSteps)))
+        | s <- aggregateSeeds
+        ]
 
 -- | Work queue item 15's wasm stateful-handle follow-up (.claude/docs/DESIGN.md
 -- Decision 33): 'Historian.Engine.intelligentStep's 'StepAny'\/

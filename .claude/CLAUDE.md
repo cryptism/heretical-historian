@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (284 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (296 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -188,6 +188,27 @@ exists, not memberless. `.claude/docs/DESIGN.md` Decision 44. `cabal
 test` 277 → 284. Tiers 2/3 (a named founder for an existing society; a
 founding narrative) are not started — plan:
 `.claude/docs/plans/23-user-configurable-societies.md`.
+
+Work item 24's Tiers 1-2 followed, as a dispatched fork once the plan
+itself was researched and revised (real open-format research — Datasworn,
+Foundry `RollTable`, Open5e, Perchance — landed in the plan file, not
+guessed): an additive `significance :: Int` field on every fact
+(`Historian.Json.significanceOf`, a hand-authored 1-5 scale keyed on
+`Predicate`); two handle-free, seed-scoped wasm generation primitives,
+`historian_generate_word`/`historian_generate_name`
+(`Historian.World.generateWordSeeded`/`generateNameSeeded`, run against a
+throwaway `emptyWorld` the same decorrelated-context way the calendar
+already keeps off `wGen`, invariant 8 — never perturbs a live handle's
+next `historian_step`); and a new practices/rituals corpus register
+(`Historian.Corpus.practiceFrames`/`Historian.World.practiceText`,
+template-fill per invariant 6, one list per `VoiceRegister`) — built and
+tested but deliberately not yet wired to a wasm export, since a live
+version would need `VoiceRegister` to cross the wire for the first time
+ever, a real follow-up nobody's designed yet. `.claude/docs/DESIGN.md`
+Decision 45. `cabal test` 284 → 296. **Tier 3 (the 3×d10 hook table, the
+interactive roller, fact-file assembly) is explicitly `hh-site`-side work
+for later, not started here.** Plan:
+`.claude/docs/plans/24-ttrpg-cult-export.md`.
 
 **`.claude/docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
@@ -680,6 +701,20 @@ unbuilt rule.
     citizen added to an existing society; an optional initial stance) and
     Tier 3 (a founding narrative) are not started.** Plan:
     `.claude/docs/plans/23-user-configurable-societies.md`.
+24. ~~A generic TTRPG "cult fact file" export, Tiers 1-2.~~ Done —
+    `Historian.Json.significanceOf` (an additive `significance` field on
+    every fact), `Historian.World.generateWordSeeded`/`generateNameSeeded`
+    plus wasm `historian_generate_word`/`historian_generate_name`
+    (handle-free, seed-scoped), and a new practices/rituals corpus
+    register (`Historian.Corpus.practiceFrames`/`Historian.World.
+    practiceText`, not yet wasm-exposed — see Decision 45 for why).
+    `.claude/docs/DESIGN.md` Decision 45. **Tier 3 (the 3×d10 hook table,
+    the interactive roller, fact-file assembly) is `hh-site`-side work,
+    not started here.** Also flagged as real follow-ups, not built:
+    wiring `historian_practice_text` onto the wasm boundary (needs
+    `VoiceRegister` to cross the wire for the first time — no design yet)
+    and a Foundry-`RollTable`-shaped export. Plan:
+    `.claude/docs/plans/24-ttrpg-cult-export.md`.
 
 ## Things not to do
 

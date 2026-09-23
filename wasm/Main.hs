@@ -36,7 +36,7 @@
 -- exported directly at the link level instead (@--export=hs_init@ in the
 -- cabal file); a host must call it before any function below is usable.
 -- See @.claude/docs/DESIGN.md@ Decision 7.
-module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianAddSociety, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
+module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianAddSociety, historianGenerateWord, historianGenerateName, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
 
 import Control.Monad.State.Strict (runState)
 import qualified Data.Aeson as Aeson
@@ -60,6 +60,7 @@ import Historian.Json (decodeTuningOverride, encodeNextSlotFromPool, encodeQuery
 import Historian.Render (commitOutcomes)
 import Historian.Rules (addSociety, generate, genesisWorld, genesisWorldWith, ruleSpecs)
 import Historian.Types (Culture (..), EntityId (..), FoundingOutcome (fdSociety), Outcome (Founding), World, defaultTuning)
+import Historian.World (generateNameSeeded, generateWordSeeded)
 
 foreign export ccall "generateJson" generateJson :: Int -> Int -> IO CString
 
@@ -145,6 +146,39 @@ decodeOptionalText :: BSL.ByteString -> Maybe Text
 decodeOptionalText bs = case Aeson.decode bs :: Maybe (Maybe Text) of
   Just (Just t) -> Just t
   _ -> Nothing
+
+foreign export ccall "historian_generate_word" historianGenerateWord :: Int -> CString -> IO CString
+
+-- | A single culture-flavored stem ('Historian.World.markovWord's own
+-- output shape), from a throwaway world seeded just for this call — see
+-- 'Historian.World.generateWordSeeded' for why this deliberately takes a
+-- plain @seed@ rather than a 'Handle' (work item 24, Tier 2). @cultureJson@
+-- follows 'historianAddSociety's own convention exactly: @null@, an
+-- unrecognised culture name, or malformed JSON all fall back to a culture
+-- picked uniformly at random.
+historianGenerateWord :: Int -> CString -> IO CString
+historianGenerateWord seed cultureJson = do
+  mCulture <- decodeCultureArg cultureJson
+  bsToCString (TE.encodeUtf8 (generateWordSeeded seed mCulture))
+
+foreign export ccall "historian_generate_name" historianGenerateName :: Int -> CString -> IO CString
+
+-- | 'historianGenerateWord', but 'Historian.World.syllableName's own
+-- componential "prefix + syllable chain + suffix" shape instead of a bare
+-- stem — see 'Historian.World.generateNameSeeded'.
+historianGenerateName :: Int -> CString -> IO CString
+historianGenerateName seed cultureJson = do
+  mCulture <- decodeCultureArg cultureJson
+  bsToCString (TE.encodeUtf8 (generateNameSeeded seed mCulture))
+
+-- | @cultureJson@ (null-or-string, per 'historianAddSociety's own
+-- convention) resolved against 'allCultures' by label — shared by
+-- 'historianGenerateWord'\/'historianGenerateName'.
+decodeCultureArg :: CString -> IO (Maybe Culture)
+decodeCultureArg cultureJson = do
+  cultureBs <- BS.packCString cultureJson
+  let mLabel = decodeOptionalText (BSL.fromStrict cultureBs)
+  pure (mLabel >>= \label -> find ((== label) . unCulture) allCultures)
 
 foreign export ccall "historian_step" historianStep :: Handle -> IO CString
 

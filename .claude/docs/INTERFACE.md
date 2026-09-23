@@ -66,6 +66,8 @@ void*  historian_new(int seed);                          // -> opaque handle, de
 void*  historian_new_tuned(int seed, const char* tuningJson); // -> opaque handle, caller-tuned
 char*  historian_default_tuning(void);                    // defaultTuning, encoded
 char*  historian_add_society(void* handle, const char* nameJson, const char* cultureJson);
+char*  historian_generate_word(int seed, const char* cultureJson);  // handle-free, seed-scoped
+char*  historian_generate_name(int seed, const char* cultureJson);  // handle-free, seed-scoped
 char*  historian_step(void* handle);                      // advances by exactly one step
 char*  historian_query(void* handle, int entityId);
 char*  historian_rules_for(void* handle, const char* poolJson);
@@ -111,6 +113,20 @@ along the way without re-marshaling the whole thing every call.
   Naming two societies the same thing is allowed, not rejected — the
   markov/syllable collision check is a generation-quality heuristic for
   auto-rolled names, not an invariant.
+- `historian_generate_word(seed, cultureJson)` /
+  `historian_generate_name(seed, cultureJson)`: a single culture-flavored
+  stem (`markovWord`'s own output shape) or componential name
+  (`syllableName`'s), from a throwaway world seeded just for this one call
+  — **deliberately take a plain `seed`, not a handle** (work item 24,
+  Tier 2: `.claude/docs/plans/24-ttrpg-cult-export.md`). Calling
+  `markovWord`/`syllableName` against a live handle would consume a roll
+  from *that* handle's own RNG stream, silently changing what its next
+  `historian_step` produces — these two exist so a host can generate
+  flavor text (e.g. for a table-ready fact file) without that risk.
+  `cultureJson` follows `historian_add_society`'s own convention exactly
+  — `null`, an unrecognised culture name, or malformed JSON all fall back
+  to a culture picked uniformly at random. Same seed and culture always
+  gives the same word/name.
 - `historian_step(handle)`: advances exactly one autonomous step
   (`stepAutonomous`, every `RuleSpec` in `ruleSpecs`, under whichever
   `Tuning` the handle's `World` itself carries) and returns only that
@@ -159,11 +175,17 @@ real Node WASI harness exercising every function above end to end).
 - **Event**: `id, epoch, date, kind, text (neutral), narratedText,
   narrator`. `text` is invariant-3's permanent neutral reading; `narrator`
   is `null` when nobody in particular is telling it.
-- **Fact**: `subject, predicate, object, epoch, date, source, attestedBy`.
-  `predicate` is spelled out explicitly (not derived `Show`) so a
-  constructor rename can't silently change the wire format. `object` is
-  one of `{entity}`, `{event}`, `{entity, omen}`, or `{name}` — mirroring
-  `Referent`'s four constructors (invariant 4).
+- **Fact**: `subject, predicate, object, epoch, date, source, attestedBy,
+  significance`. `predicate` is spelled out explicitly (not derived
+  `Show`) so a constructor rename can't silently change the wire format.
+  `object` is one of `{entity}`, `{event}`, `{entity, omen}`, or `{name}`
+  — mirroring `Referent`'s four constructors (invariant 4). `significance`
+  (work item 24, Tier 1) is a hand-authored `Int`, 1-5, a pure function of
+  `predicate` alone (`Historian.Json.significanceOf`) — 5 for
+  pivotal/rare/terminal facts (`Founded`, `SplitFrom`, `Terminated`,
+  `MergedInto`, `Slain`), down to 1 for routine bookkeeping (`LeaderOf`,
+  `Embodies`). A host sorts/filters on this to curate "major beats" for a
+  summary or fact-file view — nothing on this side decides that for it.
 - **RulesFor result** (`historian_rules_for`): a JSON array of `{rule,
   score}`, ranked highest score first — `rule` is the `RuleSpec`'s own
   `rsName`.

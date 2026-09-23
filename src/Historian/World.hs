@@ -295,6 +295,54 @@ ordinal n
 
 -- Naming ---------------------------------------------------------------
 
+-- | A culture picked uniformly at random from 'allCultures' — the same
+-- fallback 'genesis'\/'addSociety' already use for an unspecified
+-- culture, reused here so 'generateWordSeeded'\/'generateNameSeeded' pick
+-- one the same way rather than inventing a second convention.
+pickCulture :: Maybe Culture -> Chronicle Culture
+pickCulture = maybe (pickOr vaurethine allCultures) pure
+
+-- | 'markovWord', run against a throwaway world freshly seeded just for
+-- this one call rather than a live handle's — the wasm boundary's
+-- @historian_generate_word@ (work item 24, Tier 2:
+-- @.claude/docs/plans/24-ttrpg-cult-export.md@ §3). Calling 'markovWord'
+-- against a live @historian_new@\/@historian_new_tuned@ handle would
+-- consume a roll from that world's own 'wGen', silently changing what its
+-- *next* @historian_step@ produces — exactly the cross-talk invariant 5
+-- (@generate@ stays a pure function of its seed) exists to prevent, one
+-- level up at the stateful-handle boundary. 'emptyWorld' gives a fully
+-- decorrelated context here the same way 'yearMonths'\/'calendarParams'
+-- already keep the calendar decorrelated from history generation
+-- (invariant 8) — same seed, same word, every time, and never touches any
+-- live handle's own stream.
+generateWordSeeded :: Int -> Maybe Culture -> Text
+generateWordSeeded seed mCulture =
+  evalState (pickCulture mCulture >>= markovWord) (emptyWorld seed)
+
+-- | 'syllableName', seed-scoped the same way 'generateWordSeeded' is —
+-- see its own comment for why this can't run against a live handle.
+generateNameSeeded :: Int -> Maybe Culture -> Text
+generateNameSeeded seed mCulture =
+  evalState (pickCulture mCulture >>= syllableName) (emptyWorld seed)
+
+-- | One line describing a cult's day-to-day practice — picks a frame from
+-- 'Historian.Corpus.practiceFrames' for the given 'VoiceRegister' and
+-- splices in @focus@, whatever a caller already knows about the cult (its
+-- patron 'Concept', a currently venerated\/shunned Ward, or a held
+-- relic's name — 'Historian.Engine.queryEntity's own dossier already
+-- carries all three). Work item 24, Tier 2 (plan §3) — not yet wired to
+-- the wasm boundary: unlike 'generateWordSeeded'\/'generateNameSeeded',
+-- which need nothing but a seed and an optional culture, a genuinely
+-- useful @focus@ is per-cult dossier data a caller must already have in
+-- hand, and 'VoiceRegister' itself doesn't cross the wire format yet
+-- (no 'Entity' field exposes 'entVoice' — see @.claude/docs/plans/
+-- 24-ttrpg-cult-export.md@). Built and tested now as real corpus content,
+-- ready for that follow-up rather than invented ad hoc later.
+practiceText :: VoiceRegister -> Text -> Chronicle Text
+practiceText vr focus = do
+  frame <- pick1 (practiceFrames vr)
+  pure (frame focus)
+
 -- | Draw a stem from the culture's chain, rejecting stubs and anything that
 -- collides with an existing name. Bounded retries so it always terminates.
 markovWord :: Culture -> Chronicle Text

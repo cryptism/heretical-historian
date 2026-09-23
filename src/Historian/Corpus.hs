@@ -743,6 +743,46 @@ bynames =
   , "One-Eye"
   ]
 
+-- | A cult's day-to-day practice or ritual — template-fill, not a new
+-- Markov register (invariant 6: Markov output is for proper-noun stems
+-- only, never sentences), one function per frame taking whatever's
+-- already known about the cult (its patron 'Concept', a currently
+-- venerated\/shunned Ward, or a held relic's name — 'Historian.World.
+-- practiceText's caller picks which) and splicing it in, same
+-- concatenation style 'Historian.World.themedItemName'\/'baneName'
+-- already use rather than a printf-style placeholder. One list per
+-- 'VoiceRegister', the same lexical-substitution axis 'foundingVoicing'\/
+-- 'miracleSaintVoicing' already establish — a 'Fervent' cult's practices
+-- read more devout, a 'Grim' cult's read starker, around the same
+-- underlying slot. Work item 24, Tier 2:
+-- @.claude/docs/plans/24-ttrpg-cult-export.md@ §3.
+practiceFrames :: VoiceRegister -> NonEmpty (Text -> Text)
+practiceFrames = \case
+  Plain ->
+    (\f -> "They keep a small shrine to " <> f <> " in every household.")
+      :| [ \f -> "Newcomers are asked to name " <> f <> " before they may speak in council."
+         , \f -> "Every gathering opens with a recitation naming " <> f <> "."
+         , \f -> "They mark the turning of each season by invoking " <> f <> "."
+         , \f -> "A portion of every meal is set aside for " <> f <> "."
+         , \f -> "Disputes among them are settled by an oath sworn on " <> f <> "."
+         ]
+  Fervent ->
+    (\f -> "They burn offerings to " <> f <> " at every new moon.")
+      :| [ \f -> "Novices are branded with a sign of " <> f <> " before they may join."
+         , \f -> "They march in procession, chanting the name of " <> f <> ", on the high days."
+         , \f -> "Every vow taken among them is sworn upon " <> f <> "."
+         , \f -> "They fast for three days before speaking of " <> f <> " aloud."
+         , \f -> "The faithful scar themselves in the shape of " <> f <> " to mark their devotion."
+         ]
+  Grim ->
+    (\f -> "They cut a mark into the door lintel for " <> f <> " and never explain why.")
+      :| [ \f -> "The dying are carried past a shrine to " <> f <> " before burial."
+         , \f -> "They keep silence on the anniversary of whatever wronged " <> f <> "."
+         , \f -> "Debts among them are settled in the name of " <> f <> ", never in coin."
+         , \f -> "Children are not told of " <> f <> " until they've lost someone."
+         , \f -> "They bury a coin with every dead, an old debt owed to " <> f <> "."
+         ]
+
 -- | Calendar month names are "{adjective} {noun}", with an optional
 -- trailing ", {epithet}" — "Dancing Butcher" or "Eastern Child, Turning".
 -- Deliberately a different register from the society/site word lists
