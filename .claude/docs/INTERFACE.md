@@ -65,9 +65,11 @@ steps at once and let me read the result."
 void*  historian_new(int seed);                          // -> opaque handle, defaultTuning
 void*  historian_new_tuned(int seed, const char* tuningJson); // -> opaque handle, caller-tuned
 char*  historian_default_tuning(void);                    // defaultTuning, encoded
-char*  historian_add_society(void* handle, const char* nameJson, const char* cultureJson);
+char*  historian_add_society(void* handle, const char* optionsJson);
+char*  historian_add_person(void* handle, int societyId, const char* nameJson);
 char*  historian_generate_word(int seed, const char* cultureJson);  // handle-free, seed-scoped
 char*  historian_generate_name(int seed, const char* cultureJson);  // handle-free, seed-scoped
+char*  historian_practice_text(int seed, const char* voiceJson, const char* focus); // handle-free, seed-scoped
 char*  historian_step(void* handle);                      // advances by exactly one step
 char*  historian_query(void* handle, int entityId);
 char*  historian_rules_for(void* handle, const char* poolJson);
@@ -94,25 +96,55 @@ along the way without re-marshaling the whole thing every call.
   this first to learn every tunable field and its default value before
   building a UI that sends a partial override to `historian_new_tuned`.
   See §4's wire shape.
-- `historian_add_society(handle, nameJson, cultureJson)`: founds a society
-  on the handle's own world under a caller-supplied name and/or culture
-  (Decision 44, `.claude/docs/plans/23-user-configurable-societies.md`'s
-  Tier 1) instead of only ever getting an auto-rolled one. Both arguments
-  are JSON — either the literal `null` or a bare string, e.g.
-  `historian_add_society(h, "\"The Whispering Order\"", "\"Ghenzai\"")`.
-  `cultureJson` is matched case-sensitively against an existing culture's
-  own label; `null`, an unrecognised culture name, or malformed JSON for
-  either argument falls back to the same default `genesis` itself uses
-  (an auto-generated name; a culture picked uniformly at random) rather
-  than trapping. Still mints an ordinary auto-generated founder and
-  commits through the same `Founding` outcome shape `genesis` uses, so the
-  new society gets the same voiced narration as any other founding and is
-  immediately eligible for every rule (coronation, miracle sainthood,
-  merger, everything) exactly like a generated one. Returns the new
-  society's own dossier — the same shape `historian_query` returns.
-  Naming two societies the same thing is allowed, not rejected — the
-  markov/syllable collision check is a generation-quality heuristic for
-  auto-rolled names, not an invariant.
+- `historian_add_society(handle, optionsJson)`: founds a society on the
+  handle's own world under caller-supplied options instead of only ever
+  getting a fully auto-rolled one — Decision 44 (Tier 1: name/culture) and
+  Decision 48 (Tiers 2-3: an initial stance, a founding declaration),
+  `.claude/docs/plans/23-user-configurable-societies.md`. `optionsJson` is
+  **one JSON object**, every key optional and independently defaulted —
+  a missing key, `null`, or the whole argument failing to parse as an
+  object at all are all treated alike, per-field, same discipline
+  `historian_new_tuned`'s own `tuningJson` already established (this
+  replaced an earlier two-positional-argument shape once the field count
+  grew past two, rather than bolting more positional args onto it):
+  ```json
+  { "name": "The Whispering Order",   // string, or omit/null to auto-generate
+    "culture": "Ghenzai",             // matched case-sensitively; unrecognised/omitted -> random
+    "ward": 5,                        // an existing entity id to Venerates/Shuns from founding
+    "regard": "Venerated",            // "Venerated" | "Shunned"; only matters with ward; defaults to "Venerated"
+    "purpose": "For the glory of..."  // free text, appended to the rendered founding as a declaration
+  }
+  ```
+  `ward` only records a stance when it resolves to a real entity in the
+  handle's *current* world — an id that doesn't resolve is silently
+  dropped, not trapped. `purpose` rides through voice substitution and
+  `applyIdiosyncrasies` exactly like the rest of the founding's own
+  sentence (Decision 47's `AText` machinery covers it automatically,
+  since it's just more text in the same `Outcome`'s rendering — no new
+  `Outcome` case needed). Still mints an ordinary auto-generated founder
+  and commits through the same `Founding` outcome shape `genesis` uses,
+  so the new society gets the same voiced narration as any other founding
+  and is immediately eligible for every rule (coronation, miracle
+  sainthood, merger, everything) exactly like a generated one. Returns
+  the new society's own dossier — the same shape `historian_query`
+  returns. Naming two societies the same thing is allowed, not rejected —
+  the markov/syllable collision check is a generation-quality heuristic
+  for auto-rolled names, not an invariant.
+- `historian_add_person(handle, societyId, nameJson)`: adds a named
+  founder/citizen to an *existing*, active society (work item 23, Tier 2,
+  Decision 48) — `societyId` a bare entity id (not JSON-wrapped, same
+  convention `historian_query` uses), `nameJson` null-or-string. Records
+  the same `Leads`/`LeaderOf` claims a fresh schism heresiarch gets, so
+  the new person is a real member from the start (coronable, sainthood-
+  eligible, everything). Deliberately **not** a full voiced `Outcome` the
+  way `historian_add_society` is — recorded as a plain, unvoiced "backstory"-
+  style event (same register `backfillWard`'s own administrative events
+  already use), since this is bookkeeping ("this person is now a member"),
+  not a dramatic narrative beat. Returns the new person's own dossier, or
+  JSON `null` when `societyId` doesn't resolve to a real, currently active
+  society — there's no sensible fallback entity to add a person to
+  instead, so this is the one call in the family that can genuinely do
+  nothing.
 - `historian_generate_word(seed, cultureJson)` /
   `historian_generate_name(seed, cultureJson)`: a single culture-flavored
   stem (`markovWord`'s own output shape) or componential name
@@ -123,10 +155,21 @@ along the way without re-marshaling the whole thing every call.
   from *that* handle's own RNG stream, silently changing what its next
   `historian_step` produces — these two exist so a host can generate
   flavor text (e.g. for a table-ready fact file) without that risk.
-  `cultureJson` follows `historian_add_society`'s own convention exactly
-  — `null`, an unrecognised culture name, or malformed JSON all fall back
-  to a culture picked uniformly at random. Same seed and culture always
-  gives the same word/name.
+  `cultureJson` follows `historian_add_society`'s own `culture`-field
+  convention exactly — `null`, an unrecognised culture name, or malformed
+  JSON all fall back to a culture picked uniformly at random. Same seed
+  and culture always gives the same word/name.
+- `historian_practice_text(seed, voiceJson, focus)`: a single practice/
+  ritual line (`Historian.World.practiceText`'s own output), handle-free
+  and seed-scoped the same way and for the same reason as the two
+  functions above (work item 24's wasm boundary, closed out). `voiceJson`
+  is null-or-string (`"Plain"`/`"Fervent"`/`"Grim"`), falling back to
+  `"Plain"` specifically — not a random register — on `null`, an
+  unrecognised label, or malformed JSON; `focus` is a **bare string, not
+  JSON-encoded** (free text a caller already has in hand — a patron
+  concept's name, a venerated ward's, a held relic's — matching
+  `historian_next_slot`'s own `ruleName` convention rather than
+  `cultureJson`'s). Same seed/voice/focus always gives the same line.
 - `historian_step(handle)`: advances exactly one autonomous step
   (`stepAutonomous`, every `RuleSpec` in `ruleSpecs`, under whichever
   `Tuning` the handle's `World` itself carries) and returns only that

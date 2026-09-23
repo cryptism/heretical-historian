@@ -343,6 +343,17 @@ practiceText vr focus = do
   frame <- pick1 (practiceFrames vr)
   pure (frame focus)
 
+-- | 'practiceText', seed-scoped the same way 'generateWordSeeded'\/
+-- 'generateNameSeeded' are — the follow-up those two's own comment named:
+-- 'entVoice' now reaches the wire as \"voice\" on 'Entity' (Decision 46),
+-- so a caller has everything it needs to supply both arguments itself
+-- (a queried society's own 'voice' field, and whatever @focus@ text it
+-- already has in hand — a patron concept, a venerated ward, a held
+-- relic's name). Work item 24's wasm boundary, closed out:
+-- @historian_practice_text@.
+practiceTextSeeded :: Int -> VoiceRegister -> Text -> Text
+practiceTextSeeded seed vr focus = evalState (practiceText vr focus) (emptyWorld seed)
+
 -- | Draw a stem from the culture's chain, rejecting stubs and anything that
 -- collides with an existing name. Bounded retries so it always terminates.
 markovWord :: Culture -> Chronicle Text
@@ -801,11 +812,27 @@ generateCultFor ward = do
   pure cult
 
 newPerson :: Culture -> Chronicle EntityId
-newPerson c = do
-  stem <- syllableName c
-  bn <- pickOr "the Silent" bynames
-  useByname <- coin
-  p <- mint Person c (if useByname then stem <> " " <> bn else stem) defaultMintOptions
+newPerson c = newPersonNamed c Nothing
+
+-- | 'newPerson', but with an optional caller-supplied name in place of
+-- the auto-rolled stem+byname — the wasm boundary's @historian_add_person@
+-- (work item 23, Tier 2: @.claude/docs/plans/23-user-configurable-societies.md@),
+-- letting a host name a founder\/citizen of their own choosing the same
+-- way 'newSocietyNamed' already does for a society (Decision 44). Still
+-- runs 'backfillWard', still flows through 'mint' into 'wNameSubstrings'
+-- (Decision 40) — a user-named person is indistinguishable from a
+-- generated one to every existing rule the moment it exists, same
+-- reasoning as 'newSocietyNamed's own Haddock.
+newPersonNamed :: Culture -> Maybe Text -> Chronicle EntityId
+newPersonNamed c mName = do
+  name <- case mName of
+    Just n -> pure n
+    Nothing -> do
+      stem <- syllableName c
+      bn <- pickOr "the Silent" bynames
+      useByname <- coin
+      pure (if useByname then stem <> " " <> bn else stem)
+  p <- mint Person c name defaultMintOptions
   w <- get
   backfillWard (wTuning w) (tnBackfillMaxDepth (wTuning w)) p
   pure p

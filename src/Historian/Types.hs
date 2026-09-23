@@ -262,6 +262,19 @@ data FoundingOutcome = FoundingOutcome
   -- rather than re-derived from a concept id at commit time, since
   -- nothing about the freshly-minted patron concept is looked-up-able via
   -- 'World' before its own claims are recorded.
+  , fdPurpose :: Maybe Text
+  -- ^ An optional caller-supplied founding declaration — work item 23,
+  -- Tier 3 (@.claude/docs/plans/23-user-configurable-societies.md@),
+  -- the plan's own deferred "does a founding narrative get its own
+  -- 'Outcome' case, does it participate in voice\/idiosyncrasy" question,
+  -- answered here: no new case, folded into the existing 'Founding'
+  -- rendering as an appended clause ('Historian.Render.renderNeutral'\/
+  -- 'renderWithVoice'), so it rides through voice substitution and
+  -- 'Historian.Render.applyIdiosyncrasies' exactly like the rest of the
+  -- sentence — the user's own words, still subject to the same shouting\/
+  -- hailing\/meandering\/omission a generated founding gets. 'Nothing' for
+  -- every auto-generated founding (genesis, schism, merger); only
+  -- @historian_add_society@ can ever supply one.
   }
 
 data SchismOutcome = SchismOutcome

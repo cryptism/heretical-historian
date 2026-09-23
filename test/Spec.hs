@@ -22,6 +22,7 @@ import Historian.Engine
 import Historian.Json (decodeTuningOverride, encodeQueryResult, encodeStepResult, encodeTuning, encodeWorld)
 import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, mention, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice, toUpperA)
 import Historian.Rules (
+  addPerson,
   addSociety,
   apprenticeshipClaim,
   assassinateSpec,
@@ -1120,7 +1121,7 @@ backdatedChecks =
 -- deterministic and self-contained, no dependence on which entities
 -- 'richWorld' happens to already carry a matching event for.
 sampleFounding, sampleSchismFresh, sampleMiracleSaint :: Outcome
-sampleFounding = Founding (FoundingOutcome rS0 rP0 [])
+sampleFounding = Founding (FoundingOutcome rS0 rP0 [] Nothing)
 sampleSchismFresh = Schism (SchismOutcome rS0 rP1 True rS1 [])
 sampleMiracleSaint = MiracleSaint (MiracleSaintOutcome rS0 rSt0 rP1 True Nothing [])
 
@@ -1638,6 +1639,62 @@ addSocietyChecks =
     ( entName (wEntities dupWorld M.! fdSociety dupO1) == entName (wEntities dupWorld M.! fdSociety dupO2)
     , "Direct: addSociety allows two societies to share the same caller-supplied name without rejecting either"
     )
+  , -- Work item 23, Tier 2: a named founder/citizen added to an existing
+    -- society, and addSociety's own optional initial stance.
+
+    ( entName (wEntities personWorld M.! newPersonId) == "Vane the Unbroken"
+    , "Direct: newPersonNamed with a supplied name uses it verbatim"
+    )
+  ,
+    ( case runState (addPerson (fdSociety addedOutcome) (Just "Vane the Unbroken")) addedWorld of
+        (Just p, w') -> currentLeader w' (fdSociety addedOutcome) == Just p || any (\f -> factSubject f == p && factPred f == Leads) (wFacts w')
+        (Nothing, _) -> False
+    , "Direct: addPerson on a real active society adds a real member (Leads/LeaderOf), eligible from the start"
+    )
+  ,
+    ( isNothing (evalState (addPerson (EntityId 99999) Nothing) addedWorld)
+    , "Direct: addPerson on a nonexistent/inactive society id does nothing rather than trapping"
+    )
+  ,
+    ( case stancedOutcomes of
+        [Founding o] -> any (\f -> factSubject f == fdSociety o && factPred f == Venerates && factObject f == Just (ROf stanceWard)) (wFacts stancedWorld)
+        _ -> False
+    , "Direct: addSociety's stance argument records a real Venerates claim from the moment of founding when the ward exists"
+    )
+  ,
+    ( case bogusStanceOutcomes of
+        [Founding o] -> not (any (\f -> factSubject f == fdSociety o && factObject f == Just (ROf (EntityId 88888))) (wFacts bogusStanceWorld))
+        _ -> False
+    , "Direct: addSociety silently drops a stance whose ward id doesn't resolve to any real entity, rather than trapping"
+    )
+  , -- Work item 23, Tier 3: an optional founding declaration, folded into
+    -- the existing Founding rendering rather than a new Outcome case.
+
+    ( case purposedOutcomes of
+        [Founding o] -> fdPurpose o == Just "For the glory of the Ember Choir"
+        _ -> False
+    , "Direct: addSociety's purpose argument reaches FoundingOutcome's own fdPurpose field"
+    )
+  ,
+    ( case purposedOutcomes of
+        [Founding o] -> "For the glory of the Ember Choir" `T.isInfixOf` atText (renderNeutral purposedWorld (Founding o))
+        _ -> False
+    , "Direct: a founding purpose actually appears in the rendered neutral reading"
+    )
+  ,
+    ( case purposedOutcomes of
+        [Founding o] -> case voiceOf purposedWorld (fdSociety o) of
+          Just v -> "For the glory of the Ember Choir" `T.isInfixOf` atText (renderWithVoice purposedWorld v (Founding o))
+          Nothing -> True
+        _ -> False
+    , "Direct: a founding purpose survives voice substitution too, verbatim"
+    )
+  ,
+    ( case noPurposeOutcomes of
+        [Founding o] -> isNothing (fdPurpose o) && not ("declare:" `T.isInfixOf` atText (renderNeutral noPurposeWorld (Founding o)))
+        _ -> False
+    , "Direct: addSociety with no purpose leaves fdPurpose Nothing and adds no declaration clause at all"
+    )
   ]
   where
     namedSociety :: EntityId
@@ -1646,15 +1703,28 @@ addSocietyChecks =
     unnamedSociety :: EntityId
     (unnamedSociety, unnamedWorld) =
       let ((s, _), w) = runState (newSocietyNamed vaurethine Nothing) (emptyWorld 1) in (s, w)
-    (addedOutcomes, addedWorld) = runState (addSociety (Just "The Whispering Order") (Just hollowtongue) >>= \os -> os <$ commitOutcomes os) (emptyWorld 2)
-    (defaultAddedOutcomes, _) = runState (addSociety Nothing Nothing >>= \os -> os <$ commitOutcomes os) (emptyWorld 3)
+    (addedOutcomes, addedWorld) = runState (addSociety (Just "The Whispering Order") (Just hollowtongue) Nothing Nothing >>= \os -> os <$ commitOutcomes os) (emptyWorld 2)
+    (defaultAddedOutcomes, _) = runState (addSociety Nothing Nothing Nothing Nothing >>= \os -> os <$ commitOutcomes os) (emptyWorld 3)
     ((dupO1, dupO2), dupWorld) = runState addTwoSameNamed (emptyWorld 4)
     addTwoSameNamed = do
-      o1 <- oneFounding <$> (addSociety (Just "The Sundered Flame") Nothing >>= \os -> os <$ commitOutcomes os)
-      o2 <- oneFounding <$> (addSociety (Just "The Sundered Flame") Nothing >>= \os -> os <$ commitOutcomes os)
+      o1 <- oneFounding <$> (addSociety (Just "The Sundered Flame") Nothing Nothing Nothing >>= \os -> os <$ commitOutcomes os)
+      o2 <- oneFounding <$> (addSociety (Just "The Sundered Flame") Nothing Nothing Nothing >>= \os -> os <$ commitOutcomes os)
       pure (o1, o2)
     oneFounding [Founding o] = o
     oneFounding _ = error "addSocietyChecks: addSociety didn't produce exactly one Founding outcome"
+    newPersonId :: EntityId
+    (newPersonId, personWorld) =
+      let (p, w) = runState (newPersonNamed hollowtongue (Just "Vane the Unbroken")) (emptyWorld 1) in (p, w)
+    addedOutcome = oneFounding addedOutcomes
+    stanceWard = fdFounder addedOutcome
+    (stancedOutcomes, stancedWorld) =
+      runState (addSociety (Just "The Ember Choir") Nothing (Just (stanceWard, Venerated)) Nothing >>= \os -> os <$ commitOutcomes os) addedWorld
+    (bogusStanceOutcomes, bogusStanceWorld) =
+      runState (addSociety (Just "The Hollow Rite") Nothing (Just (EntityId 88888, Venerated)) Nothing >>= \os -> os <$ commitOutcomes os) (emptyWorld 5)
+    (purposedOutcomes, purposedWorld) =
+      runState (addSociety (Just "The Ember Choir") Nothing Nothing (Just "For the glory of the Ember Choir") >>= \os -> os <$ commitOutcomes os) (emptyWorld 6)
+    (noPurposeOutcomes, noPurposeWorld) =
+      runState (addSociety (Just "The Quiet Choir") Nothing Nothing Nothing >>= \os -> os <$ commitOutcomes os) (emptyWorld 7)
 
 -- | Work item 24 (@.claude/docs/plans/24-ttrpg-cult-export.md@), Tiers 1-2:
 -- the additive @significance@ wire field, the two seed-scoped generation
@@ -1717,6 +1787,17 @@ ttrpgExportChecks =
   ,
     ( length (nub [evalState (practiceText Grim "Fire") (emptyWorld s) | s <- [1 .. 20]]) > 1
     , "Direct: practiceText varies its frame across seeds rather than always picking the same one"
+    )
+  , -- Seed-scoped historian_practice_text (work item 24, wasm export
+    -- closed out): same determinism/focus-splicing guarantees as
+    -- practiceText itself, now over a plain seed.
+
+    ( all (\s -> practiceTextSeeded s Grim "the Hollow King" == practiceTextSeeded s Grim "the Hollow King") [1 .. 10]
+    , "Direct: practiceTextSeeded is deterministic for a fixed seed, voice, and focus"
+    )
+  ,
+    ( all (\(vr, s) -> "the Hollow King" `T.isInfixOf` practiceTextSeeded s vr "the Hollow King") [(vr, s) | vr <- [Plain, Fervent, Grim], s <- [1 .. 5]]
+    , "Direct: practiceTextSeeded always splices the caller's focus in, for every VoiceRegister"
     )
   , -- entVoice on the wire (plan §5): needed so a frontend can pick a
     -- register-flavored Axis A variant for the society it actually queried.

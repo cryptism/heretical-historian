@@ -4117,3 +4117,108 @@ work) — facts already cross the wire as structured `subject`/`predicate`/
 `object` data, never as prose a frontend has to re-parse, so they never
 had the problem this decision solves. `hh-site`'s own `linkify` rewrite
 to consume the new fields is separate frontend work, not attempted here.
+
+## Decision 48: User-configurable societies, Tiers 2-3 — a named founder for an existing society, an initial stance, and a founding declaration
+
+**Needed for:** work item 23's own Tiers 2-3
+(`.claude/docs/plans/23-user-configurable-societies.md`), finished off at
+direct user request alongside item 24's last wasm export and the
+Foundry-`RollTable`-shaped export's explicit decline.
+
+**Tier 2a: `historian_add_person(handle, societyId, nameJson)` — a named
+founder/citizen for an *existing*, active society.**
+`Historian.World.newPersonNamed :: Culture -> Maybe Text -> Chronicle
+EntityId` mirrors `newSocietyNamed`'s own shape exactly (auto-roll a
+stem+byname only when the override is `Nothing`, still flows through
+`mint`/`wNameSubstrings`). `Historian.Rules.addPerson` records the same
+`LeaderOf`/`Leads` pair `fireSchism` already gives a fresh heresiarch, so
+the new person is a real member from the start — coronable, sainthood-
+eligible, everything, per the plan's own text. Deliberately **not** a
+full voiced `Outcome` the way `addSociety` is: a plain
+`Historian.World.record` call, the same register `backfillWard`'s own
+"backstory" events already occupy (unvoiced, no idiosyncrasy, no
+narrator competing for it) — this is bookkeeping ("this person is now a
+member"), not a dramatic narrative beat, and keeping it a direct
+`record` call is what keeps this tier genuinely "similarly sized" to
+Tier 1 (the plan's own sizing) rather than growing a whole new
+`Outcome` constructor and its own render/claims/kind-tag machinery for
+one administrative action. `Nothing` (JSON `null` over the wire) when
+`societyId` doesn't resolve to a real, active society — there's no
+sensible fallback *entity* to add a person to instead, unlike every
+other malformed-input fallback in this codebase, so this is the one call
+in the family that can genuinely do nothing.
+
+**Tier 2b: an optional initial stance at founding.** `addSociety` gains a
+third piece of caller input, `Maybe (EntityId, Regard)` — an existing
+entity to `Venerates`/`Shuns` from the moment of founding, reusing
+`regardClaim` exactly as the plan asks ("this reuses that predicate
+shape rather than inventing a new one"). Validated against the *live*
+`World` at the point of founding (`kindOf w ward`, checked after the new
+society/founder are already minted) — a `ward` id that doesn't resolve
+to any real entity is silently dropped from `fdExtraClaims` rather than
+trapping or recording a dangling reference, the same "malformed input
+falls back rather than traps" discipline every other wasm-facing
+function here follows.
+
+**Tier 3: an optional founding declaration — the plan's own deferred
+design question, answered.** The plan explicitly left open "does a
+founding narrative get its own `Outcome` case, does it participate in
+voice/idiosyncrasy the way every other founding does," calling it a
+real Render-layer question worth its own pass once Tiers 1-2 landed.
+Answered here: **no new `Outcome` case** — `FoundingOutcome` gains one
+field, `fdPurpose :: Maybe Text`, and both `renderNeutral`/
+`renderWithVoice`'s existing `Founding` cases append an optional clause
+(`foundingPurposeClause`, " Its founders declare: `<text>`.") when it's
+present. Because this rides through the exact same `AText`-typed
+rendering pipeline Decision 47 already built, the answer to "does it
+participate in voice/idiosyncrasy" falls out for free: yes, automatically
+— it's just more text in the same already-`commitOutcomes`-committed
+sentence, so a shouted founding shouts the declaration too, an omitted
+one loses it the same way any other mention would (though the user's
+own words, being `lit`-wrapped free text rather than a `mention`, don't
+themselves become an appended-unplaced entry the way an entity mention
+would — they simply aren't present when `atText` gets replaced wholesale
+by a canned omission phrase, same as any other literal text in the
+sentence). This was the minimal, consistent answer rather than the
+larger one (a dedicated `Outcome` type) — proportionate to what the plan
+itself sized Tier 3 as ("larger... hold for a separate later plan") once
+folded into existing machinery instead of built as new machinery.
+
+**`historian_add_society`'s own wire shape changed alongside this — not
+additively.** Growing from two caller-supplied fields (name, culture) to
+five (name, culture, ward, regard, purpose) was the point past which
+this project's own "don't bolt on positional null-args, don't
+backwards-compat-shim" discipline (CLAUDE.md's own stated preference)
+argued for switching to a single JSON options object instead — the same
+"partial override, every field independently defaulted" idiom
+`historian_new_tuned`'s `tuningJson` already established for `Tuning`
+(Decision 42), applied here for the same reason: more honest about what
+the function actually takes than five positional string-or-null
+arguments would have been. This is a breaking wire-format change to an
+existing function (`historian_add_society(handle, nameJson,
+cultureJson)` → `historian_add_society(handle, optionsJson)`), not an
+additive one — deliberate, and the reason `hh-site`'s own `addSociety()`
+binding needs a matching update before it can call this again (tracked
+as a real follow-up, not attempted here — see the work queue).
+
+**Verified:** nine new deterministic `test/Spec.hs` checks in
+`addSocietyChecks` (`cabal test` 303 → 312) — `newPersonNamed`'s name
+override; `addPerson` on a real active society records real membership;
+`addPerson` on a bogus society id does nothing; a valid stance records a
+real `Venerates` claim; a bogus stance's ward is dropped (caught and
+fixed a real test-logic bug here: the first draft asserted "no
+`Venerates` fact at all," which can never hold since every society
+already gets an intrinsic one toward its own patron concept regardless
+— fixed to check the fact's *target* specifically, not mere presence);
+`fdPurpose` reaches the outcome; the purpose text appears in both the
+neutral and voiced readings; no purpose means no declaration clause at
+all. hlint/fourmolu clean, no RNG-cascade fallout (every new code path
+only fires when a caller actually supplies the new optional arguments;
+nothing about existing call patterns changed). Cross-compiled and
+re-verified end-to-end against a real wasm build (`wasm/verify.mjs`,
+nine new checks covering the new options-object shape, both stance
+outcomes, the purpose clause, and both `historian_add_person` outcomes).
+
+**Deliberately not attempted:** the plan's own explicitly-out-of-scope
+items (user-defined new cultures, replay/determinism tooling, editing or
+removing an existing entity) — none of that changed here.

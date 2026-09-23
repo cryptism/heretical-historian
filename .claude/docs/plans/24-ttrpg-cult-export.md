@@ -77,16 +77,11 @@ Foundry's whole Document model) — but *shape* the internal model on
 Datasworn's `oracle_rollable`/`oracle_collection` pattern specifically**
 (a dice spec plus ranged results, grouped for combination), since it's
 the one genuinely designed for exactly this reuse case and already has a
-real official precedent for combining independent tables. Where practical
-interop actually matters — a GM wants to drop a generated table straight
-into Foundry — offer a Foundry-`RollTable`-shaped JSON export alongside
-the Datasworn-shaped internal one; these solve different problems (an
-honest internal data model vs. "can an existing tool open this file") and
-aren't mutually exclusive. Neither needs to be pulled in as an actual
-dependency — both are small enough JSON shapes to hand-write, matching
-`Historian.Json`'s own "spelled out explicitly, not derived" discipline
-(Decision matching `predicateText`'s reasoning) rather than adding a
-package dependency for two field names.
+real official precedent for combining independent tables. A
+Foundry-`RollTable`-shaped export alongside the Datasworn-shaped internal
+one was flagged as a possible follow-up if practical Foundry interop ever
+became a real ask — considered and explicitly declined by the user, not
+wanted. Not a target for this plan at all, at any tier.
 
 ## The four things the user actually asked for, and what each needs
 
@@ -300,8 +295,8 @@ Markdown blob over the wasm boundary. The user now wants that inverted:
    named-but-unplaced site list (§4); anything that tries to be
    system-accurate for a specific ruleset (the user's own "not in a
    canonical way" already rules this out); a Foundry-`RollTable`-shaped
-   export (mentioned in Research as a good idea if Foundry import ever
-   becomes a real ask, not scoped into any tier here).
+   export — considered in Research, explicitly declined by the user, not
+   a target at all.
 
 ## Rough sizing
 

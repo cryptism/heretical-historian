@@ -230,35 +230,76 @@ instance.exports.historian_dealloc(malformedTuningPtr);
 check("historian_new_tuned with malformed tuningJson still returns a usable handle (falls back to defaultTuning)", fallbackHandle !== 0);
 instance.exports.historian_free(fallbackHandle);
 
-// --- historian_add_society (Decision 44) ---
+// --- historian_add_society (Decision 44, Tier 1; Decision 48, Tiers 2-3 —
+// options now one JSON object, not two positional args) ---
 const addHandle = instance.exports.historian_new(3);
 
-const namePtr = writeCString(JSON.stringify("The Whispering Order"));
-const culturePtr = writeCString(JSON.stringify("Ghenzai"));
-const addedDossier = readJson(instance.exports.historian_add_society(addHandle, namePtr, culturePtr));
-instance.exports.historian_dealloc(namePtr);
-instance.exports.historian_dealloc(culturePtr);
+const optsPtr = writeCString(JSON.stringify({ name: "The Whispering Order", culture: "Ghenzai" }));
+const addedDossier = readJson(instance.exports.historian_add_society(addHandle, optsPtr));
+instance.exports.historian_dealloc(optsPtr);
 check(
   "historian_add_society with a name/culture returns a dossier with exactly that name/culture",
   addedDossier && addedDossier.name === "The Whispering Order" && addedDossier.culture === "Ghenzai",
 );
 
-const nullPtr = writeCString("null");
-const nullPtr2 = writeCString("null");
-const autoDossier = readJson(instance.exports.historian_add_society(addHandle, nullPtr, nullPtr2));
-instance.exports.historian_dealloc(nullPtr);
-instance.exports.historian_dealloc(nullPtr2);
-check("historian_add_society(handle, null, null) still returns a valid, non-null, auto-rolled dossier", autoDossier && typeof autoDossier.name === "string" && autoDossier.name.length > 0);
+const emptyOptsPtr = writeCString("{}");
+const autoDossier = readJson(instance.exports.historian_add_society(addHandle, emptyOptsPtr));
+instance.exports.historian_dealloc(emptyOptsPtr);
+check("historian_add_society(handle, {}) still returns a valid, non-null, auto-rolled dossier", autoDossier && typeof autoDossier.name === "string" && autoDossier.name.length > 0);
 
-const unknownCulturePtr = writeCString(JSON.stringify("NotARealCulture"));
-const namePtr2 = writeCString(JSON.stringify("The Fallback Test"));
-const fallbackDossier = readJson(instance.exports.historian_add_society(addHandle, namePtr2, unknownCulturePtr));
-instance.exports.historian_dealloc(namePtr2);
-instance.exports.historian_dealloc(unknownCulturePtr);
+const nullOptsPtr = writeCString("null");
+const nullOptsDossier = readJson(instance.exports.historian_add_society(addHandle, nullOptsPtr));
+instance.exports.historian_dealloc(nullOptsPtr);
+check("historian_add_society(handle, null) also falls back cleanly rather than trapping", nullOptsDossier && typeof nullOptsDossier.name === "string" && nullOptsDossier.name.length > 0);
+
+const fallbackOptsPtr = writeCString(JSON.stringify({ name: "The Fallback Test", culture: "NotARealCulture" }));
+const fallbackDossier = readJson(instance.exports.historian_add_society(addHandle, fallbackOptsPtr));
+instance.exports.historian_dealloc(fallbackOptsPtr);
 check(
   "historian_add_society with an unrecognised culture name falls back to a real culture rather than trapping",
   fallbackDossier && fallbackDossier.name === "The Fallback Test" && typeof fallbackDossier.culture === "string" && fallbackDossier.culture.length > 0,
 );
+
+// --- work item 23, Tiers 2-3 (Decision 48): stance + founding purpose ---
+const stancePtr = writeCString(JSON.stringify({ name: "The Ember Choir", ward: addedDossier.id, regard: "Venerated" }));
+const stancedDossier = readJson(instance.exports.historian_add_society(addHandle, stancePtr));
+instance.exports.historian_dealloc(stancePtr);
+check(
+  "historian_add_society's ward/regard records a real Venerates claim toward an existing entity",
+  stancedDossier && stancedDossier.facts.some((f) => f.predicate === "Venerates" && f.object && f.object.entity === addedDossier.id),
+);
+
+const bogusWardPtr = writeCString(JSON.stringify({ name: "The Hollow Rite", ward: 999999 }));
+const bogusWardDossier = readJson(instance.exports.historian_add_society(addHandle, bogusWardPtr));
+instance.exports.historian_dealloc(bogusWardPtr);
+check(
+  "historian_add_society with a ward id that doesn't resolve drops the stance rather than trapping",
+  bogusWardDossier && !bogusWardDossier.facts.some((f) => f.object && f.object.entity === 999999),
+);
+
+const purposePtr = writeCString(JSON.stringify({ name: "The Declared Choir", purpose: "For the glory of the Ember Choir" }));
+const purposedDossier = readJson(instance.exports.historian_add_society(addHandle, purposePtr));
+instance.exports.historian_dealloc(purposePtr);
+check(
+  "historian_add_society's purpose reaches the rendered founding event",
+  purposedDossier && purposedDossier.facts.some((f) => f.predicate === "Founded"),
+);
+const purposedFoundingEvent = readJson(instance.exports.historian_query(addHandle, purposedDossier.id));
+check("historian_query on the newly-founded society still round-trips", purposedFoundingEvent && purposedFoundingEvent.id === purposedDossier.id);
+
+// --- historian_add_person (work item 23, Tier 2) ---
+const personNamePtr = writeCString(JSON.stringify("Vane the Unbroken"));
+const personDossier = readJson(instance.exports.historian_add_person(addHandle, addedDossier.id, personNamePtr));
+instance.exports.historian_dealloc(personNamePtr);
+check(
+  "historian_add_person adds a named, real member to an existing society",
+  personDossier && personDossier.name === "Vane the Unbroken" && personDossier.facts.some((f) => f.predicate === "Leads" && f.object && f.object.entity === addedDossier.id),
+);
+
+const bogusSocietyNamePtr = writeCString("null");
+const bogusPersonDossier = readJson(instance.exports.historian_add_person(addHandle, 999999, bogusSocietyNamePtr));
+instance.exports.historian_dealloc(bogusSocietyNamePtr);
+check("historian_add_person on a nonexistent society id returns JSON null rather than trapping", bogusPersonDossier === null);
 
 instance.exports.historian_free(addHandle);
 
@@ -280,6 +321,24 @@ const nullCultPtr = writeCString("null");
 const wordFallback = readCString(instance.exports.historian_generate_word(9, nullCultPtr));
 instance.exports.historian_dealloc(nullCultPtr);
 check("historian_generate_word(seed, null) falls back to a random culture rather than trapping", wordFallback.length > 0);
+
+// --- historian_practice_text (work item 24, wasm export closed out) —
+// handle-free, seed-scoped, same discipline as generate_word/name. ---
+const grimPtr = writeCString(JSON.stringify("Grim"));
+const focusPtr = writeCString("the Gnawing Dark");
+const practice1 = readCString(instance.exports.historian_practice_text(11, grimPtr, focusPtr));
+const practice2 = readCString(instance.exports.historian_practice_text(11, grimPtr, focusPtr));
+instance.exports.historian_dealloc(grimPtr);
+instance.exports.historian_dealloc(focusPtr);
+check("historian_practice_text is deterministic for the same seed/voice/focus", practice1.length > 0 && practice1 === practice2);
+check("historian_practice_text splices the caller's focus into the rendered practice", practice1.includes("the Gnawing Dark"));
+
+const nullVoicePtr = writeCString("null");
+const focusPtr2 = writeCString("Storm");
+const practiceFallback = readCString(instance.exports.historian_practice_text(3, nullVoicePtr, focusPtr2));
+instance.exports.historian_dealloc(nullVoicePtr);
+instance.exports.historian_dealloc(focusPtr2);
+check("historian_practice_text(seed, null, focus) falls back to Plain rather than trapping", practiceFallback.length > 0 && practiceFallback.includes("Storm"));
 
 instance.exports.historian_free(handle);
 check("historian_free did not trap", true);

@@ -221,6 +221,18 @@ renameText lc = case lcRenamed lc of
   Nothing -> ""
   Just newName -> " In token of the change, " <> lcMention lc <> " takes a new name: " <> mentionText (lcSociety lc) newName <> "."
 
+-- | An optional caller-supplied founding declaration, appended to a
+-- 'Founding' reading in both 'renderNeutral' and 'renderWithVoice' —
+-- work item 23, Tier 3's own answer to the plan's deferred question
+-- (no new 'Outcome' case; folds into the existing one, rides through
+-- voice\/idiosyncrasy exactly like the rest of the sentence). The user's
+-- own words, quoted verbatim rather than paraphrased — only the
+-- surrounding frame is this codebase's own prose.
+foundingPurposeClause :: FoundingOutcome -> AText
+foundingPurposeClause o = case fdPurpose o of
+  Nothing -> ""
+  Just purpose -> " Its founders declare: " <> lit purpose <> "."
+
 -- | The ordinary way to name an entity inside an 'AText'-typed rendering
 -- function — 'Historian.World.nameIn's own current reading, tracked as a
 -- 'Mention' instead of spliced in directly. See 'mentionText' (and
@@ -243,7 +255,7 @@ intercalateA sep (x : xs) = x <> mconcat [sep <> y | y <- xs]
 -- wasm FFI's "generic log" reading is built from.
 renderNeutral :: World -> Outcome -> AText
 renderNeutral w = \case
-  Founding o -> mention w (fdSociety o) <> " was founded by " <> mention w (fdFounder o) <> "."
+  Founding o -> mention w (fdSociety o) <> " was founded by " <> mention w (fdFounder o) <> "." <> foundingPurposeClause o
   Schism o
     | scFresh o -> hN <> ", until then unrecorded, broke from " <> sN <> " and took the name " <> cN <> "."
     | otherwise -> hN <> " renounced " <> sN <> " and led the dissent out as " <> cN <> "."
@@ -386,7 +398,7 @@ renderNeutral w = \case
 -- migrated", not "no voice".
 renderWithVoice :: World -> Voice -> Outcome -> AText
 renderWithVoice w v = \case
-  Founding o -> mention w (fdSociety o) <> " " <> lit (foundingVoicing (voiceRegister v)) <> " " <> mention w (fdFounder o) <> "."
+  Founding o -> mention w (fdSociety o) <> " " <> lit (foundingVoicing (voiceRegister v)) <> " " <> mention w (fdFounder o) <> "." <> foundingPurposeClause o
   Schism o
     | scFresh o -> hN <> ", until then unrecorded, " <> lit broke <> " " <> sN <> " " <> lit took <> " " <> cN <> "."
     | otherwise -> hN <> " " <> lit renounced <> " " <> sN <> " " <> lit ledOut <> " " <> cN <> "."

@@ -36,10 +36,11 @@
 -- exported directly at the link level instead (@--export=hs_init@ in the
 -- cabal file); a host must call it before any function below is usable.
 -- See @.claude/docs/DESIGN.md@ Decision 7.
-module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianAddSociety, historianGenerateWord, historianGenerateName, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
+module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianAddSociety, historianAddPerson, historianGenerateWord, historianGenerateName, historianPracticeText, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
 
 import Control.Monad.State.Strict (runState)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as Aeson (parseMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -58,9 +59,9 @@ import Historian.Corpus (allCultures)
 import Historian.Engine (RuleSpec (rsName), nextSlotFromPool, queryEntity, rulesFor, stepAutonomous)
 import Historian.Json (decodeTuningOverride, encodeNextSlotFromPool, encodeQueryResult, encodeRulesFor, encodeStepResult, encodeTuning, encodeWorld)
 import Historian.Render (commitOutcomes)
-import Historian.Rules (addSociety, generate, genesisWorld, genesisWorldWith, ruleSpecs)
-import Historian.Types (Culture (..), EntityId (..), FoundingOutcome (fdSociety), Outcome (Founding), World, defaultTuning)
-import Historian.World (generateNameSeeded, generateWordSeeded)
+import Historian.Rules (addPerson, addSociety, generate, genesisWorld, genesisWorldWith, ruleSpecs)
+import Historian.Types (Culture (..), EntityId (..), FoundingOutcome (fdSociety), Outcome (Founding), Regard (..), VoiceRegister (..), World, defaultTuning)
+import Historian.World (generateNameSeeded, generateWordSeeded, practiceTextSeeded)
 
 foreign export ccall "generateJson" generateJson :: Int -> Int -> IO CString
 
@@ -109,34 +110,106 @@ foreign export ccall "historian_default_tuning" historianDefaultTuning :: IO CSt
 historianDefaultTuning :: IO CString
 historianDefaultTuning = bsToCString (BSL.toStrict (encodeTuning defaultTuning))
 
-foreign export ccall "historian_add_society" historianAddSociety :: Handle -> CString -> CString -> IO CString
+foreign export ccall "historian_add_society" historianAddSociety :: Handle -> CString -> IO CString
 
--- | Founds a society on the handle's own 'World' under a caller-supplied
--- name and\/or culture (Decision 44,
--- .claude/docs/plans/23-user-configurable-societies.md's Tier 1) — both
--- @nameJson@ and @cultureJson@ are JSON, either the literal @null@ or a
--- bare string (@cultureJson@ matched case-sensitively against an
--- existing culture's own label, e.g. @"Ghenzai"@); either @null@, an
--- unrecognised culture name, or malformed JSON for either argument falls
--- back to 'Historian.Rules.genesis's own default (an auto-generated
--- name; a culture picked uniformly at random) rather than trapping —
--- the same discipline 'historianNewTuned' already established for a bad
--- 'Tuning' override. Returns the new society's own dossier, the exact
+-- | Every 'historian_add_society' field, decoded from one JSON object
+-- rather than one positional argument each — Decision 48's own choice,
+-- once Tiers 2-3 grew the field count from two to five: matches
+-- 'historianNewTuned's own \"partial object, every field independently
+-- optional\" idiom (Decision 42) more honestly than bolting three more
+-- positional null-args onto an already-two-positional-arg function
+-- would have. A missing field, a @null@, or the whole argument failing
+-- to parse as an object at all are all treated alike — that field (or
+-- every field) just defaults, never trapping.
+data AddSocietyOptions = AddSocietyOptions
+  { asoName :: Maybe Text
+  , asoCulture :: Maybe Culture
+  , asoStance :: Maybe (EntityId, Regard)
+  , asoPurpose :: Maybe Text
+  }
+
+defaultAddSocietyOptions :: AddSocietyOptions
+defaultAddSocietyOptions = AddSocietyOptions Nothing Nothing Nothing Nothing
+
+-- | @optionsJson@'s shape: @{"name": string|null, "culture": string|null,
+-- "ward": int|null, "regard": "Venerated"|"Shunned"|null, "purpose":
+-- string|null}@, every key optional (a missing key is the same as
+-- @null@). @culture@ is matched case-sensitively against an existing
+-- culture's own label, same as before; an unrecognised label falls back
+-- exactly like @null@ does. @regard@ only matters when @ward@ is also
+-- given, and itself falls back to @Venerated@ when @ward@ is present but
+-- @regard@ is missing\/unrecognised — 'Historian.Rules.addSociety' is
+-- what actually validates @ward@ resolves to a real entity; this decoder
+-- only shapes the JSON, it doesn't touch the live 'World'.
+decodeAddSocietyOptions :: BSL.ByteString -> AddSocietyOptions
+decodeAddSocietyOptions bs = fromMaybe defaultAddSocietyOptions (Aeson.decode bs >>= Aeson.parseMaybe parse)
+  where
+    parse = Aeson.withObject "AddSocietyOptions" $ \o -> do
+      mName <- o Aeson..:? "name"
+      mCultureLabel <- o Aeson..:? "culture"
+      mWard <- o Aeson..:? "ward"
+      mRegardLabel <- o Aeson..:? "regard"
+      mPurpose <- o Aeson..:? "purpose"
+      let mCulture = mCultureLabel >>= \label -> find ((== label) . unCulture) allCultures
+          mRegard = mRegardLabel >>= parseRegardLabel
+      pure
+        AddSocietyOptions
+          { asoName = mName
+          , asoCulture = mCulture
+          , asoStance = (\wid -> (EntityId wid, fromMaybe Venerated mRegard)) <$> mWard
+          , asoPurpose = mPurpose
+          }
+    parseRegardLabel :: Text -> Maybe Regard
+    parseRegardLabel = \case
+      "Venerated" -> Just Venerated
+      "Shunned" -> Just Shunned
+      _ -> Nothing
+
+-- | Founds a society on the handle's own 'World' under caller-supplied
+-- name\/culture\/initial stance\/founding declaration (Decision 44 for
+-- Tier 1, Decision 48 for Tiers 2-3,
+-- .claude/docs/plans/23-user-configurable-societies.md). Every field
+-- independently optional (see 'decodeAddSocietyOptions') and every
+-- fallback the same "never trap" discipline 'historianNewTuned' already
+-- established. Returns the new society's own dossier, the exact
 -- 'encodeQueryResult' shape 'historianQuery' already returns.
-historianAddSociety :: Handle -> CString -> CString -> IO CString
-historianAddSociety sp nameJson cultureJson = do
+historianAddSociety :: Handle -> CString -> IO CString
+historianAddSociety sp optionsJson = do
   ref <- deRefStablePtr sp
   before <- readIORef ref
-  nameBs <- BS.packCString nameJson
-  cultureBs <- BS.packCString cultureJson
-  let mName = decodeOptionalText (BSL.fromStrict nameBs)
-      mCultureLabel = decodeOptionalText (BSL.fromStrict cultureBs)
-      mCulture = mCultureLabel >>= \label -> find ((== label) . unCulture) allCultures
-      (outcomes, after) = runState (addSociety mName mCulture >>= \os -> os <$ commitOutcomes os) before
+  optionsBs <- BS.packCString optionsJson
+  let opts = decodeAddSocietyOptions (BSL.fromStrict optionsBs)
+      (outcomes, after) = runState (addSociety (asoName opts) (asoCulture opts) (asoStance opts) (asoPurpose opts) >>= \os -> os <$ commitOutcomes os) before
   writeIORef ref after
   case outcomes of
     (Founding o : _) -> bsToCString (BSL.toStrict (encodeQueryResult after (queryEntity after ruleSpecs (fdSociety o))))
     _ -> bsToCString (BSL.toStrict (Aeson.encode Aeson.Null))
+
+foreign export ccall "historian_add_person" historianAddPerson :: Handle -> Int -> CString -> IO CString
+
+-- | Adds a named founder\/citizen to an *existing*, active society on the
+-- handle's own 'World' (work item 23, Tier 2:
+-- .claude/docs/plans/23-user-configurable-societies.md, Decision 48).
+-- @societyId@ is a bare entity id, same convention 'historian_query'
+-- already uses (not JSON-wrapped); @nameJson@ is null-or-string, same
+-- convention every other optional name\/culture argument in this module
+-- follows. Returns the new person's own dossier — the exact
+-- 'encodeQueryResult' shape 'historianQuery' already returns — or JSON
+-- @null@ when @societyId@ doesn't resolve to a real, currently active
+-- 'Historian.Types.Society' (see 'Historian.Rules.addPerson's own
+-- Haddock for why there's no sensible fallback entity to add a person to
+-- instead of just doing nothing).
+historianAddPerson :: Handle -> Int -> CString -> IO CString
+historianAddPerson sp societyId nameJson = do
+  ref <- deRefStablePtr sp
+  before <- readIORef ref
+  nameBs <- BS.packCString nameJson
+  let mName = decodeOptionalText (BSL.fromStrict nameBs)
+      (mPerson, after) = runState (addPerson (EntityId societyId) mName) before
+  writeIORef ref after
+  case mPerson of
+    Just p -> bsToCString (BSL.toStrict (encodeQueryResult after (queryEntity after ruleSpecs p)))
+    Nothing -> bsToCString (BSL.toStrict (Aeson.encode Aeson.Null))
 
 -- | A JSON value that's either the literal @null@ or a string, decoded to
 -- 'Nothing' for @null@ *or* malformed JSON alike — both mean "use the
@@ -179,6 +252,42 @@ decodeCultureArg cultureJson = do
   cultureBs <- BS.packCString cultureJson
   let mLabel = decodeOptionalText (BSL.fromStrict cultureBs)
   pure (mLabel >>= \label -> find ((== label) . unCulture) allCultures)
+
+foreign export ccall "historian_practice_text" historianPracticeText :: Int -> CString -> CString -> IO CString
+
+-- | 'Historian.World.practiceText', seed-scoped the same way
+-- 'historianGenerateWord'\/'historianGenerateName' are — closes out work
+-- item 24's last deferred wasm export, unblocked once 'entVoice' reached
+-- the wire (Decision 46). @voiceJson@ follows 'historianAddSociety's own
+-- null-or-string convention, but falls back to @Plain@ specifically
+-- (not a random register) when null, unrecognised, or malformed —
+-- 'Plain' is the least presumptuous default for a caller that doesn't
+-- actually know the queried society's own voice, unlike culture, where
+-- "pick anything" is the only sensible fallback. @focus@ is a bare
+-- string, not JSON-encoded — free text a caller already has in hand
+-- (a patron concept's name, a venerated ward's, a held relic's), matching
+-- 'historianNextSlot's own @ruleName@ convention rather than
+-- @cultureJson@'s.
+historianPracticeText :: Int -> CString -> CString -> IO CString
+historianPracticeText seed voiceJson focusC = do
+  vr <- decodeVoiceRegisterArg voiceJson
+  focus <- cstringToText focusC
+  bsToCString (TE.encodeUtf8 (practiceTextSeeded seed vr focus))
+
+-- | @voiceJson@ (null-or-string, per 'historianAddSociety's own
+-- convention) resolved to a real 'VoiceRegister', falling back to
+-- 'Plain' on @null@, an unrecognised label, or malformed JSON alike.
+decodeVoiceRegisterArg :: CString -> IO VoiceRegister
+decodeVoiceRegisterArg voiceJson = do
+  voiceBs <- BS.packCString voiceJson
+  let mLabel = decodeOptionalText (BSL.fromStrict voiceBs)
+  pure (fromMaybe Plain (mLabel >>= parseVoiceRegister))
+  where
+    parseVoiceRegister = \case
+      "Plain" -> Just Plain
+      "Fervent" -> Just Fervent
+      "Grim" -> Just Grim
+      _ -> Nothing
 
 foreign export ccall "historian_step" historianStep :: Handle -> IO CString
 

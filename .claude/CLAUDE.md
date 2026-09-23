@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (301 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (312 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -697,9 +697,26 @@ unbuilt rule.
     literal "just the society" text, so a user-added society is alive
     from the start, not memberless), wasm `historian_add_society`. Naming
     two societies the same thing is allowed, not rejected. Full account:
-    `.claude/docs/DESIGN.md` Decision 44. **Tier 2 (a named founder/
-    citizen added to an existing society; an optional initial stance) and
-    Tier 3 (a founding narrative) are not started.** Plan:
+    `.claude/docs/DESIGN.md` Decision 44. **Tiers 2-3 done too** —
+    `Historian.World.newPersonNamed`/`Historian.Rules.addPerson` (wasm
+    `historian_add_person`) add a named founder/citizen to an *existing*
+    active society, recorded as a plain unvoiced event (deliberately not
+    a full `Outcome`, matching `backfillWard`'s own "backstory" register
+    — administrative bookkeeping, not a narrative beat); `addSociety`
+    gained an optional initial stance (`Venerates`/`Shuns` an existing
+    entity from founding, dropped silently if the id doesn't resolve) and
+    an optional founding declaration (`FoundingOutcome`'s new `fdPurpose`,
+    folded into the existing `Founding` rendering rather than a new
+    `Outcome` case — rides through voice/idiosyncrasy for free via
+    Decision 47's `AText`). **`historian_add_society`'s wire shape changed
+    to match — not additively:** five independently-optional fields now
+    arrive as one JSON options object (`{name, culture, ward, regard,
+    purpose}`) instead of two positional string-or-null arguments, the
+    same idiom `historian_new_tuned`'s `tuningJson` already established.
+    `cabal test` 303 → 312. Full account: `.claude/docs/DESIGN.md`
+    Decision 48. **Real follow-up, not attempted here:** `hh-site`'s own
+    `addSociety()` binding still calls the old two-argument shape and
+    needs updating before it can found a society again. Plan:
     `.claude/docs/plans/23-user-configurable-societies.md`.
 24. ~~A generic TTRPG "cult fact file" export, Tiers 1-2, plus Tier 3's
     heretical-historian-side prerequisite.~~ Done —
@@ -730,12 +747,14 @@ unbuilt rule.
     sentence (every society's own name already starts with one), and Axis
     B's slot 7 using `Rivalry` (person-to-person only, never resolvable
     against a Society's own dossier) instead of `Disavows`. Full account
-    of all three fixes: Decision 46's own follow-up entries. Also flagged
-    as real follow-ups, not built: wiring `historian_practice_text` onto
-    the wasm boundary (the wire-field blocker is gone as of Decision 46,
-    but the export itself still isn't built) and a
-    Foundry-`RollTable`-shaped export. Plan:
-    `.claude/docs/plans/24-ttrpg-cult-export.md`.
+    of all three fixes: Decision 46's own follow-up entries. **The last
+    deferred piece is closed out too:** `Historian.World.practiceTextSeeded`
+    plus wasm `historian_practice_text` (handle-free, seed-scoped, same
+    discipline as `historian_generate_word`/`historian_generate_name`) —
+    work item 24's wasm boundary is now fully built. A
+    Foundry-`RollTable`-shaped export was flagged as a possible follow-up
+    too, then explicitly declined by the user — not wanted, not a target.
+    Plan: `.claude/docs/plans/24-ttrpg-cult-export.md`.
 25. ~~Entity mentions tracked at render time, not re-derived by a
     frontend scanning finished prose.~~ Done, at direct user request — a
     frontend linkifying a rendered event by scanning for known entity
@@ -765,6 +784,26 @@ unbuilt rule.
     checks). Full account: `.claude/docs/DESIGN.md` Decision 47.
     **`hh-site`'s own `linkify` rewrite to consume the new fields is
     separate frontend work, not attempted here.**
+26. **Major events, first pass: cataclysms.** Not started — plan:
+    `.claude/docs/plans/26-major-events-cataclysm.md`. A new tier above
+    the sixteen ordinary rules: rare, world-scale events whose chance
+    grows with world age and cult count, guaranteed once (only once) at
+    the world's first calendar year-boundary crossing, never during
+    backfill. First kind is a cataclysm — most entities destroyed
+    (survival order: sites > items > societies > people), surviving
+    Wards gain a stronger chance of fresh veneration/shunning, and
+    active cultures have a chance to merge or split into newly
+    synthesized ones (plus three new base cultures for a richer
+    combination space). The real open problem the plan works out: culture
+    mutation needs a `World`-level home for a synthesized culture's own
+    phonology (`nameGrammarFor` is currently a closed, hardcoded
+    function, unlike `wChains`, which already stores per-culture Markov
+    chains in `World`) — without it, a "mutated" culture would silently
+    render as Vaurethine. Also plans a `nix develop .#notebooks` devshell
+    for exploratory Jupyter notebooks over rare-event distributions
+    (cataclysm timing, rivalry/trial-by-combat/coup frequency, prophecy
+    fulfillment lag, backfill recursion depth), reading batch `--json`
+    CLI runs rather than needing any new Haskell-side export.
 
 ## Things not to do
 

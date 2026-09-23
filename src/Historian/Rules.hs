@@ -88,14 +88,15 @@ genesis = do
   cult <- pickOr vaurethine allCultures
   (s, concept) <- newSociety cult
   p <- newPerson cult
-  let outcome = FoundingOutcome s p (patronClaims s concept)
+  let outcome = FoundingOutcome s p (patronClaims s concept) Nothing
   pure [Founding outcome]
 
--- | 'genesis', but under a caller-supplied name and\/or culture instead
--- of always auto-rolling both — the wasm boundary's own
--- @historian_add_society@ (Decision 44,
--- .claude/docs/plans/23-user-configurable-societies.md's Tier 1).
--- 'Nothing' for either falls back to 'genesis's own default: an
+-- | 'genesis', but under a caller-supplied name\/culture\/initial
+-- stance\/founding declaration instead of always auto-rolling all four —
+-- the wasm boundary's own @historian_add_society@ (Decision 44 for
+-- Tiers 1, and Decision 48 for Tiers 2-3's own additions here,
+-- .claude/docs/plans/23-user-configurable-societies.md). 'Nothing' for
+-- @mName@\/@mCulture@ falls back to 'genesis's own default: an
 -- auto-generated name, a culture picked uniformly from 'allCultures'.
 -- Still mints an ordinary auto-generated founder and commits through the
 -- same 'FoundingOutcome' shape 'genesis' itself uses, deliberately going
@@ -108,13 +109,60 @@ genesis = do
 -- plan's own phrase) in practice, not just in principle. Committed as a
 -- real 'Founding' 'Outcome' (not a bare 'record') so it gets the same
 -- voiced narration and 'Event' treatment every other founding does.
-addSociety :: Maybe Text -> Maybe Culture -> Chronicle [Outcome]
-addSociety mName mCulture = do
+--
+-- @mStance@ (Tier 2's "optional initial stance at founding") is an
+-- existing entity to 'Venerates'\/'Shuns' from the moment of founding,
+-- reusing 'regardClaim' exactly as the plan asks — silently dropped
+-- (added to 'fdExtraClaims' as if never given) when the supplied id
+-- doesn't resolve to any real entity in the current 'World', the same
+-- "malformed input falls back rather than traps" discipline every other
+-- wasm-facing function here already follows, not a new one invented for
+-- this. @mPurpose@ (Tier 3's founding narrative) is free text folded
+-- straight into 'FoundingOutcome''s own new 'fdPurpose' field.
+addSociety :: Maybe Text -> Maybe Culture -> Maybe (EntityId, Regard) -> Maybe Text -> Chronicle [Outcome]
+addSociety mName mCulture mStance mPurpose = do
   culture <- maybe (pickOr vaurethine allCultures) pure mCulture
   (s, concept) <- newSocietyNamed culture mName
   p <- newPerson culture
-  let outcome = FoundingOutcome s p (patronClaims s concept)
+  w <- get
+  let stanceClaims = case mStance of
+        Just (ward, regard) | isJust (kindOf w ward) -> [regardClaim s ward regard]
+        _ -> []
+      outcome = FoundingOutcome s p (patronClaims s concept ++ stanceClaims) mPurpose
   pure [Founding outcome]
+
+-- | Adds a named founder\/citizen to an *existing*, active society — the
+-- wasm boundary's own @historian_add_person@ (work item 23, Tier 2).
+-- Deliberately a direct 'Historian.World.record', not a full
+-- 'Outcome'\/'commitOutcomes' round-trip the way 'addSociety' is: this is
+-- an administrative action ("this person is now a member"), not a
+-- dramatic narrative beat, the same register 'Historian.World.
+-- backfillWard's own \"backstory\" events already occupy — plain neutral
+-- text, no voice, no idiosyncrasy, no narrator competing for it. Still a
+-- real 'Event' with real 'Fact's (invariant 1 holds: the same
+-- 'LeaderOf'\/'Leads' pair 'fireSchism' already records for a fresh
+-- heresiarch, so the new person is a real member from the start —
+-- coronable, sainthood-eligible, everything). 'Nothing' when
+-- @societyId@ doesn't resolve to a real, currently active 'Society' — the
+-- same "malformed input falls back rather than traps" discipline as
+-- everything else here, except there's no sensible fallback *entity* to
+-- add a person to, so this is the one call in the family that can
+-- genuinely do nothing.
+addPerson :: EntityId -> Maybe Text -> Chronicle (Maybe EntityId)
+addPerson societyId mName = do
+  w <- get
+  if societyId `elem` activeSocieties w
+    then do
+      p <- newPersonNamed (cultureOf w societyId) mName
+      w' <- get
+      record
+        "joining"
+        (nameIn w' p <> " joins " <> nameIn w' societyId <> " as a founding member.")
+        [ Claim p LeaderOf (Just (ROf societyId)) (Just societyId) Nothing
+        , Claim p Leads (Just (ROf societyId)) (Just societyId) Nothing
+        ]
+      pure (Just p)
+    else pure Nothing
 
 -- | Every society's two intrinsic patron-concept claims — 'Embodies'
 -- (unattested, like a fresh item's own) and an initial 'Venerates' (self-
