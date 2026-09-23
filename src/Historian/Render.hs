@@ -45,7 +45,7 @@ dateTag w e = T.justifyLeft 28 ' ' (dateOf w e)
 chronicle :: World -> Text
 chronicle w =
   T.unlines
-    [ epochTag (evEpoch ev) <> " " <> dateTag w (evEpoch ev) <> " " <> T.justifyLeft 10 ' ' (evKind ev) <> " " <> evNarratedText ev
+    [ epochTag (evEpoch ev) <> " " <> dateTag w (evEpoch ev) <> " " <> T.justifyLeft 10 ' ' (evKind ev) <> " " <> flatten (evNarratedText ev)
     | ev <- sortOn evId (M.elems (wEvents w))
     ]
 
@@ -157,9 +157,9 @@ dossier w i =
 -- fray.", "was found at the scene.", "was witnessed there.", one per
 -- calling rule) followed by its recognition clause, if this is the
 -- moment it's first recognized at all.
-relicMomentText :: World -> Text -> RelicMoment -> Text
+relicMomentText :: World -> Text -> RelicMoment -> AText
 relicMomentText w presenceClause rm =
-  " " <> nameIn w (rmItem rm) <> " " <> presenceClause <> relicRecognitionText w rm
+  " " <> mention w (rmItem rm) <> " " <> lit presenceClause <> relicRecognitionText w rm
 
 -- | Wording for a relic gaining its first-ever regard: hallowed relics
 -- are enshrined, cursed ones kept safe from rival cults — at any site the
@@ -169,7 +169,7 @@ relicMomentText w presenceClause rm =
 -- moment happened when *it* was first minted. A plain function, not an
 -- 'Outcome' case — a text fragment spliced into a parent outcome's prose,
 -- never independently recorded.
-relicRecognitionText :: World -> RelicMoment -> Text
+relicRecognitionText :: World -> RelicMoment -> AText
 relicRecognitionText w rm
   | not (rmFresh rm) = ""
   | otherwise = case [c | c <- rmClaims rm, clObject c == Just (ROf (rmItem rm)), clPred c `elem` [Venerates, Shuns]] of
@@ -182,86 +182,110 @@ relicRecognitionText w rm
 -- none yet, or narrating nothing at all if neither exists. Shared by a
 -- freshly-minted item's first recognition ('relicRecognitionText') and
 -- theft, where the relic is already established but changing hands.
-enshrineOrSafeguard :: World -> EntityId -> EntityId -> Regard -> Maybe EntityId -> Text
+enshrineOrSafeguard :: World -> EntityId -> EntityId -> Regard -> Maybe EntityId -> AText
 enshrineOrSafeguard w cult item regard fallbackSite =
   case [st | st <- entitiesOf Site w, venerates w cult st] ++ maybe [] pure fallbackSite of
     (site : _) ->
       " "
-        <> nameIn w cult
+        <> mention w cult
         <> case regard of
-          Venerated -> " enshrined " <> nameIn w item <> " at " <> nameIn w site <> "."
-          Shunned -> " sealed " <> nameIn w item <> " away at " <> nameIn w site <> ", safe from rival cults."
+          Venerated -> " enshrined " <> mention w item <> " at " <> mention w site <> "."
+          Shunned -> " sealed " <> mention w item <> " away at " <> mention w site <> ", safe from rival cults."
     [] -> ""
 
-dyingWordsText :: World -> DyingWords -> Text
+dyingWordsText :: World -> DyingWords -> AText
 dyingWordsText w dw =
   " With their last breath, "
-    <> nameIn w (dwSpeaker dw)
+    <> mention w (dwSpeaker dw)
     <> ( if dwCurse dw
-           then " cursed " <> nameIn w (dwTarget dw) <> ", that they "
-           else " prophesied that " <> nameIn w (dwTarget dw) <> " "
+           then " cursed " <> mention w (dwTarget dw) <> ", that they "
+           else " prophesied that " <> mention w (dwTarget dw) <> " "
        )
-    <> dwFraming dw
+    <> lit (dwFraming dw)
     <> "."
+
+-- | Names the society a 'LeadershipChange' concerns, using its captured
+-- pre-transition name ('lcSocietyName') rather than a live
+-- 'Historian.World.nameIn' lookup — see that field's own Haddock for why
+-- ('nameIn' on 'lcSociety' could return the *new* name once this event's
+-- own claims, including a possible rename, are committed). Still tracked
+-- as a mention of 'lcSociety', same as any other entity reference.
+lcMention :: LeadershipChange -> AText
+lcMention lc = mentionText (lcSociety lc) (lcSocietyName lc)
 
 -- | The rename clause alone, if any — spliced into each calling rule's own
 -- "so-and-so takes power" sentence rather than returned as a full one,
 -- since the three rules frame the transition itself quite differently.
-renameText :: LeadershipChange -> Text
+renameText :: LeadershipChange -> AText
 renameText lc = case lcRenamed lc of
   Nothing -> ""
-  Just newName -> " In token of the change, " <> lcSocietyName lc <> " takes a new name: " <> newName <> "."
+  Just newName -> " In token of the change, " <> lcMention lc <> " takes a new name: " <> mentionText (lcSociety lc) newName <> "."
+
+-- | The ordinary way to name an entity inside an 'AText'-typed rendering
+-- function — 'Historian.World.nameIn's own current reading, tracked as a
+-- 'Mention' instead of spliced in directly. See 'mentionText' (and
+-- 'lcMention') for the one caller that needs its own already-resolved
+-- word instead of a live lookup.
+mention :: World -> EntityId -> AText
+mention w eid = mentionText eid (nameIn w eid)
+
+-- | 'Data.Text.intercalate', lifted to 'AText' — needed only by
+-- 'Coronation''s rival list, the one place this module joins more than
+-- two mentions with a shared separator.
+intercalateA :: AText -> [AText] -> AText
+intercalateA _ [] = mempty
+intercalateA sep (x : xs) = x <> mconcat [sep <> y | y <- xs]
 
 -- | The always-neutral, voice-agnostic reading of any 'Outcome' — one
 -- branch per case. Never modified by voice; this is what 'render' falls
 -- back to for 'Nothing' and for any outcome type not yet migrated to a
 -- voiced rendering (see 'render'/'renderWithVoice' below), and what the
 -- wasm FFI's "generic log" reading is built from.
-renderNeutral :: World -> Outcome -> Text
+renderNeutral :: World -> Outcome -> AText
 renderNeutral w = \case
-  Founding o -> nameIn w (fdSociety o) <> " was founded by " <> nameIn w (fdFounder o) <> "."
+  Founding o -> mention w (fdSociety o) <> " was founded by " <> mention w (fdFounder o) <> "."
   Schism o
     | scFresh o -> hN <> ", until then unrecorded, broke from " <> sN <> " and took the name " <> cN <> "."
     | otherwise -> hN <> " renounced " <> sN <> " and led the dissent out as " <> cN <> "."
     where
-      hN = nameIn w (scHeresiarch o)
-      sN = nameIn w (scParent o)
-      cN = nameIn w (scSplinter o)
+      hN = mention w (scHeresiarch o)
+      sN = mention w (scParent o)
+      cN = mention w (scSplinter o)
   Battle o ->
-    nameIn w (btVictor o)
+    mention w (btVictor o)
       <> " met "
-      <> nameIn w (btVanquished o)
+      <> mention w (btVanquished o)
       <> " at "
-      <> nameIn w (btSite o)
+      <> mention w (btSite o)
       <> ". The ground was held by the former"
       <> ( case btVictim o of
              Nothing -> "."
-             Just p -> "; " <> nameIn w p <> " was left among the dead."
+             Just p -> "; " <> mention w p <> " was left among the dead."
          )
       <> maybe "" (relicMomentText w "was borne into the fray.") (btRelic o)
       <> maybe "" (dyingWordsText w) (btDyingWords o)
   Dispute o ->
-    nameIn w (dsDisputant o)
+    mention w (dsDisputant o)
       <> " disputes the common account of the "
-      <> dateOf w (evEpoch (dsDisputed o))
+      <> lit (dateOf w (evEpoch (dsDisputed o)))
       <> " "
-      <> evKind (dsDisputed o)
+      <> lit (evKind (dsDisputed o))
       <> ": they hold it was "
-      <> dsFraming o
+      <> lit (dsFraming o)
       <> "."
   Sanctify o
     | syFresh o -> sN <> " raised " <> siteN <> " as a holy place out of nothing before it."
     | otherwise -> sN <> " consecrated " <> siteN <> ", where blood was once spilled, into a holy place."
     where
-      sN = nameIn w (syClaimant o)
-      siteN = nameIn w (sySite o)
+      sN = mention w (syClaimant o)
+      siteN = mention w (sySite o)
   Defile o ->
-    nameIn w (dfClaimant o) <> " declares " <> nameIn w (dfSite o) <> " purified of " <> nameIn w (dfDeposed o) <> "'s corruption, and claims it as their own."
+    mention w (dfClaimant o) <> " declares " <> mention w (dfSite o) <> " purified of " <> mention w (dfDeposed o) <> "'s corruption, and claims it as their own."
   MiracleSaint o -> core <> maybe "" (relicMomentText w "was witnessed there.") (msRelic o)
     where
-      sN = nameIn w (msSociety o)
-      siteN = nameIn w (msSite o)
-      saintN = nameIn w (msSaint o)
+      sN = mention w (msSociety o)
+      siteN = mention w (msSite o)
+      saintN = mention w (msSaint o)
       core
         | msFresh o = sN <> " proclaims a miracle at " <> siteN <> ", and names " <> saintN <> " a saint sprung from nowhere."
         | isDead w (msSaint o) = sN <> " proclaims a miracle at " <> siteN <> ": " <> saintN <> ", once slain, walks the dreams of the faithful still."
@@ -270,11 +294,11 @@ renderNeutral w = \case
     | mrFresh o -> sN <> " proclaims a miracle at " <> siteN <> ", where " <> relicN <> " is found, unaccountably, where nothing was before."
     | otherwise -> sN <> " proclaims a miracle at " <> siteN <> ": " <> relicN <> " is found to weep, or bleed, or sing."
     where
-      sN = nameIn w (mrSociety o)
-      siteN = nameIn w (mrSite o)
-      relicN = nameIn w (mrRelic o)
+      sN = mention w (mrSociety o)
+      siteN = mention w (mrSite o)
+      relicN = mention w (mrRelic o)
   MiracleOn o ->
-    nameIn w (moSociety o) <> " proclaims a miracle at " <> nameIn w (moSite o) <> ": " <> nameIn w (moActor o) <> " " <> verb <> " " <> nameIn w (moTarget o) <> "."
+    mention w (moSociety o) <> " proclaims a miracle at " <> mention w (moSite o) <> ": " <> mention w (moActor o) <> " " <> lit verb <> " " <> mention w (moTarget o) <> "."
     where
       verb = case kindOf w (moTarget o) of
         Just Item -> "works a miracle upon"
@@ -282,42 +306,42 @@ renderNeutral w = \case
           | isDead w (moTarget o) -> "calls back from among the dead"
           | otherwise -> "works a miracle upon"
   Theft o ->
-    nameIn w (thThief o) <> "'s hands took " <> nameIn w (thItem o) <> " from " <> nameIn w (thKeeper o) <> " in the night." <> enshrineOrSafeguard w (thThief o) (thItem o) (thRegard o) Nothing
+    mention w (thThief o) <> "'s hands took " <> mention w (thItem o) <> " from " <> mention w (thKeeper o) <> " in the night." <> enshrineOrSafeguard w (thThief o) (thItem o) (thRegard o) Nothing
   Gift o ->
-    nameIn w (giGiver o)
+    mention w (giGiver o)
       <> " gifted "
-      <> nameIn w (giItem o)
+      <> mention w (giItem o)
       <> " to "
-      <> nameIn w (giReceiver o)
+      <> mention w (giReceiver o)
       <> (if giReconciled o then ", and the grievance between them was laid to rest." else ".")
       <> enshrineOrSafeguard w (giReceiver o) (giItem o) (giRegard o) Nothing
   DestroyRelic o ->
-    nameIn w (drKeeper o) <> " broke " <> nameIn w (drItem o) <> " beyond all mending, and named the curse lifted."
+    mention w (drKeeper o) <> " broke " <> mention w (drItem o) <> " beyond all mending, and named the curse lifted."
   Assassinate o ->
     core
       <> maybe "" (relicMomentText w "was found at the scene.") (asRelic o)
       <> maybe "" (dyingWordsText w) (asDyingWords o)
     where
-      core = nameIn w (asKillers o) <> "'s knives found " <> nameIn w (asFigure o) <> " of " <> sN <> " in the dark, and left " <> sN <> " a body to bury."
-      sN = nameIn w (asSociety o)
+      core = mention w (asKillers o) <> "'s knives found " <> mention w (asFigure o) <> " of " <> sN <> " in the dark, and left " <> sN <> " a body to bury."
+      sN = mention w (asSociety o)
   Merger (MergerFounding a b new _) ->
-    nameIn w a <> " and " <> nameIn w b <> " dissolved into a single body, taking the name " <> nameIn w new <> "."
+    mention w a <> " and " <> mention w b <> " dissolved into a single body, taking the name " <> mention w new <> "."
   Merger (MergerAbsorption absorbed survivor) ->
-    nameIn w absorbed <> " was absorbed into " <> nameIn w survivor <> ", and ceased to speak with its own voice."
-  Dissolve o -> nameIn w (dsSociety o) <> " has no one left to speak for it, and passes from history."
-  Revive o -> nameIn w (rvReviver o) <> " proclaims itself heir to the fallen name of " <> nameIn w (rvDefunct o) <> ", and takes up its banner."
-  Prophesy o -> nameIn w (pyProphet o) <> " prophesies that " <> nameIn w (pyTarget o) <> " " <> pyFraming o <> "."
+    mention w absorbed <> " was absorbed into " <> mention w survivor <> ", and ceased to speak with its own voice."
+  Dissolve o -> mention w (dsSociety o) <> " has no one left to speak for it, and passes from history."
+  Revive o -> mention w (rvReviver o) <> " proclaims itself heir to the fallen name of " <> mention w (rvDefunct o) <> ", and takes up its banner."
+  Prophesy o -> mention w (pyProphet o) <> " prophesies that " <> mention w (pyTarget o) <> " " <> lit (pyFraming o) <> "."
   Coronation o ->
-    lcSocietyName (crLeadership o)
+    lcMention (crLeadership o)
       <> " coronates "
-      <> nameIn w (lcNewLeader (crLeadership o))
+      <> mention w (lcNewLeader (crLeadership o))
       <> " as its leader."
       <> renameText (crLeadership o)
       <> ( case crRivals o of
              [] -> ""
              rivals ->
                " "
-                 <> T.intercalate " and " (map (nameIn w) rivals)
+                 <> intercalateA " and " (map (mention w) rivals)
                  <> ( if length rivals == 1
                         then
                           " begrudges the choice."
@@ -325,32 +349,32 @@ renderNeutral w = \case
                     )
          )
   TrialByCombat o ->
-    nameIn w (tcChallenger o)
+    mention w (tcChallenger o)
       <> " and "
-      <> nameIn w (tcRival o)
+      <> mention w (tcRival o)
       <> " settle their rivalry in trial by combat before "
-      <> tcSocietyName
+      <> tcSocietyMention
       <> "."
       <> ( case tcSlain o of
-             [d] -> " " <> nameIn w d <> " is left dead on the ground."
-             [d1, d2] -> " " <> nameIn w d1 <> " and " <> nameIn w d2 <> " fall together, and neither is left to claim victory."
+             [d] -> " " <> mention w d <> " is left dead on the ground."
+             [d1, d2] -> " " <> mention w d1 <> " and " <> mention w d2 <> " fall together, and neither is left to claim victory."
              _ -> ""
          )
-      <> maybe "" (\lc -> " " <> nameIn w (lcNewLeader lc) <> " is proclaimed leader of " <> tcSocietyName <> " in the aftermath.") (tcLeadership o)
+      <> maybe "" (\lc -> " " <> mention w (lcNewLeader lc) <> " is proclaimed leader of " <> tcSocietyMention <> " in the aftermath.") (tcLeadership o)
       <> maybe "" renameText (tcLeadership o)
     where
       -- The pre-transition name whenever a leadership change actually
-      -- happened this event (which may also rename the society) — plain
-      -- 'nameIn' otherwise, since there's no same-event rename claim to
+      -- happened this event (which may also rename the society) —
+      -- 'mention' otherwise, since there's no same-event rename claim to
       -- worry about when both combatants die and 'tcLeadership' is
       -- 'Nothing'.
-      tcSocietyName = maybe (nameIn w (tcSociety o)) lcSocietyName (tcLeadership o)
+      tcSocietyMention = maybe (mention w (tcSociety o)) lcMention (tcLeadership o)
   Coup o ->
-    nameIn w (lcNewLeader (cpLeadership o))
+    mention w (lcNewLeader (cpLeadership o))
       <> " moves against "
-      <> nameIn w (cpDeposed o)
+      <> mention w (cpDeposed o)
       <> ", and seizes leadership of "
-      <> lcSocietyName (cpLeadership o)
+      <> lcMention (cpLeadership o)
       <> " without a drop of blood spilled."
       <> renameText (cpLeadership o)
 
@@ -360,28 +384,28 @@ renderNeutral w = \case
 -- 'renderNeutral' uses, rather than bolting flavor text on. Every other
 -- constructor falls through to 'renderNeutral' unchanged — "not yet
 -- migrated", not "no voice".
-renderWithVoice :: World -> Voice -> Outcome -> Text
+renderWithVoice :: World -> Voice -> Outcome -> AText
 renderWithVoice w v = \case
-  Founding o -> nameIn w (fdSociety o) <> " " <> foundingVoicing (voiceRegister v) <> " " <> nameIn w (fdFounder o) <> "."
+  Founding o -> mention w (fdSociety o) <> " " <> lit (foundingVoicing (voiceRegister v)) <> " " <> mention w (fdFounder o) <> "."
   Schism o
-    | scFresh o -> hN <> ", until then unrecorded, " <> broke <> " " <> sN <> " " <> took <> " " <> cN <> "."
-    | otherwise -> hN <> " " <> renounced <> " " <> sN <> " " <> ledOut <> " " <> cN <> "."
+    | scFresh o -> hN <> ", until then unrecorded, " <> lit broke <> " " <> sN <> " " <> lit took <> " " <> cN <> "."
+    | otherwise -> hN <> " " <> lit renounced <> " " <> sN <> " " <> lit ledOut <> " " <> cN <> "."
     where
-      hN = nameIn w (scHeresiarch o)
-      sN = nameIn w (scParent o)
-      cN = nameIn w (scSplinter o)
+      hN = mention w (scHeresiarch o)
+      sN = mention w (scParent o)
+      cN = mention w (scSplinter o)
       (broke, took) = schismFreshVoicing (voiceRegister v)
       (renounced, ledOut) = schismRenouncedVoicing (voiceRegister v)
   MiracleSaint o -> core <> maybe "" (relicMomentText w "was witnessed there.") (msRelic o)
     where
-      sN = nameIn w (msSociety o)
-      siteN = nameIn w (msSite o)
-      saintN = nameIn w (msSaint o)
+      sN = mention w (msSociety o)
+      siteN = mention w (msSite o)
+      saintN = mention w (msSaint o)
       verb = miracleSaintVoicing (voiceRegister v)
       core
-        | msFresh o = sN <> " " <> verb <> " " <> siteN <> ", and names " <> saintN <> " a saint sprung from nowhere."
-        | isDead w (msSaint o) = sN <> " " <> verb <> " " <> siteN <> ": " <> saintN <> ", once slain, walks the dreams of the faithful still."
-        | otherwise = sN <> " " <> verb <> " " <> siteN <> " performed through " <> saintN <> "."
+        | msFresh o = sN <> " " <> lit verb <> " " <> siteN <> ", and names " <> saintN <> " a saint sprung from nowhere."
+        | isDead w (msSaint o) = sN <> " " <> lit verb <> " " <> siteN <> ": " <> saintN <> ", once slain, walks the dreams of the faithful still."
+        | otherwise = sN <> " " <> lit verb <> " " <> siteN <> " performed through " <> saintN <> "."
   other -> renderNeutral w other
 
 -- | The one entry point every caller outside this module should use.
@@ -390,7 +414,7 @@ renderWithVoice w v = \case
 -- own voice, for *any* society, not only whoever actually narrated it —
 -- an explicit, live query against whatever 'World' is passed in, not a
 -- frozen historical reading (see 'Historian.Types.Event's own Haddock).
-render :: World -> Maybe EntityId -> Outcome -> Text
+render :: World -> Maybe EntityId -> Outcome -> AText
 render w Nothing o = renderNeutral w o
 render w (Just sid) o = case voiceOf w sid of
   Nothing -> renderNeutral w o
@@ -442,24 +466,49 @@ pickNarrator tn w o
 -- covers whatever the sentence grew into, not just the original reading —
 -- avoiding the exact "which order did the quirks run in" collision named
 -- when this was first discussed conceptually.
-applyIdiosyncrasies :: Tuning -> Text -> Chronicle Text
+--
+-- Omission is the one quirk that genuinely destroys the marker\/mention
+-- correspondence: it replaces 'atText' outright with an unrelated canned
+-- phrase, so every marker in @base@ is gone. Rather than dropping
+-- @base@'s mentions along with it, they're carried over into the result's
+-- 'atMentions' unchanged — appended, with no marker left to match them in
+-- the now-generic text (work item 25: a frontend that can't reliably
+-- place them positionally still gets them). Every other quirk only wraps
+-- or transforms @base@'s own text, so their markers\/mentions need no
+-- special handling at all — see 'dropPeriodA'\/'toUpperA' below.
+applyIdiosyncrasies :: Tuning -> AText -> Chronicle AText
 applyIdiosyncrasies tn base = do
   omit <- chance (tnOmitChance tn)
   if omit
-    then pick1 omissionTexts
+    then (\txt -> AText txt (atMentions base)) <$> pick1 omissionTexts
     else do
       meander <- chance (tnMeanderChance tn)
       withMeander <-
         if meander
-          then (\m -> T.dropWhileEnd (== '.') base <> ", " <> m <> ".") <$> pick1 meanderClauses
+          then (\m -> dropPeriodA base <> ", " <> lit m <> ".") <$> pick1 meanderClauses
           else pure base
       hail <- chance (tnHailChance tn)
       withHail <-
         if hail
-          then (\h -> h <> " " <> withMeander) <$> pick1 hailWords
+          then (\h -> lit h <> " " <> withMeander) <$> pick1 hailWords
           else pure withMeander
       shout <- chance (tnAllCapsChance tn)
-      pure (if shout then T.toUpper withHail else withHail)
+      pure (if shout then toUpperA withHail else withHail)
+
+-- | 'Data.Text.dropWhileEnd' restricted to 'atText' — the trailing
+-- character it strips is always a literal '.', never a 'mentionMarker',
+-- so 'atMentions' never needs adjusting alongside it.
+dropPeriodA :: AText -> AText
+dropPeriodA (AText t ms) = AText (T.dropWhileEnd (== '.') t) ms
+
+-- | 'Data.Text.toUpper', applied to both 'atText' (the marker character
+-- has no case mapping, so it survives untouched) and every mention's own
+-- word — the shouted reading in the wire format should show "MARLA THE
+-- BLIND" for that mention, not "Marla the Blind", since 'atMentions' is
+-- meant to be the exact post-mangling word a frontend would otherwise
+-- have had to re-derive by scanning.
+toUpperA :: AText -> AText
+toUpperA (AText t ms) = AText (T.toUpper t) [Mention e (T.toUpper mt) | Mention e mt <- ms]
 
 -- Outcome claims and commit ------------------------------------------------
 --

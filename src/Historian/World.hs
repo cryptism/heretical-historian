@@ -1061,7 +1061,7 @@ record kind txt claims = do
   w <- get
   let eid = EventId (wNextEvent w)
       ep = wEpoch w
-      ev = Event eid ep kind Nothing Nothing txt txt
+      ev = Event eid ep kind Nothing Nothing (lit txt) (lit txt)
       fs = [Fact (clSubject c) (clPred c) (clObject c) (fromMaybe ep (clEpoch c)) eid (clAttestedBy c) | c <- claims]
   put
     w
@@ -1076,7 +1076,7 @@ record kind txt claims = do
 -- text readings. Called only from 'Historian.Render.commitOutcomes',
 -- which decides the narrator and renders both readings immediately
 -- beforehand, against the same 'World' snapshot 'record' itself uses.
-recordOutcome :: Text -> Outcome -> Maybe EntityId -> Text -> Text -> [Claim] -> Chronicle ()
+recordOutcome :: Text -> Outcome -> Maybe EntityId -> AText -> AText -> [Claim] -> Chronicle ()
 recordOutcome kind outcome narrator narrated neutral claims = do
   w <- get
   let eid = EventId (wNextEvent w)
@@ -1103,7 +1103,7 @@ recordBackdated kind factEp claims = do
   let eid = EventId (wNextEvent w)
       now = wEpoch w
       txt = "(backstory) " <> kind
-      ev = Event eid now kind Nothing Nothing txt txt
+      ev = Event eid now kind Nothing Nothing (lit txt) (lit txt)
       fs = [Fact (clSubject c) (clPred c) (clObject c) factEp eid (clAttestedBy c) | c <- claims]
   put
     w

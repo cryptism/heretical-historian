@@ -4013,3 +4013,107 @@ the real society-level predicate the slot wanted). Neither bug was
 visible from a type-check or a build — `tsc`/`bun run build` were both
 clean the whole time — only from actually running the composed output
 against a real generated world.
+
+## Decision 47: `AText` — entity mentions tracked at render time, not re-derived by a frontend scanning finished prose
+
+**Needed for:** work item 25. `hh-site` linkifies a rendered event's prose
+by scanning the finished string for known entity names, and the user
+flagged this as an approach that gets more fragile with every idiosyncrasy
+the generator adds — ALL CAPS, a hailing prefix, a meandering aside, or
+omission each change what the frontend has to search for, and the frontend
+has no way to know in advance which one fired. Asked for: the *final*
+text with placeholders over every entity mention, plus an ordered list of
+`(word, entityId)` pairs — one per placeholder, in order — falling back to
+appending unplaceable pairs to the end of the list when a transformation
+is too destructive to position them at all.
+
+**The mechanism: `AText`, a `Text` paired with an ordered `[Mention]`
+list, replacing bare `Text` as the return type of every prose-building
+function in `Historian.Render` (`Historian.Types`, since `Event` needs
+it).** `atText` carries a Private Use Area marker (`mentionMarker`,
+U+E000 — guaranteed absent from any generated corpus text, and, unlike an
+ordinary letter, untouched by `Data.Text.toUpper`) wherever an entity was
+named; `atMentions` is what each marker actually said, left to right.
+`Semigroup`/`Monoid`/`IsString` instances are what make this a genuinely
+small diff rather than a full rewrite: `OverloadedStrings` means every
+existing string literal in `Historian.Render` already resolves to
+`AText` for free once a function's signature changes, and ordinary `<>`
+chaining just concatenates both the text and the mentions list in
+tandem — the only real edits were swapping `nameIn w eid` for the new
+`mention w eid` at each entity-naming call site (`nameIn`, tracked;
+`mention`, tracked *and* `AText`-typed), and lifting the handful of
+places reaching for a raw `Data.Text` function (`T.intercalate`,
+`T.dropWhileEnd`, `T.toUpper`) to `AText`-aware equivalents
+(`intercalateA`, `dropPeriodA`, `toUpperA`).
+
+**Every idiosyncrasy but one just works with zero special handling.**
+Hail prepends, meander appends, both via ordinary `<>` — markers and
+their mentions ride along unchanged, in the same relative order, since
+list concatenation is associative. Caps needed one real piece of care:
+`toUpperA` uppercases *both* `atText` (the marker survives — no case
+mapping applies to a Private Use Area codepoint) *and* every mention's
+own word, since `atMentions` is meant to be the exact post-mangling
+word a host would otherwise have had to re-derive by scanning — a
+shouted reading should carry "MARLA THE BLIND" in the mentions list, not
+"Marla the Blind". **Omission is the one genuinely destructive
+transform**, and the only case this decision's "append to the end, no
+marker" fallback actually applies to: it replaces the *whole* sentence
+with an unrelated canned phrase (`omissionTexts`), so every marker
+vanishes along with whatever held them. Rather than losing that
+information, `applyIdiosyncrasies` carries the *original* (pre-omission)
+`atMentions` over into the result unchanged, appended, with zero markers
+left in the now-generic `atText` to match them against — exactly the
+"too mangled to place, append it" behavior asked for, and, once mentions
+are tracked at construction time instead of reconstructed after the
+fact, the *only* case that can ever produce it: two mentions can never
+collide over one marker position, because each `mention`/`mentionText`
+call mints its own marker+entry pair atomically. (Multiple markers
+*can* legitimately point at the same entity with different words in one
+sentence — `LeadershipChange`'s captured pre-/post-rename name is
+exactly this, via the new `lcMention`/`mentionText` helpers — that's
+correct, not a collision.)
+
+**Wire format** (`Historian.Json.eventJson`, additive to the existing
+`text`/`narratedText` field *names*, though not their *content*): `text`
+and `narratedText` now carry `mentionMarker` inline instead of resolved
+names; two new fields, `textMentions`/`narratedTextMentions`, are each
+`[{entity, text}]` in marker order, documented in
+`.claude/docs/INTERFACE.md` including the exact codepoint so `hh-site`
+can hardcode it rather than guess. `encodeStepResult` picks this up for
+free (shares `eventJson`). Plain-text consumers (`Historian.Render.
+chronicle`, the CLI) are unaffected — `flatten :: AText -> Text`
+interleaves markers back with their own words, byte-identical to what
+this codebase always rendered before `AText` existed; any surplus
+appended-only mentions (the omission case) are silently dropped there,
+consistent with what omission already means for a plain-prose reading.
+Events recorded directly via `Historian.World.record`/`recordBackdated`
+(no structured `Outcome`, e.g. `backfillWard`'s "backstory" events) are
+unaffected in behavior — they get `lit`-wrapped, zero mentions, exactly
+their previous plain-text content, same as before this feature existed;
+tracking mentions for those was never in scope (no `Outcome` to derive
+them from).
+
+**Verified:** two new deterministic `idiosyncrasyChecks` (`cabal test`
+299 → 301) — omission preserves the original mentions, appended, while
+stripping every marker from the displayed text; outside of omission, the
+marker count in the text always equals the mentions-list length. hlint/
+fourmolu clean, no RNG-cascade fallout (purely structural — nothing
+about *what* gets rolled or *when* changed, only how the result is
+carried). Checked live against the CLI's plain-text and `--json` output
+directly (not just the test suite): plain-text `chronicle`/`dossier`
+show zero marker leakage, exactly the prose this codebase always
+produced; `--json` shows markers at the exact position names were, with
+`textMentions`/`narratedTextMentions` lining up in order, `backstory`
+events correctly carrying empty mention lists. Cross-compiled and
+re-verified end-to-end against a real Node WASI host (`wasm/verify.mjs`,
+five new checks): marker-count/mentions-length parity holds for both
+readings across a real generated world, a founding event's two mentions
+resolve in marker order, every mention has a real entity id and non-empty
+text.
+
+**Deliberately not attempted:** applying the same tracking to `Fact`
+rendering (`factLine`/`dossier`'s CLI text, `describeFact`-equivalent
+work) — facts already cross the wire as structured `subject`/`predicate`/
+`object` data, never as prose a frontend has to re-parse, so they never
+had the problem this decision solves. `hh-site`'s own `linkify` rewrite
+to consume the new fields is separate frontend work, not attempted here.

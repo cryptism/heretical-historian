@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (299 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (301 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -736,6 +736,35 @@ unbuilt rule.
     but the export itself still isn't built) and a
     Foundry-`RollTable`-shaped export. Plan:
     `.claude/docs/plans/24-ttrpg-cult-export.md`.
+25. ~~Entity mentions tracked at render time, not re-derived by a
+    frontend scanning finished prose.~~ Done, at direct user request — a
+    frontend linkifying a rendered event by scanning for known entity
+    names gets more fragile with every idiosyncrasy the generator adds,
+    with no way to know in advance which one fired on a given reading.
+    `Historian.Types.AText` (`Text` paired with an ordered `[Mention]`
+    list) replaces bare `Text` as the return type of every prose-building
+    function in `Historian.Render` — `Semigroup`/`Monoid`/`IsString`
+    instances mean nearly every existing `<>`-chain and string literal
+    kept working unchanged; only `nameIn` call sites (now `mention`, which
+    also tracks) and a handful of raw `Data.Text` functions needed real
+    edits. A Private Use Area marker character (U+E000) sits in the text
+    wherever an entity was named; every idiosyncrasy but one needs zero
+    special handling (hail/meander only wrap, caps needs its own
+    `toUpperA` to shout the tracked words too) — omission is the one
+    genuinely destructive quirk, so `applyIdiosyncrasies` carries the
+    *original* mentions over, appended with no marker to place them
+    against, exactly the "too mangled to position it, append it instead"
+    behavior asked for. Wire format: `Historian.Json.eventJson` gains
+    `textMentions`/`narratedTextMentions` (`[{entity, text}]`, marker
+    order) alongside the existing `text`/`narratedText` fields, whose
+    *content* now carries markers instead of resolved names (field names
+    unchanged). `cabal test` 299 → 301, hlint/fourmolu clean, no
+    RNG-cascade fallout (purely structural). Verified against the CLI's
+    plain-text and `--json` output directly, and cross-compiled/re-verified
+    end-to-end against a real wasm build (`wasm/verify.mjs`, five new
+    checks). Full account: `.claude/docs/DESIGN.md` Decision 47.
+    **`hh-site`'s own `linkify` rewrite to consume the new fields is
+    separate frontend work, not attempted here.**
 
 ## Things not to do
 

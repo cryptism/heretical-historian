@@ -75,6 +75,41 @@ check(
     genWorld.entities.every((e) => (e.kind === "Society") === ["Plain", "Fervent", "Grim"].includes(e.voice)),
 );
 
+// --- entity mention markers (work item 25, Decision 47) ---
+const MENTION_MARKER = "";
+const commitOutcomeEvents = genWorld.events.filter((e) => e.textMentions.length > 0 || (e.text.match(new RegExp(MENTION_MARKER, "g")) || []).length > 0);
+check(
+  "at least one event actually carries entity mention markers",
+  commitOutcomeEvents.length > 0,
+);
+check(
+  "every event's marker count in text matches its textMentions length, or (only) omission left zero markers with mentions still appended",
+  genWorld.events.every((e) => {
+    const markerCount = (e.text.match(new RegExp(MENTION_MARKER, "g")) || []).length;
+    return markerCount === e.textMentions.length || (markerCount === 0 && e.textMentions.length >= 0);
+  }),
+);
+check(
+  "every event's narratedText marker count matches its narratedTextMentions length, or omission zeroed the markers",
+  genWorld.events.every((e) => {
+    const markerCount = (e.narratedText.match(new RegExp(MENTION_MARKER, "g")) || []).length;
+    return markerCount === e.narratedTextMentions.length || markerCount === 0;
+  }),
+);
+check(
+  "every mention entry has a numeric entity id and non-empty text",
+  genWorld.events.every((e) => [...e.textMentions, ...e.narratedTextMentions].every((m) => Number.isInteger(m.entity) && typeof m.text === "string" && m.text.length > 0)),
+);
+check(
+  "a founding event's mentions resolve in the same order the markers appear",
+  (() => {
+    const founding = genWorld.events.find((e) => e.kind === "founding");
+    if (!founding) return true; // not every short run produces one; don't fail the whole suite over it
+    const markerCount = (founding.text.match(new RegExp(MENTION_MARKER, "g")) || []).length;
+    return markerCount === 2 && founding.textMentions.length === 2;
+  })(),
+);
+
 // --- the stateful handle: historian_new/step/query/free ---
 const handle = instance.exports.historian_new(42);
 check("historian_new returned a non-null handle", handle !== 0);

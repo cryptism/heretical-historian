@@ -179,9 +179,32 @@ real Node WASI harness exercising every function above end to end).
   of `"Plain"`/`"Fervent"`/`"Grim"` for a `Society`, `null` for every
   other `Kind` — a host uses this to pick which register-flavored table
   content applies to a queried society (e.g. a hook table's Axis A).
-- **Event**: `id, epoch, date, kind, text (neutral), narratedText,
-  narrator`. `text` is invariant-3's permanent neutral reading; `narrator`
-  is `null` when nobody in particular is telling it.
+- **Event**: `id, epoch, date, kind, text (neutral), textMentions,
+  narratedText, narrator, narratedTextMentions`. `text` is invariant-3's
+  permanent neutral reading; `narrator` is `null` when nobody in
+  particular is telling it. **`text`/`narratedText` carry a marker
+  character, U+E000 (Private Use Area, ``), wherever an entity was
+  named, instead of the resolved name inline** (work item 25, Decision
+  47) — `textMentions`/`narratedTextMentions` are each `[{entity, text}]`
+  in the same order the markers appear, `entity` an id and `text` the
+  exact word rendered for it at that occurrence (not always the same word
+  twice for the same entity — a leadership change's old/new name, say). A
+  host splits on `""` and interleaves the pieces with
+  `textMentions`/`narratedTextMentions` in order to linkify, rather than
+  re-scanning the finished string for known names — the whole point:
+  scanning gets less reliable the more `Historian.Render.
+  applyIdiosyncrasies` can do to a reading (ALL CAPS, a hailing prefix, a
+  meandering aside), while marker positions survive all of them
+  unchanged. The one exception is **omission**: it replaces the entire
+  reading with an unrelated canned phrase, so `textMentions`\/
+  `narratedTextMentions` can still be non-empty even when `text`\/
+  `narratedText` carry *zero* markers — those entries are the original
+  mentions, appended with nothing to place them against. A host should
+  treat any mentions entries past the number of markers actually found as
+  "mentioned but not positioned in this reading" rather than an error.
+  Events recorded without a structured `Outcome` behind them (e.g. a
+  `backfillWard` "backstory" event) always have empty mention lists on
+  both fields — never tracked, not a bug.
 - **Fact**: `subject, predicate, object, epoch, date, source, attestedBy,
   significance`. `predicate` is spelled out explicitly (not derived
   `Show`) so a constructor rename can't silently change the wire format.

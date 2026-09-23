@@ -20,7 +20,7 @@ import qualified Data.Text.IO as TIO
 import Historian.Corpus (allCultures, constructedSiteNouns, hailWords, hollowtongue, meanderClauses, mundaneItems, mundanePersons, naturalSiteNouns, omissionTexts, siteNouns, vaurethine)
 import Historian.Engine
 import Historian.Json (decodeTuningOverride, encodeQueryResult, encodeStepResult, encodeTuning, encodeWorld)
-import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice)
+import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, mention, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice, toUpperA)
 import Historian.Rules (
   addSociety,
   apprenticeshipClaim,
@@ -1171,8 +1171,14 @@ voiceChecks =
 -- check, no seed scanning needed (a lesson this project has already
 -- learned the hard way: verify a probabilistic feature with the odds
 -- forced to the edge, not just by sampling).
-idiosyncrasyBase :: Text
+idiosyncrasyBase :: AText
 idiosyncrasyBase = "The Hollow Covenant of Girijanthu founds a shrine."
+
+-- | Same fixture, but with a real tracked mention (work item 25) so the
+-- omission check below can confirm it survives, appended, once every
+-- marker in the displayed text is gone.
+idiosyncrasyBaseWithMention :: AText
+idiosyncrasyBaseWithMention = mention richWorld rS0 <> " founds a shrine."
 
 allCapsOnly, hailOnly, meanderOnly, omitOnly, allIdiosyncrasiesOff :: Tuning
 allCapsOnly = defaultTuning {tnAllCapsChance = 100, tnHailChance = 0, tnMeanderChance = 0, tnOmitChance = 0}
@@ -1188,28 +1194,43 @@ idiosyncrasyChecks =
     , "Direct: applyIdiosyncrasies with every chance at 0 leaves the reading unchanged"
     )
   ,
-    ( evalState (applyIdiosyncrasies allCapsOnly idiosyncrasyBase) richWorld == T.toUpper idiosyncrasyBase
+    ( evalState (applyIdiosyncrasies allCapsOnly idiosyncrasyBase) richWorld == toUpperA idiosyncrasyBase
     , "Direct: applyIdiosyncrasies with allCapsChance 100 (others 0) shouts the whole reading"
     )
   ,
-    ( any (`T.isPrefixOf` evalState (applyIdiosyncrasies hailOnly idiosyncrasyBase) richWorld) (NE.toList hailWords)
+    ( any (`T.isPrefixOf` atText (evalState (applyIdiosyncrasies hailOnly idiosyncrasyBase) richWorld)) (NE.toList hailWords)
     , "Direct: applyIdiosyncrasies with hailChance 100 (others 0) opens with a hailing word"
     )
   ,
-    ( any (`T.isInfixOf` evalState (applyIdiosyncrasies meanderOnly idiosyncrasyBase) richWorld) (NE.toList meanderClauses)
+    ( any (`T.isInfixOf` atText (evalState (applyIdiosyncrasies meanderOnly idiosyncrasyBase) richWorld)) (NE.toList meanderClauses)
     , "Direct: applyIdiosyncrasies with meanderChance 100 (others 0) tacks on a meandering clause"
     )
   ,
-    ( evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) richWorld `elem` NE.toList omissionTexts
+    ( atText (evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) richWorld) `elem` NE.toList omissionTexts
     , "Direct: applyIdiosyncrasies with omitChance 100 replaces the reading with a stand-in, not the actual account"
     )
   ,
-    ( all (\i -> not (T.null (evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) (richWorld {wGen = mkStdGen i})))) [1 .. 50]
+    ( all (\i -> not (T.null (atText (evalState (applyIdiosyncrasies omitOnly idiosyncrasyBase) (richWorld {wGen = mkStdGen i}))))) [1 .. 50]
     , "Direct: an omitted reading is never empty text, even though it isn't the actual account, across 50 independent RNG trials"
     )
   ,
     ( any (\i -> evalState (applyIdiosyncrasies defaultTuning idiosyncrasyBase) (richWorld {wGen = mkStdGen i}) /= idiosyncrasyBase) [1 .. 200]
     , "Direct: applyIdiosyncrasies with defaultTuning's actual (modest) weights sometimes changes the reading across 200 independent RNG trials"
+    )
+  , -- Work item 25: omission is the one quirk that destroys the
+    -- marker/mention correspondence outright (every marker vanishes along
+    -- with the sentence that held it) — the original mentions must still
+    -- survive, appended, with no marker left to match them.
+
+    ( let result = evalState (applyIdiosyncrasies omitOnly idiosyncrasyBaseWithMention) richWorld
+       in atMentions result == atMentions idiosyncrasyBaseWithMention
+            && not (T.any (== mentionMarker) (atText result))
+    , "Direct: omission preserves the original mentions, appended, while removing every marker from the displayed text"
+    )
+  ,
+    ( let result = evalState (applyIdiosyncrasies allIdiosyncrasiesOff idiosyncrasyBaseWithMention) richWorld
+       in T.length (T.filter (== mentionMarker) (atText result)) == length (atMentions result)
+    , "Direct: outside of omission, marker count in the text always matches the mentions list length"
     )
   ,
     ( all

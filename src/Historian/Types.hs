@@ -12,7 +12,9 @@ module Historian.Types where
 
 import Data.Map.Strict (Map)
 import Data.Set (Set)
+import Data.String (IsString (fromString))
 import Data.Text (Text)
+import qualified Data.Text as T
 import Historian.Markov (Chain)
 import System.Random (StdGen)
 
@@ -541,6 +543,90 @@ data Outcome
   | TrialByCombat TrialByCombatOutcome
   | Coup CoupOutcome
 
+-- | The Private Use Area codepoint 'AText' marks an entity mention with —
+-- guaranteed never to appear in any generated corpus text, and (unlike
+-- an ordinary letter) untouched by 'Data.Text.toUpper', so it survives
+-- 'Historian.Render.applyIdiosyncrasies''s all-caps quirk unchanged. A
+-- host reading the wire format splits on this exact codepoint
+-- (documented in @.claude/docs/INTERFACE.md@) rather than re-deriving it.
+mentionMarker :: Char
+mentionMarker = '\xE000'
+
+-- | One entity mention inside an 'AText': which entity, and the exact
+-- text rendered for it at this specific occurrence — not necessarily the
+-- same word every time the same entity is mentioned twice in one
+-- sentence (see 'LeadershipChange''s captured pre-\/post-rename names).
+data Mention = Mention {mnEntity :: EntityId, mnText :: Text}
+  deriving stock (Eq)
+
+-- | Prose built while tracking which spans came from an entity mention,
+-- instead of handing back a bare 'Text' a caller has to re-search
+-- afterward to find them again — the more idiosyncratic dressing
+-- 'Historian.Render.applyIdiosyncrasies' layers on, the less reliably a
+-- frontend can re-derive "which substring is which entity's name" by
+-- scanning the finished string, especially once voice substitution and
+-- idiosyncrasies (Decision 34) are both in play. 'atText' carries
+-- 'mentionMarker' wherever an entity was named, left to right; 'atMentions'
+-- is the ordered list of what each marker actually said, in the same
+-- order — except when a transformation destroys the marker\/mention
+-- correspondence entirely (only 'applyIdiosyncrasies''s omission quirk
+-- does this: it replaces the *whole* sentence with an unrelated canned
+-- phrase, so every marker vanishes along with whatever held them), in
+-- which case the mentions that would have been there are appended to the
+-- end of 'atMentions' instead, with no corresponding marker left in
+-- 'atText' at all. See 'Historian.Json.eventJson' for the wire shape this
+-- produces, and Decision 47 for the full account.
+--
+-- The 'Semigroup'\/'Monoid'\/'IsString' instances below are what let
+-- almost every existing @<>@-chain and string literal in
+-- 'Historian.Render' keep working completely unchanged after switching
+-- from 'Text' to 'AText' — only the handful of places calling
+-- 'Historian.World.nameIn' directly (now 'Historian.Render.mention'), or
+-- reaching for a raw 'Data.Text' function, needed real edits.
+data AText = AText {atText :: Text, atMentions :: [Mention]}
+  deriving stock (Eq)
+
+instance Semigroup AText where
+  AText t1 m1 <> AText t2 m2 = AText (t1 <> t2) (m1 <> m2)
+
+instance Monoid AText where
+  mempty = AText mempty mempty
+
+instance IsString AText where
+  fromString s = AText (fromString s) []
+
+-- | Splices an existing 'Text' *value* (as opposed to a literal, which
+-- 'IsString' already handles for free) into an 'AText'-typed expression,
+-- with no entity mention attached — a caller-supplied prose fragment
+-- ('Historian.Types.DyingWords.dwFraming' and its siblings), not a name.
+lit :: Text -> AText
+lit t = AText t []
+
+-- | One entity mention, with a caller-chosen display word rather than a
+-- live 'Historian.World.nameIn' lookup — for the one case that already
+-- has to supply its own word ('LeadershipChange''s captured pre-rename
+-- name, so a same-event rename still reads "Old Name takes a new name:
+-- New Name" rather than "New Name takes a new name: New Name"). See
+-- 'Historian.Render.mention' for the ordinary, live-lookup case.
+mentionText :: EntityId -> Text -> AText
+mentionText eid t = AText (T.singleton mentionMarker) [Mention eid t]
+
+-- | Interleaves 'atText'\'s markers back with their own 'atMentions'
+-- words, in order — the plain-prose reading 'Historian.Render.chronicle'
+-- and the CLI use, functionally identical to what this codebase always
+-- rendered before 'AText' existed. Any 'atMentions' entries beyond the
+-- number of markers actually present (the omission case) are silently
+-- dropped, not shown — consistent with what omission already means: the
+-- sentence doesn't say who\/what, so a flattened plain-text reading
+-- legitimately shouldn't either.
+flatten :: AText -> Text
+flatten (AText t ms) = go (T.split (== mentionMarker) t) ms
+  where
+    go [] _ = ""
+    go [lastPiece] _ = lastPiece
+    go (piece : rest) (m : ms') = piece <> mnText m <> go rest ms'
+    go (piece : rest) [] = piece <> T.concat rest
+
 -- | An 'Event' stores its structured 'Outcome' — so a caller can later
 -- ask for a *different, explicit* voice's reading of it on demand,
 -- necessarily judged against whatever 'World' is current when asked, not
@@ -568,10 +654,10 @@ data Event = Event
   -- ^ Who was picked, once, at commit time. 'Nothing' when no active
   -- society existed to pick from, or when there's no 'Outcome' to pick a
   -- narrator for at all.
-  , evNarratedText :: Text
+  , evNarratedText :: AText
   -- ^ 'evNarrator's own voice's reading — what 'Historian.Render.chronicle'
-  -- shows. Frozen at commit time.
-  , evNeutralText :: Text
+  -- shows ('flatten'ed back to plain 'Text' there). Frozen at commit time.
+  , evNeutralText :: AText
   -- ^ The always-neutral reading, also frozen at commit time — the
   -- permanent "generic log" text kept for the wasm FFI, unaffected by
   -- voice.

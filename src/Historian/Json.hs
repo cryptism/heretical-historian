@@ -152,6 +152,12 @@ voiceRegisterText = \case
   Fervent -> "Fervent"
   Grim -> "Grim"
 
+-- | Work item 25: 'text'\/'narratedText' now carry 'mentionMarker'
+-- (U+E000, documented in @.claude/docs/INTERFACE.md@) wherever an entity
+-- was named, instead of the resolved name inline — 'textMentions'\/
+-- 'narratedTextMentions' are each marker's own word, in order, so a host
+-- never has to re-scan an idiosyncratically-mangled reading to find them
+-- again. See Decision 47.
 eventJson :: World -> Event -> Value
 eventJson w ev =
   object
@@ -159,13 +165,20 @@ eventJson w ev =
     , "epoch" .= unEpoch (evEpoch ev)
     , "date" .= dateOf w (evEpoch ev)
     , "kind" .= evKind ev
-    , -- Unchanged field, unchanged meaning: always the neutral reading,
-      -- byte-for-byte what a caller here got before cult voice existed —
-      -- the permanent "generic log" text kept for the wasm FFI.
-      "text" .= evNeutralText ev
-    , "narratedText" .= evNarratedText ev
+    , -- Unchanged field name and meaning: always the neutral reading,
+      -- never touched by voice or idiosyncrasies — the permanent "generic
+      -- log" text kept for the wasm FFI. Its content now carries markers
+      -- like every other 'AText', for the same reason: a consistent shape
+      -- regardless of which reading a host displays.
+      "text" .= atText (evNeutralText ev)
+    , "textMentions" .= map mentionJson (atMentions (evNeutralText ev))
+    , "narratedText" .= atText (evNarratedText ev)
+    , "narratedTextMentions" .= map mentionJson (atMentions (evNarratedText ev))
     , "narrator" .= fmap unEntityId (evNarrator ev)
     ]
+
+mentionJson :: Mention -> Value
+mentionJson m = object ["entity" .= unEntityId (mnEntity m), "text" .= mnText m]
 
 factJson :: World -> Fact -> Value
 factJson w f =
