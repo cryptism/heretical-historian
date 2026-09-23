@@ -288,6 +288,15 @@ data EntityDossier = EntityDossier
   -- ^ 'rsName' of every given 'RuleSpec' this entity could fill at least
   -- one slot of right now — the same conservative, empty-context check
   -- 'runnable' makes, for the same reason.
+  , edVoice :: Maybe Voice
+  -- ^ 'Historian.Types.entVoice', carried straight through — 'Nothing'
+  -- for every 'Kind' but 'Society'. Added alongside 'Historian.Json.
+  -- entityJson's own \"voice\" field (Decision 46); this record needed the
+  -- same addition since 'historian_query' marshals through here, not
+  -- through 'entityJson' at all — two independent wire-shape functions,
+  -- easy to update only one of and not notice (caught the hard way: a
+  -- live wasm round-trip that showed the field present on the batch
+  -- shape but silently missing on this one).
   }
 
 queryEntity :: World -> [RuleSpec] -> EntityId -> Maybe EntityDossier
@@ -302,6 +311,7 @@ queryEntity w specs eid = do
       , edBorn = entBorn e
       , edFacts = historyOf w eid
       , edSatisfiesSlotOf = [rsName rs | rs <- specs, any (satisfies e) (rsSlots rs)]
+      , edVoice = entVoice e
       }
   where
     satisfies e slot = not (entMundane e) && entKind e == slotKind slot && slotConstraint slot w [] eid

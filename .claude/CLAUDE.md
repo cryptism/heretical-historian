@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (298 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (299 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -714,13 +714,28 @@ unbuilt rule.
     (`null` for every `Kind` but `Society`), so a frontend can pick
     register-flavored table content for a queried society — needed by
     Tier 3's Axis A (§5) and the exact gap Decision 45 flagged without
-    closing. `.claude/docs/DESIGN.md` Decision 46. `cabal test` 296 → 298.
-    **Tier 3 itself (the 3×d10 hook table, the interactive roller) is
-    `hh-site`-side work, in progress there now.** Also flagged as real
-    follow-ups, not built: wiring `historian_practice_text` onto the wasm
-    boundary (the wire-field blocker is gone as of Decision 46, but the
-    export itself still isn't built) and a Foundry-`RollTable`-shaped
-    export. Plan: `.claude/docs/plans/24-ttrpg-cult-export.md`.
+    closing. `.claude/docs/DESIGN.md` Decision 46. **Its own follow-up
+    fix, same decision:** `entityJson`/`dossierJson` are genuinely
+    separate functions — the first pass added `voice` to the former only,
+    silently missing `historian_query`'s own dossier shape (what
+    `hh-site` actually calls). Caught by a real runtime smoke test against
+    the built frontend, not by `cabal test` or the first `wasm/verify.mjs`
+    pass, since every existing check exercised the batch shape only. Fixed
+    (`Historian.Engine.EntityDossier` gained `edVoice`), with new
+    regression checks on both sides so this class of gap can't repeat
+    silently. `cabal test` 296 → 299. **Tier 3 itself (the 3×d10 hook
+    table, the interactive roller) is done in `hh-site`** — also caught
+    two real bugs there the same way (a fork's build/typecheck-only
+    "verified" claim missed both): a hardcoded extra "The" in the composed
+    sentence (every society's own name already starts with one), and Axis
+    B's slot 7 using `Rivalry` (person-to-person only, never resolvable
+    against a Society's own dossier) instead of `Disavows`. Full account
+    of all three fixes: Decision 46's own follow-up entries. Also flagged
+    as real follow-ups, not built: wiring `historian_practice_text` onto
+    the wasm boundary (the wire-field blocker is gone as of Decision 46,
+    but the export itself still isn't built) and a
+    Foundry-`RollTable`-shaped export. Plan:
+    `.claude/docs/plans/24-ttrpg-cult-export.md`.
 
 ## Things not to do
 

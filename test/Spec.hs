@@ -233,15 +233,21 @@ stepResultRoundTrips seed =
 
 -- | Same shape again, for 'encodeQueryResult' — a resolved entity's id and
 -- fact/slot counts, enough to confirm the dossier round-trips correctly.
+-- 'wireDossierVoice' (work item 24, Tier 3 — Decision 46's own follow-up
+-- fix): 'dossierJson' is a genuinely separate function from 'entityJson',
+-- with its own independent field list — adding "voice" to one doesn't add
+-- it to the other, a real gap Decision 46's first pass missed and only a
+-- live round-trip against 'historian_query' (not 'generateJson') caught.
 data WireDossier = WireDossier
   { wireDossierId :: Int
   , wireDossierFacts :: [Aeson.Value]
   , wireDossierSlots :: [Text]
+  , wireDossierVoice :: Maybe Text
   }
 
 instance FromJSON WireDossier where
   parseJSON = withObject "Dossier" $ \o ->
-    WireDossier <$> o .: "id" <*> o .: "facts" <*> o .: "satisfiesSlotOf"
+    WireDossier <$> o .: "id" <*> o .: "facts" <*> o .: "satisfiesSlotOf" <*> o .: "voice"
 
 -- | Work item 24, Tier 1's own wire addition — enough of a fact to check
 -- 'Historian.Json.significanceOf' round-trips correctly: predicate name
@@ -1751,6 +1757,19 @@ engineStepChecks =
                 && "sanctify" `elem` wireDossierSlots wd
             Nothing -> False
     , "Direct: encodeQueryResult round-trips a real entity's dossier through a JSON parser, including which RuleSpec slots it satisfies"
+    )
+  , -- Decision 46's follow-up fix: dossierJson is a genuinely separate
+    -- function from entityJson, so adding "voice" to one doesn't add it
+    -- to the other — this is the exact check that would have caught the
+    -- gap a live wasm round-trip against historian_query (not
+    -- generateJson) found instead.
+
+    ( let w = genesisWorld 1
+          sid = firstOrErr "engineStepChecks: genesis produced no society" (entitiesOf Society w)
+       in case Aeson.decode (encodeQueryResult w (queryEntity w ruleSpecs sid)) :: Maybe WireDossier of
+            Just wd -> wireDossierVoice wd `elem` [Just "Plain", Just "Fervent", Just "Grim"]
+            Nothing -> False
+    , "Direct: encodeQueryResult's dossier carries voice for a Society, same as the batch shape does"
     )
   ,
     ( let w = genesisWorld 1

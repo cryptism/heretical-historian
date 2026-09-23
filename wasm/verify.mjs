@@ -101,6 +101,10 @@ check(
   "dossier has the expected id/kind/name/facts/satisfiesSlotOf shape",
   dossier && dossier.id === 1 && typeof dossier.kind === "string" && typeof dossier.name === "string" && Array.isArray(dossier.facts) && Array.isArray(dossier.satisfiesSlotOf),
 );
+check(
+  "historian_query's dossier also carries voice (dossierJson is a separate function from entityJson — Decision 46's follow-up fix)",
+  dossier && (dossier.kind === "Society") === ["Plain", "Fervent", "Grim"].includes(dossier.voice),
+);
 
 const missingDossier = readJson(instance.exports.historian_query(handle, 999999));
 check("historian_query on a nonexistent id returns JSON null", missingDossier === null);

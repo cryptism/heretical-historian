@@ -76,6 +76,7 @@ dossierJson w d =
     , "bornDate" .= dateOf w (edBorn d)
     , "facts" .= map (factJson w) (edFacts d)
     , "satisfiesSlotOf" .= edSatisfiesSlotOf d
+    , "voice" .= fmap (voiceRegisterText . voiceRegister) (edVoice d)
     ]
 
 -- | 'Historian.Engine.rulesFor's own wire shape — every 'RuleSpec' that

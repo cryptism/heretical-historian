@@ -137,9 +137,13 @@ along the way without re-marshaling the whole thing every call.
   paths).
 - `historian_query(handle, id)`: the handle's *current* world, one
   entity's dossier — `{ id, kind, name, culture, born, bornDate, facts,
-  satisfiesSlotOf }` — or JSON `null` for an id that doesn't resolve.
-  Read-only. `satisfiesSlotOf` is which `RuleSpec`s (by name) this entity
-  could fill at least one slot of right now.
+  satisfiesSlotOf, voice }` — or JSON `null` for an id that doesn't
+  resolve. Read-only. `satisfiesSlotOf` is which `RuleSpec`s (by name)
+  this entity could fill at least one slot of right now. `voice` is the
+  same field `entityJson` carries (see above) — `dossierJson` is a
+  genuinely separate function with its own independent field list, not a
+  reuse of `entityJson`, so this needed its own explicit addition
+  (Decision 46's follow-up fix; a real gap the first pass missed).
 - `historian_rules_for(handle, poolJson)` / `historian_next_slot(handle,
   ruleName, poolJson)`: the item 21/22 query surface (`rulesFor`/
   `nextSlotFromPool`, §3) over the wasm boundary — see §3 for the

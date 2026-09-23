@@ -3975,3 +3975,41 @@ has `Nothing`, across every `aggregateSeeds` run at `longSteps`; every
 non-null voice is one of the three real labels. `cabal test` 296 → 298
 checks, hlint/fourmolu clean, no RNG-cascade fallout (pure additive read
 of an existing field, nothing touches `Chronicle`).
+
+**Follow-up fix, same decision, caught by an actual runtime smoke test
+against the built `hh-site` frontend rather than by `cabal test`:**
+`entityJson` and `dossierJson` are genuinely separate functions, each
+with its own independent field list — `historian_query` (what
+`hh-site`'s `query()` actually calls) marshals through `dossierJson`
+via `Historian.Engine.EntityDossier`, not through `entityJson` at all.
+Adding `"voice"` to `entityJson` alone left `historian_query`'s own
+dossier shape silently missing the field — every check this decision
+originally added exercises the batch (`generateJson`/`encodeWorld`)
+shape, so nothing in `cabal test` or the first `wasm/verify.mjs` pass
+could have caught it; a live round-trip through the actual code path
+`hh-site` uses did. Fixed by adding `edVoice :: Maybe Voice` to
+`EntityDossier` (populated in `queryEntity` from `entVoice`) and a
+matching `"voice"` field in `dossierJson`. Two new regression checks:
+`WireDossier` gained `wireDossierVoice` in `test/Spec.hs` (a Society's
+`encodeQueryResult` dossier carries a real voice label) and
+`wasm/verify.mjs` gained its own dossier-shape assertion, distinct from
+the existing batch-shape one — so a future field addition to one wire
+function can't silently skip the other without a real check catching it
+either way. `cabal test` 298 → 299.
+
+**Also caught by the same smoke test, in `hh-site` itself (not this
+repo, but worth recording here since it's the same root cause — trusting
+a fork's "verified" claim without an actual runtime exercise):** the
+hook table's composed sentence template hardcoded a leading "The" in
+front of `dossier.name`, producing "The The Gilded Vigil of Raviran" —
+every society's own `entName` already starts with "The"
+(`societyModifier` always mints "The `<modifier>` `<noun>`", invariant
+2). And Axis B's slot 7 used the `Rivalry` predicate, which is
+person-to-person only (see its own Haddock in `Historian.Types`) — a
+`Society`'s own dossier can never carry one as subject, so that slot
+silently always missed and fell through to its fallback. Both fixed
+directly in `hh-site`'s `src/hookTable.ts` (slot 7 now uses `Disavows`,
+the real society-level predicate the slot wanted). Neither bug was
+visible from a type-check or a build — `tsc`/`bun run build` were both
+clean the whole time — only from actually running the composed output
+against a real generated world.
