@@ -14,7 +14,8 @@ import Data.Function (on)
 import Data.List (nub, nubBy)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as M
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Historian.Corpus
@@ -39,7 +40,13 @@ backstoryHeadroomDays :: Int
 backstoryHeadroomDays = 100 * 365
 
 emptyWorld :: Int -> World
-emptyWorld seed =
+emptyWorld seed = emptyWorldWith seed defaultTuning
+
+-- | 'emptyWorld', but under a caller-supplied 'Tuning' instead of
+-- 'defaultTuning' — what 'Historian.Rules.generateWith'\/'genesisWorldWith'
+-- build on. See Decision 42.
+emptyWorldWith :: Int -> Tuning -> World
+emptyWorldWith seed tuning =
   World
     { wEntities = M.empty
     , wFacts = []
@@ -50,6 +57,8 @@ emptyWorld seed =
     , wNextEntity = 1
     , wNextEvent = 1
     , wGen = mkStdGen seed
+    , wNameSubstrings = Set.empty
+    , wTuning = tuning
     }
 
 -- Randomness -----------------------------------------------------------
@@ -148,126 +157,6 @@ weightedResolve candidates (existingW, generateW, omitW) generate = do
     Omit -> pure Unbound
     GenerateFresh -> Bound <$> generate
     PickExisting -> maybe Unbound Bound <$> pick candidates
-
--- | Every hand-tuned probability weight in the codebase, in one place
--- (work queue item 18) — covers 'backfillWard', 'Historian.Rules.
--- mintBackdatedSaint', and 'Historian.Render.pickNarrator', which each
--- picked their own ad hoc constants before this existed, with no way to
--- tune one without hunting down the others. Still a first cut, not
--- finalized ("tune by feel"); "load this from a file instead" stays
--- future work, not attempted here.
-data Tuning = Tuning
-  { tnBackfillWeights :: (Int, Int, Int)
-  -- ^ existing\/generate\/omit, for 'backfillWard' — depth 1 prefers
-  -- binding an existing cult over minting a fresh one.
-  , tnBackfillMaxDepth :: Int
-  , tnBackdatedSaintWeights :: (Int, Int, Int)
-  -- ^ existing\/generate\/omit, for 'Historian.Rules.mintBackdatedSaint'.
-  , tnNarratorAttested :: Int
-  -- ^ 'Historian.Render.pickNarrator': weight for the society whose claim
-  -- is actually attested to the outcome.
-  , tnNarratorOtherShare :: Int
-  -- ^ 'Historian.Render.pickNarrator': weight split evenly across every
-  -- other active society.
-  , tnAllCapsChance :: Int
-  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 that a
-  -- narrated reading gets shouted in full caps.
-  , tnHailChance :: Int
-  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 of a
-  -- recurring hailing word opening the reading.
-  , tnMeanderChance :: Int
-  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 of a
-  -- rambling aside tacked onto the end of the reading.
-  , tnOmitChance :: Int
-  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 that the
-  -- narrator declines to elaborate at all, replacing the reading with a
-  -- non-committal stand-in rather than the actual account.
-  , tnThemedItemNameChance :: Int
-  -- ^ 'themedItemName': chance out of 100 that a freshly-minted item with
-  -- a known commissioning cult gets named after something that cult
-  -- already venerates or shuns, rather than an arbitrary stem — checked
-  -- only once the cult is confirmed to have at least one current
-  -- Venerates\/Shuns stance to draw on at all.
-  , tnMundaneMiracleChance :: Int
-  -- ^ 'Historian.Rules.fireMiracleSaint'\/'fireMiracleRelic': chance out
-  -- of 100 that a miracle's freshly-minted saint\/relic is mundane
-  -- background dressing ('newMundanePerson'\/'newMundaneItem') rather
-  -- than a full, backfill-eligible 'newPerson'\/'newItem'. Only consulted
-  -- when no existing Ward was offered for the slot — the same
-  -- "only the fresh branch has a choice to make" shape 'mintBackdatedSaint'
-  -- and 'themedItemName' already have.
-  , tnCultureDriftChance :: Int
-  -- ^ 'driftCulture': chance out of 100 that a fresh society minted where
-  -- culture would otherwise simply be inherited (a schismatic offshoot,
-  -- 'Historian.Rules.fireSchism'; a backfill-generated cult,
-  -- 'generateCultFor') instead picks a different culture at random from
-  -- 'Historian.Corpus.allCultures'. Without this, every society in a
-  -- generated world shares one culture forever — 'genesis' is the only
-  -- call site that ever drew one fresh, and every other society-minting
-  -- path inherits an existing entity's. See Decision 38.
-  , tnSameCultureBoost :: Int
-  -- ^ 'Historian.Rules.ruleMerger': how many *extra* times a same-culture
-  -- merger candidate pairing is replicated in the rule's own candidate
-  -- list, on top of the one copy every valid pairing already gets — the
-  -- same "weighting is candidate-list replication, not a bolted-on
-  -- probability" idiom every other self-weighting rule in this codebase
-  -- already uses (`ruleWeight`, `step`'s own uniform pool-and-pick). A
-  -- cross-culture pairing still gets exactly one copy; 0 disables the
-  -- boost entirely without disabling merger itself.
-  , tnFoundingPurposeChance :: Int
-  -- ^ 'Historian.Rules.fireSchism': chance out of 100 that a fresh
-  -- splinter's own founding purpose is recorded as inherited from the
-  -- parent's current regard toward some Ward — either continuing it or
-  -- reacting against it — rather than founding with no stated purpose at
-  -- all (the splinter still gets its own ordinary 'backfillPatron' chance
-  -- either way, via 'newSociety'). Only consulted when the parent
-  -- actually has some current Venerates\/Shuns stance to draw from. See
-  -- Decision 39.
-  , tnRuinsNameChance :: Int
-  -- ^ 'ruinsItemName': chance out of 100 that a freshly-minted item with
-  -- no themed name ('themedItemName' either found nothing to draw on or
-  -- simply missed) is instead named as recovered from a terminated
-  -- society's ruins, rather than an arbitrary stem. Only consulted when
-  -- at least one society has actually terminated. See Decision 39.
-  , tnSiteOriginChance :: Int
-  -- ^ 'siteNounFor': chance out of 100 that a freshly-minted site's noun
-  -- is drawn from a built-vs-discovered-flavored pool
-  -- ('constructedSiteNouns'\/'naturalSiteNouns', 'Historian.Corpus')
-  -- instead of the plain, unflavored 'Historian.Corpus.siteNouns'. See
-  -- Decision 39.
-  , tnApprenticeshipChance :: Int
-  -- ^ 'Historian.Rules.fireSchism': chance out of 100 that a fresh
-  -- heresiarch is recorded as 'TrainedBy' the parent society's own
-  -- current leader, when it has one.
-  , tnApprenticeBoost :: Int
-  -- ^ 'Historian.Rules.ruleMiracle': how many *extra* times a
-  -- 'TrainedBy' candidate is replicated in the miracle-saint candidate
-  -- list — the same list-replication idiom 'tnSameCultureBoost' already
-  -- uses, applied here instead of a bolted-on probability.
-  }
-
-defaultTuning :: Tuning
-defaultTuning =
-  Tuning
-    { tnBackfillWeights = (60, 15, 25)
-    , tnBackfillMaxDepth = 3
-    , tnBackdatedSaintWeights = (60, 15, 25)
-    , tnNarratorAttested = 70
-    , tnNarratorOtherShare = 30
-    , tnAllCapsChance = 8
-    , tnHailChance = 12
-    , tnMeanderChance = 10
-    , tnOmitChance = 4
-    , tnThemedItemNameChance = 40
-    , tnMundaneMiracleChance = 35
-    , tnCultureDriftChance = 12
-    , tnSameCultureBoost = 2
-    , tnFoundingPurposeChance = 25
-    , tnRuinsNameChance = 15
-    , tnSiteOriginChance = 30
-    , tnApprenticeshipChance = 30
-    , tnApprenticeBoost = 2
-    }
 
 -- | Sample up to @n@ distinct elements from a list, without replacement —
 -- how 'Historian.Rules.regardReactions' draws a handful of spectator cults
@@ -421,8 +310,7 @@ markovWord c = go (6 :: Int)
           let (s, g) = runChain ch 13 (wGen w)
           put w {wGen = g}
           let t = T.pack s
-              used = map entName (M.elems (wEntities w))
-          if T.length t >= 4 && not (any (T.isInfixOf t) used)
+          if T.length t >= 4 && Set.notMember t (wNameSubstrings w)
             then pure t
             else go (n - 1)
 
@@ -439,8 +327,7 @@ syllableName c = go (6 :: Int)
     go n = do
       t <- buildName grammar
       w <- get
-      let used = map entName (M.elems (wEntities w))
-      if T.length t >= 4 && not (any (T.isInfixOf t) used)
+      if T.length t >= 4 && Set.notMember t (wNameSubstrings w)
         then pure t
         else go (n - 1)
 
@@ -494,31 +381,47 @@ freshEntityId = do
 -- meaningful for exactly one 'Kind' and 'Nothing' for every other —
 -- see 'mint's own Haddock for which.
 data MintOptions = MintOptions
-  { moModifier :: Maybe Int
-  , moBornOverride :: Maybe Epoch
+  { moBornOverride :: Maybe Epoch
   , moVoice :: Maybe Voice
   , moMundane :: Bool
   }
 
 defaultMintOptions :: MintOptions
-defaultMintOptions = MintOptions {moModifier = Nothing, moBornOverride = Nothing, moVoice = Nothing, moMundane = False}
+defaultMintOptions = MintOptions {moBornOverride = Nothing, moVoice = Nothing, moMundane = False}
 
--- | 'moModifier' is relic data — meaningful only for 'Item' — rolled
--- here, at creation, rather than filled in later: entities are never
--- mutated once minted anywhere in this codebase, and relic data is no
--- exception. See 'newItem'. 'moBornOverride' is an explicit birth epoch
--- override, 'Nothing' meaning "now" (every ordinary caller) — 'Just' is
--- for backdated minting (see 'Historian.Rules.mintBackdatedSaint'), where
--- the entity's own 'entBorn' must be the backdated moment, not whenever
--- this function happens to run during generation. 'moVoice' is meaningful
--- only for 'Society' — see 'newSociety'.
+-- | 'moBornOverride' is an explicit birth epoch override, 'Nothing'
+-- meaning "now" (every ordinary caller) — 'Just' is for backdated minting
+-- (see 'Historian.Rules.mintBackdatedSaint'), where the entity's own
+-- 'entBorn' must be the backdated moment, not whenever this function
+-- happens to run during generation. 'moVoice' is meaningful only for
+-- 'Society' — see 'newSociety'.
 mint :: Kind -> Culture -> Text -> MintOptions -> Chronicle EntityId
 mint k c nm opts = do
   i <- freshEntityId
   now <- gets wEpoch
   let ep = fromMaybe now (moBornOverride opts)
-  modify' $ \w -> w {wEntities = M.insert i (Entity i k nm c ep (moModifier opts) (moVoice opts) (moMundane opts)) (wEntities w)}
+  modify' $ \w ->
+    w
+      { wEntities = M.insert i (Entity i k nm c ep (moVoice opts) (moMundane opts)) (wEntities w)
+      , wNameSubstrings = foldr Set.insert (wNameSubstrings w) (nameSubstrings nm)
+      }
   pure i
+
+-- | Every contiguous substring of @t@ with length >= 4 — deliberately
+-- *not* capped at 'markovWord'\'s own 13-character window: a
+-- 'syllableName' candidate (prefix + syllable chain + suffix) can run
+-- longer than that, and this index has to answer "could this candidate,
+-- whatever its length, be found inside this existing name" correctly for
+-- both callers, not just the shorter one. Computed once per 'mint' and
+-- folded into 'wNameSubstrings', so the collision check
+-- 'markovWord'\/'syllableName' run is an O(log n) 'Set.member' against a
+-- precomputed index instead of an O(existing entities) linear scan
+-- repeated on every single mint — see Decision 40. Cost per mint is
+-- O(length^2) substrings of one freshly-minted name, not O(existing
+-- entities); real entity names top out around a few dozen characters, so
+-- this stays cheap regardless of how long a run gets.
+nameSubstrings :: Text -> [Text]
+nameSubstrings t = [T.take len tl | tl <- T.tails t, len <- [4 .. T.length tl]]
 
 -- | The modifier phrase before a society's noun, guaranteeing exactly one
 -- of two shapes: a bare 'societyEpithet' ("The Veiled Choir"), or an
@@ -581,14 +484,41 @@ cultureBoost cfg w a b
 wasTrained :: World -> EntityId -> Bool
 wasTrained w p = any (\f -> factPred f == TrainedBy && factSubject f == p) (wFacts w)
 
+-- | The mentor named in @p@'s own 'TrainedBy' fact, if any — the lineage
+-- half of 'apprenticeBoost': not just "was this person ever trained" but
+-- "by whom", so a chain of mentorships can be walked one hop at a time.
+mentorOf :: World -> EntityId -> Maybe EntityId
+mentorOf w p =
+  listToMaybe [m | f <- wFacts w, factPred f == TrainedBy, factSubject f == p, Just (ROf m) <- [factObject f]]
+
+-- | Whether @p@ has ever been recognized as a miracle saint — scans
+-- committed 'Event's for a 'MiracleSaint' outcome naming @p@, the one
+-- place a 'Fact' alone can't answer this (sainthood isn't its own
+-- predicate; it's read back off the structured 'Outcome' invariant 3
+-- already guarantees every committed 'Event' carries).
+wasSaint :: World -> EntityId -> Bool
+wasSaint w p = any isSaintEvent (M.elems (wEvents w))
+  where
+    isSaintEvent ev = case evOutcome ev of
+      Just (MiracleSaint o) -> msSaint o == p
+      _ -> False
+
 -- | 'cultureBoost's mirror for 'Historian.Rules.ruleMiracle's own
 -- saint-candidate list: a person 'TrainedBy' someone is replicated
 -- 'tnApprenticeBoost' extra times, biasing the miracle toward recognizing
--- an apprentice as saintly too, without touching 'step' itself.
+-- an apprentice as saintly too, without touching 'step' itself — and,
+-- when the *mentor themselves* was already recognized as a saint, a
+-- further 'tnLineageBoost' on top, so sainthood can read as running in a
+-- lineage across generations rather than being independently rolled each
+-- time (Decision 43). Each hop only looks one mentor back — 'wasSaint'
+-- doesn't recurse — so this stays a simple, bounded lookup even for a
+-- long mentorship chain, not a walk of arbitrary depth.
 apprenticeBoost :: Tuning -> World -> EntityId -> Int
-apprenticeBoost cfg w p
-  | wasTrained w p = 1 + tnApprenticeBoost cfg
-  | otherwise = 1
+apprenticeBoost cfg w p = case mentorOf w p of
+  Nothing -> 1
+  Just mentor
+    | wasSaint w mentor -> 1 + tnApprenticeBoost cfg + tnLineageBoost cfg
+    | otherwise -> 1 + tnApprenticeBoost cfg
 
 -- | 'generateSocietyName', but for a society formed by merging two
 -- previously-independent ones ('Historian.Rules.fireMerger's
@@ -629,7 +559,8 @@ newSociety c = do
   s <- mint Society c name defaultMintOptions {moVoice = Just voice}
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
-  backfillPatron defaultTuning s
+  w <- get
+  backfillPatron (wTuning w) s
   pure (s, concept)
 
 -- | 'newSociety', but for a merger's @MergerFounding@ branch: @primary@
@@ -646,7 +577,8 @@ newMergedSociety primary secondary = do
   s <- mint Society primary name defaultMintOptions {moVoice = Just voice}
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed primary conceptName
-  backfillPatron defaultTuning s
+  w <- get
+  backfillPatron (wTuning w) s
   pure (s, concept)
 
 -- | 'newSociety', but backdated — and, deliberately, without a patron
@@ -790,7 +722,7 @@ generateCultFor ward = do
   -- for an existing Ward doesn't have to share the Ward's own culture —
   -- a foreign tradition discovering and taking up veneration of something
   -- is exactly the "second culture enters the world" case this exists for.
-  cultureChoice <- driftCulture defaultTuning (cultureOf w ward)
+  cultureChoice <- driftCulture (wTuning w) (cultureOf w ward)
   (cult, concept) <- newSociety cultureChoice
   w' <- get
   record
@@ -807,7 +739,8 @@ newPerson c = do
   bn <- pickOr "the Silent" bynames
   useByname <- coin
   p <- mint Person c (if useByname then stem <> " " <> bn else stem) defaultMintOptions
-  backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) p
+  w <- get
+  backfillWard (wTuning w) (tnBackfillMaxDepth (wTuning w)) p
   pure p
 
 -- | 'newPerson', but backdated to a given birth epoch instead of "now" —
@@ -836,10 +769,11 @@ siteNounFor cfg = do
 
 newSite :: Culture -> Chronicle EntityId
 newSite c = do
+  w <- get
   stem <- markovWord c
-  nn <- siteNounFor defaultTuning
+  nn <- siteNounFor (wTuning w)
   st <- mint Site c ("The " <> nn <> " of " <> stem) defaultMintOptions
-  backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) st
+  backfillWard (wTuning w) (tnBackfillMaxDepth (wTuning w)) st
   pure st
 
 -- | Every item is "relic-eligible" from the moment it exists: a modifier
@@ -882,9 +816,11 @@ ruinsItemName cfg w = case [s | s <- entitiesOf Society w, isTerminated w s] of
 
 newItem :: Culture -> Maybe EntityId -> Chronicle (EntityId, EntityId)
 newItem c mCult = do
+  w0 <- get
+  let cfg = wTuning w0
   mThemed <- case mCult of
     Nothing -> pure Nothing
-    Just cult -> get >>= \w -> themedItemName defaultTuning w cult
+    Just cult -> get >>= \w -> themedItemName cfg w cult
   -- No collision check here, unlike 'markovWord'\/'syllableName': a themed
   -- name is *supposed* to contain the venerated\/shunned thing's existing
   -- name verbatim ("The Chalice of Cat" legitimately contains "Cat"), so
@@ -895,7 +831,7 @@ newItem c mCult = do
   -- verbatim too).
   mRuins <- case mThemed of
     Just _ -> pure Nothing
-    Nothing -> get >>= ruinsItemName defaultTuning
+    Nothing -> get >>= ruinsItemName cfg
   name <- case mThemed of
     Just nm -> pure nm
     Nothing -> case mRuins of
@@ -904,11 +840,10 @@ newItem c mCult = do
         stem <- syllableName c
         nn <- pickOr "Relic" itemNouns
         pure ("The " <> nn <> " of " <> stem)
-  modifier <- roll (-2, 4)
   conceptName <- pickOr "the Unnamed" conceptNames
   concept <- conceptNamed c conceptName
-  item <- mint Item c name defaultMintOptions {moModifier = Just modifier}
-  backfillWard defaultTuning (tnBackfillMaxDepth defaultTuning) item
+  item <- mint Item c name defaultMintOptions
+  backfillWard cfg (tnBackfillMaxDepth cfg) item
   pure (item, concept)
 
 -- | A mundane person: background dressing for someone else's event, not a
@@ -1001,10 +936,11 @@ conceptNamed c name = do
     [] -> mint Concept c name defaultMintOptions
 
 -- | For an 'Item', the 'Concept' it symbolically embodies, read from its
--- 'Embodies' fact — 'Nothing' for every other 'Kind'. Deliberately fact-
--- based rather than an 'Entity' field: unlike 'entModifier', this is a
--- relationship to another entity, and a field would make the linked
--- 'Concept' permanently uninspectable (never 'mentions'ed by any fact).
+-- 'Embodies' fact — 'Nothing' for every other 'Kind'. Deliberately
+-- fact-based rather than an 'Entity' field: unlike a plain scalar (see
+-- 'entVoice'), this is a relationship to another entity, and a field
+-- would make the linked 'Concept' permanently uninspectable (never
+-- 'mentions'ed by any fact).
 propertyOf :: World -> EntityId -> Maybe EntityId
 propertyOf w i =
   case [o | f <- wFacts w, factPred f == Embodies, factSubject f == i, Just (ROf o) <- [factObject f]] of

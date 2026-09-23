@@ -3469,3 +3469,266 @@ society's only member-acquisition paths are founding\/schism\/merger-
 transfer, so there's no "ordinary new citizen joins" moment for an
 apprenticeship to attach to outside the schism-heresiarch case already
 built).
+
+## Decision 40: `entModifier` removed; `markovWord`/`syllableName` collision check made O(log n)
+
+**Needed for:** direct user feedback after a review of this session's own
+output and structure — "Get rid of entModifier, no need for it" and "Surely
+[the collision check] can just be solved by using a more appropriate data
+structure such as a set?"
+
+**`entModifier` — a straightforward removal, not a deprecation.** Rolled
+on every `Item` since the feature existed (`-2..+4`, "a placeholder for
+future mechanical use") and never read by anything the whole time. Removed
+from `Entity`, `MintOptions`, `mint`'s construction, `newItem`'s own roll,
+and the wasm wire format (`entityJson`'s `"modifier"` field) — a real,
+if minor, breaking change to `Historian.Json.encodeWorld`'s JSON shape for
+any existing host reading it, called out here rather than silently
+dropped. `HISTORY.md`\/past `DESIGN.md` decisions that reference it by
+name are left exactly as they were (they're an accurate record of what
+was true when they were written); `.claude/docs/EVENTS.md`, which
+describes *current* behavior rather than a historical account, was
+updated instead.
+
+**The collision check genuinely couldn't just become a `Set Text` —
+`markovWord`\/`syllableName` reject a candidate if it's a *substring* of
+any existing name, not if it *equals* one, and a plain `Set` only
+accelerates equality lookups.** Explained this distinction back rather
+than silently building the wrong thing: a hash/tree set of full names
+would answer "is this candidate exactly one of the existing names" in
+O(log n), but the actual check (`not (any (T.isInfixOf t) used)`) is
+asking a different question a plain set can't answer without still
+scanning every existing name. The real fix: index every *substring* of
+every existing name once, at mint time, so the query becomes an ordinary
+set-membership check against that precomputed index instead of a fresh
+O(existing entities) scan on every single candidate.
+`Historian.Types.World` gained `wNameSubstrings :: Set Text`, populated
+incrementally inside `mint` (`nameSubstrings`, folded in via
+`foldr Set.insert`); both collision checks became `Set.notMember t
+(wNameSubstrings w)`.
+
+**One real correctness bug caught while building this, before it ever
+shipped: capping the substring index at length 13 (`runChain`'s own
+window) would have been wrong for `syllableName`.** `markovWord`'s own
+candidates never exceed 13 characters, but `syllableName`'s
+(prefix + syllable chain + suffix, via `buildName`) routinely can — capping
+the index at 13 would have silently stopped catching genuine collisions
+for any longer candidate, since a query longer than every indexed
+substring can never match regardless of whether it's a real collision.
+Fixed by indexing *every* substring of length >= 4 of a name, not
+length-capped ones — cost is O(name length²) per mint (a few thousand
+substrings for a long society name, worst case), not O(existing entities)
+per check, and the index has to be exactly this general to serve both
+callers correctly.
+
+**Semantics-preserving, verified two ways rather than assumed:** the new
+check accepts/rejects exactly the same candidates the old linear scan did
+(proven by construction — `t ∈ wNameSubstrings w` iff `t` is a substring
+of length >= 4 of some `entName`, exactly what the old `any (T.isInfixOf
+t) used` checked once `T.length t >= 4` is already guaranteed by the
+caller), so this shouldn't shift any seed's RNG cascade at all — the same
+candidates get accepted on the same draw, in the same order, for every
+seed. Spot-checked directly (a 30-step generated world, 80 steps at seed
+7): entity name count equals distinct-name count, no accidental
+duplicates introduced. `cabal test` held at 265 — this decision adds no
+new checks of its own (Decision 43's `TrainedBy` lineage checks, built
+next, are what moves the count to 268).
+
+## Decision 41: trial by combat and a coup made genuinely common, not just found in a wider scan
+
+**Needed for:** direct user feedback — "I agree th[at] the coup and trial
+by combat events should be less expensive than it is (and hopefully it's
+just a case to get us to tweak the probabilities of that happening)," and
+"I also agree that those fast regression checks should be the norm."
+
+**The actual cause, found by reading the mechanism rather than assumed:**
+`ruleCoup`\/`ruleTrialByCombat` both need a `Rivalry` fact, and `Rivalry`
+itself is not rare — `fireCoronation` produces one 40% of the time
+(`weighted [(60, 0), (30, 1), (10, 2)]`). What made these "the two
+rarest events" across this project's entire history (`veryWideSeeds`
+widened three times — 1500 → 6000 → 11000 — purely chasing the one lucky
+witness seed further out each time) was `step`'s own uniform pool-and-pick
+diluting a tiny 1-or-2-candidate list against every other rule's typically
+much larger one, every single step. The fix that actually addresses the
+cause: `weightedRule rivalryRuleWeight` in place of the default weight 1
+for both rules — `rivalryRuleWeight = 20`, tuned empirically (the same
+scratch-scan technique this file's own witness-seed hunts already use,
+not guessed) against how far it shrinks `veryWideSeeds`' own required
+range.
+
+**Result, verified by scan, not assumed:** trial by combat's first
+instance moved from seed 10047 to seed 182; coup's moved from seed 1143
+to seed 420 — both comfortably inside a `veryWideSeeds` shrunk from
+`[1..11000]` to `[1..1000]`, an 11x reduction, with real margin (11
+trial-by-combat hits and 10 coup hits inside the first 2000 seeds scanned,
+not one lucky outlier). Test suite wall time dropped accordingly (~18s
+locally for the full suite, down from a run that needed the 11000-range
+scan). `cabal test` 268 to 270 checks (the two pinned-witness checks).
+
+**Fast, pinned regression checks added alongside the wide scan, not
+instead of it** — `trialByCombatWitnessSeed = 182`\/`coupWitnessSeed =
+420`, checked directly (`generate` once, no scan) so a future regression
+is caught in milliseconds rather than requiring a multi-minute hunt to
+even notice something broke. The wide scan (now cheap, at 1000 seeds)
+stays too, as confirmation the capability isn't *uniquely* dependent on
+one seed working — the two checks answer different questions ("does this
+specific known-good seed still work" vs. "is this still findable at
+all"), and losing either would weaken the net.
+
+**CI, the other half of "regression checks should be the norm":**
+`.github/workflows/test.yml`, `cabal test` on every push\/PR — previously
+`release-wasm.yml` was the *only* workflow, and it only ever builds the
+wasm artifact, only on a version tag; nothing ran the actual check suite
+automatically at any point in this project's history. **Checked, not
+assumed, and worth flagging: this repository is currently private, not
+public** (`gh repo view`) — GitHub Actions' unlimited free minutes apply
+to public repositories specifically; a private repo draws from the
+account's monthly free-minutes quota instead (2000 min/month on the Free
+plan). Given the suite's own ~18s local wall time, real CI usage should
+stay cheap regardless, but the "free for open source" framing only
+applies outright if the repo's visibility ever changes — noted rather
+than assumed, so that's a deliberate call for the user to make, not this
+session's.
+
+**Also landed in the same round, at the user's direct request, no design
+question involved:** `tnRuinsNameChance` 15 → 60 (Decision 39's own
+ruins-recovered relic naming read as too rare in practice — "I'd probably
+expect 3/5 chance... it seems a fun thing to have"). Real-world frequency
+of an *actual* ruins-recovered relic still also depends on a society
+having already terminated at least once, independently rare
+(CLAUDE.md bug #6) — raising the roll chance doesn't remove that
+compounding, and wasn't asked to.
+
+## Decision 42: `Tuning` reaches the wasm boundary — `wTuning`, `generateWith`/`genesisWorldWith`, `historian_new_tuned`
+
+**Needed for:** direct user agreement to build exactly what the prior
+session's own closing summary proposed — real controls over generation
+probability for a web frontend, not just `defaultTuning` baked in
+everywhere.
+
+**The structural problem this starts from: every `Tuning`-consuming call
+site across `Historian.World`\/`Historian.Rules`\/`Historian.Render`
+(~20 of them) read the hardcoded `defaultTuning` constant directly**,
+a deliberate choice at the time (Decision 31: "'Load this from a file
+instead' stays future work, not attempted here"). Making generation
+actually configurable meant threading a real value through instead —
+and the natural place to carry it is `World` itself, so every function
+that already has a `World` in scope (nearly all of them) picks it up for
+free via a single new field rather than a new parameter on every one of
+those ~20 functions individually.
+
+**`Tuning`'s own definition had to move from `Historian.World` to
+`Historian.Types`, not just gain a home in `World`.** `World` (the
+record) lives in `Historian.Types`, the base layer everything else
+imports; a lower layer can't reference a type defined in a module above
+it. Moving `Tuning`\/`defaultTuning` up to sit beside `World` resolves
+this cleanly — it was always pure data with no dependencies of its own,
+so the move cost nothing beyond updating every Haddock cross-reference
+naming its old home. One second-order breakage this caused: anything
+importing `defaultTuning` *via* `Historian.World`'s own (export-list-free)
+re-export rather than importing `Historian.Types` directly lost access —
+caught by the build, not by inspection; `wasm/Main.hs` was the one real
+call site depending on that indirect path, fixed by importing from
+`Historian.Types` directly like every other module already did.
+
+**`wTuning :: Tuning` on `World`; `emptyWorldWith`\/`generateWith`\/
+`genesisWorldWith` as additive Tuning-aware siblings of the existing
+`emptyWorld`\/`generate`\/`genesisWorld`, not replacements.** `generate`'s
+own signature (`Int -> Int -> World`) is untouched — invariant 5 names it
+specifically, and every existing caller (tests, the CLI, `generateJson`)
+keeps working unchanged, still implicitly under `defaultTuning`. Every
+one of the ~20 `defaultTuning` call sites became `wTuning w` (adding a
+`w <- get` at the handful of mint functions — `newSociety`,
+`newMergedSociety`, `newPerson`, `newSite`, `newItem` — that didn't
+already have one bound). Since `Tuning` is set once at world creation and
+never mutated afterward, reading it early or late within a function makes
+no behavioral difference — a rare case where a large mechanical swap
+carried genuinely zero correctness risk beyond "did every site actually
+get swapped," checked by grep, not just review.
+
+**JSON encode\/decode for `Tuning` (`Historian.Json.encodeTuning`\/
+`decodeTuningOverride`) is hand-written, matching this module's existing
+"spelled out explicitly, not derived" discipline** (`predicateText`'s own
+Haddock already gives the reasoning: a future field rename shouldn't
+silently change the wire format the way a derived instance would).
+`decodeTuningOverride` decodes a *partial* object, merging onto
+`defaultTuning` field-by-field, so a frontend offering three sliders can
+send `{"tnMundaneMiracleChance": 80}` without needing to round-trip every
+other field it isn't touching — malformed JSON (not an object, or a field
+present with the wrong shape) comes back `Nothing` outright rather than
+silently keeping partial results, so a caller's own typo doesn't produce
+a half-applied override it never asked for. An `(existing, generate,
+omit)` weight triple crosses as a plain 3-element array rather than a
+named object or aeson's own generic tuple instance — explicit over
+implicit, same reasoning.
+
+**Wasm surface: `historian_new_tuned(seed, tuningJson)` and
+`historian_default_tuning()`, both additive — `historian_new` itself is
+untouched and stays on `defaultTuning`, for a host that doesn't care to
+configure anything.** `historian_default_tuning` exists specifically so a
+host can discover the full set of tunable fields and their defaults
+before building a UI, rather than needing to know the shape out of band.
+Malformed `tuningJson` falls back to `defaultTuning` outright — the same
+"never trap on bad input, fall back to a safe named shape" discipline
+`historian_next_slot` already established for an unrecognised rule name,
+applied consistently rather than reinvented. Four new `--export=` flags
+needed in the cabal file (`historian_new_tuned`,
+`historian_default_tuning`, matching the two-flags-per-function pattern
+every prior wasm addition has needed — wasm-ld strips anything not
+explicitly told to keep).
+
+**Verified three ways, matching this session's own established
+discipline for anything touching generation:** deterministic Haskell
+checks (`generateWith`\/`genesisWorldWith`'s result actually carries the
+supplied `Tuning`; `encodeTuning`\/`decodeTuningOverride` round-trip
+exactly; a real end-to-end check that `generateWith` with
+`tnMundaneMiracleChance` forced to 0 produces zero mundane entities across
+every `aggregateSeeds` seed — not just that the value is *stored*, that it
+actually *changes what generation does*); a real wasm cross-compile,
+patch, and Node WASI verification (`wasm/verify.mjs`, including
+`historian_new_tuned` with `tnMundaneMiracleChance` forced to 100 actually
+producing a mundane entity within 40 steps, and a malformed-JSON fallback
+check); and `cabal test` in full (270 to 277 checks, no witness-seed hunt
+needed — this change touches *how* generation is configured, not the RNG
+stream itself, for any caller still on `defaultTuning`).
+
+## Decision 43: `TrainedBy` lineages — sainthood running in a mentorship chain
+
+**Needed for:** direct user enthusiasm for a specific idea raised in the
+prior session's own closing review — "an apprentice who becomes a saint
+could make their own apprentices more likely to be recognized too" —
+"The TrainedBy idea is great - go for it."
+
+**Two small, precisely-scoped additions on top of Decision 39's own
+`TrainedBy`, not a new mechanism.** `Historian.World.mentorOf` reads the
+mentor out of a person's own `TrainedBy` fact (the lineage's "one hop
+back" primitive); `wasSaint` checks whether a person has ever been the
+subject of a committed `MiracleSaint` outcome — the one place this needs
+to read `Event`'s structured `evOutcome` directly rather than a `Fact`,
+since sainthood was never its own predicate. `apprenticeBoost` (already
+built, already wired into `ruleMiracle`'s candidate list) now checks one
+level further: when a `TrainedBy` candidate's own mentor was themselves
+already sainted, the replication count gets a further `tnLineageBoost`
+(3) on top of the existing `tnApprenticeBoost` (2) — `1 + 2 + 3 = 6`
+copies in the pooled candidate list, versus `1 + 2 = 3` for an ordinary
+apprentice and `1` for nobody trained at all.
+
+**Deliberately bounded to one hop, not a recursive walk up an arbitrary
+mentorship chain.** `wasSaint` doesn't recurse into checking whether the
+mentor's *own* mentor was also sainted, and so on — a lineage of three or
+more sainted generations in a row is still possible (each hop's own
+`apprenticeBoost` call re-evaluates independently as history unfolds), it
+just isn't specially weighted beyond one hop. Extending this to arbitrary
+depth was considered and set aside: it would need either an unbounded
+recursive lookup (real cost growth for a property that already decays on
+its own — sainthood itself is bounded by `tnMundaneMiracleChance`'s own
+odds at each step) or a separate depth-tracking fact, and nothing asked
+for more than "your mentor being a saint should matter."
+
+**Verified deterministically, no sampling** — a hand-built world
+(`sainthoodWorld`: `richWorld` plus one directly-committed `MiracleSaint`
+outcome naming `rP1`, plus a `TrainedBy` fact naming `rP1` as `rP0`'s
+mentor) checks `wasSaint`\/`mentorOf`\/`apprenticeBoost`'s lineage branch
+against an exact expected multiplier, not a sampled rate. `cabal test`
+265 to 268 checks — built and landed first, before Decisions 41\/42 in
+this same session moved the count further to 277.

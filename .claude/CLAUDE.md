@@ -19,14 +19,19 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (265 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (277 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
-(1-11000, precomputed once as `veryWideResults`, in parallel — see
-below) for the two rarest — trial by combat and a coup — plus two
+(1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
+`veryWideResults`, in parallel) plus two fast pinned-witness-seed checks
+(`trialByCombatWitnessSeed`/`coupWitnessSeed`, no scan) for what were
+"the two rarest" events — trial by combat and a coup — plus two
 hand-built worlds, `schismSpec`/`sanctifySpec`'s and the richer
 `richWorld`, covering direct-construction checks for the `RuleSpec`
 engine and everything migrated onto it. Full breakdown: `.claude/docs/HISTORY.md`.
+CI now runs the full suite on every push/PR: `.github/workflows/test.yml`
+(Decision 41) — previously `release-wasm.yml` was the only workflow, and
+it only ever builds the wasm artifact on a version tag.
 
 The `test-suite` is now genuinely parallel where it can be: every
 `veryWideSeeds` `generate` call is a pure function of its own seed with
@@ -139,6 +144,41 @@ verified end-to-end against a real Node WASI host the same way every
 other wasm FFI addition has been (`wasm/verify.mjs`). `.claude/docs/DESIGN.md`
 Decision 38's own account covers the RNG-cascade fallout these three
 shared (`seeds`' witness moved 99→4→5, `richWorld`'s moved 14→2).
+
+A follow-up round on that same work, at direct user request after a
+review pass: **`entModifier` removed outright** (rolled on every `Item`
+since it existed, never read by anything — `.claude/docs/DESIGN.md`
+Decision 40), alongside making `markovWord`/`syllableName`'s collision
+check O(log n) instead of an O(existing entities) linear scan on every
+mint (`wNameSubstrings`, also Decision 40 — a plain `Set` alone couldn't
+do this, since the check is substring containment, not equality; caught
+and fixed a real correctness gap before it shipped, where capping the
+index at `markovWord`'s own 13-character window would have silently
+broken collision detection for `syllableName`'s longer candidates).
+**Trial by combat and a coup made genuinely common** — `rivalryRuleWeight
+= 20` (Decision 41): the actual cause of "the two rarest events" was
+`step`'s own uniform pool-and-pick diluting a real, not-actually-rare
+`Rivalry` against every other rule's typically larger candidate list, not
+`Rivalry` itself being scarce; `veryWideSeeds` shrunk from 11000 to 1000
+as a direct, measured result, plus two fast pinned-witness-seed checks
+(`trialByCombatWitnessSeed`/`coupWitnessSeed`) so a future regression is
+caught in milliseconds instead of a multi-minute re-hunt. **CI now runs
+`cabal test` on every push/PR** (`.github/workflows/test.yml`, also
+Decision 41 — checked, not assumed: this repo is currently private, so
+GitHub Actions' unlimited-minutes-for-public-repos framing doesn't apply
+outright until that changes). **`Tuning` reaches the wasm boundary** —
+`wTuning` on `World`, `generateWith`/`genesisWorldWith`,
+`historian_new_tuned`/`historian_default_tuning`, hand-written JSON
+encode/decode that merges a *partial* override onto `defaultTuning`
+(`.claude/docs/DESIGN.md` Decision 42 — `Tuning` itself had to move from
+`Historian.World` up to `Historian.Types`, since `World` can't reference
+a type defined in a module above it). **`TrainedBy` now runs in
+lineages** — a saint's own former apprentice gets a further
+`tnLineageBoost` on top of the ordinary apprentice boost
+(`.claude/docs/DESIGN.md` Decision 43). `cabal test` 265 → 277 checks
+across this round. Work queue item 23 (`.claude/docs/plans/
+23-user-configurable-societies.md`) is a plan only, not built: letting a
+caller add or configure a society of their own, scoped into three tiers.
 
 **`.claude/docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
@@ -620,6 +660,12 @@ unbuilt rule.
     the real search — the one place this touched actual firing behavior,
     done with zero risk since nothing called `StepEntities` yet). Full
     account: `.claude/docs/DESIGN.md` Decision 35's second follow-up.
+23. Let a caller add or configure a society of their own — a name/culture
+    override on an otherwise-ordinary founding at minimum, a named
+    founder and an initial stance beyond that. Not started; scoped into
+    three bounded tiers, deliberately not attempting user-defined new
+    cultures or entity editing/deletion. Plan:
+    `.claude/docs/plans/23-user-configurable-societies.md`.
 
 ## Things not to do
 

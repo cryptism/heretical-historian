@@ -104,6 +104,8 @@ executable historian-wasm
     ghc-options:
       -optl-Wl,--export=generateJson
       -optl-Wl,--export=historian_new
+      -optl-Wl,--export=historian_new_tuned
+      -optl-Wl,--export=historian_default_tuning
       -optl-Wl,--export=historian_step
       -optl-Wl,--export=historian_query
       -optl-Wl,--export=historian_rules_for

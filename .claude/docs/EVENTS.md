@@ -473,10 +473,11 @@ what actually gives that eligibility substance, at the user's request.
   per name and reused (`Historian.World.conceptNamed`) — there is only ever
   one "Fire" entity in a world, not a fresh one per relic that embodies it.
   The only find-or-create entity lifecycle in the codebase.
-- **Every item, from birth:** `newItem` rolls a `-2..+4` modifier
-  (`entModifier`, a placeholder — nothing reads it mechanically yet) and
-  picks a `Concept`, recorded as a new `Embodies` fact (item → concept,
-  unattested — intrinsic, not a matter of anyone's perspective). Nothing
+- **Every item, from birth:** `newItem` picks a `Concept`, recorded as a
+  new `Embodies` fact (item → concept, unattested — intrinsic, not a
+  matter of anyone's perspective). (It also rolled a `-2..+4` relic
+  modifier, `entModifier`, from birth until Decision 40 removed it — never
+  read mechanically the whole time it existed.) Nothing
   is deferred until some later "promotion" moment: **becoming an actual
   relic**, narratively, is simply the first time any cult asserts
   `Venerates`\/`Shuns` on the item — a distinction that already existed and

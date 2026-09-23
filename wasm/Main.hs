@@ -36,12 +36,13 @@
 -- exported directly at the link level instead (@--export=hs_init@ in the
 -- cabal file); a host must call it before any function below is usable.
 -- See @.claude/docs/DESIGN.md@ Decision 7.
-module Main (main, generateJson, historianNew, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
+module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
 
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
 import Foreign.C.String (CString)
@@ -52,9 +53,9 @@ import Foreign.Ptr (castPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (poke)
 import Historian.Engine (RuleSpec (rsName), nextSlotFromPool, queryEntity, rulesFor, stepAutonomous)
-import Historian.Json (encodeNextSlotFromPool, encodeQueryResult, encodeRulesFor, encodeStepResult, encodeWorld)
-import Historian.Rules (generate, genesisWorld, ruleSpecs)
-import Historian.Types (EntityId (..), World)
+import Historian.Json (decodeTuningOverride, encodeNextSlotFromPool, encodeQueryResult, encodeRulesFor, encodeStepResult, encodeTuning, encodeWorld)
+import Historian.Rules (generate, genesisWorld, genesisWorldWith, ruleSpecs)
+import Historian.Types (EntityId (..), World, defaultTuning)
 
 foreign export ccall "generateJson" generateJson :: Int -> Int -> IO CString
 
@@ -72,9 +73,36 @@ foreign export ccall "historian_new" historianNew :: Int -> IO Handle
 -- | A freshly-founded world (see 'genesisWorld'), retained on this
 -- module's heap and handed back as an opaque handle. Ready for
 -- @historian_step@ to drive one step at a time from the very start —
--- 'generateJson' already covers "give me N steps at once."
+-- 'generateJson' already covers "give me N steps at once." Always under
+-- 'Historian.World.defaultTuning' — see 'historianNewTuned' for a
+-- caller-configured one.
 historianNew :: Int -> IO Handle
 historianNew seed = newIORef (genesisWorld seed) >>= newStablePtr
+
+foreign export ccall "historian_new_tuned" historianNewTuned :: Int -> CString -> IO Handle
+
+-- | 'historianNew', but under a caller-supplied 'Tuning' override
+-- (@tuningJson@: a JSON object naming only the fields to change —
+-- 'decodeTuningOverride' fills in everything else from
+-- 'Historian.World.defaultTuning') instead of the hardcoded default —
+-- Decision 42. Malformed @tuningJson@ (not an object, or a field present
+-- with the wrong shape) falls back to 'Historian.World.defaultTuning'
+-- outright, the same "never trap on bad input, fall back to a safe named
+-- shape" discipline 'historianNextSlot' already established for an
+-- unrecognised rule name.
+historianNewTuned :: Int -> CString -> IO Handle
+historianNewTuned seed tuningJson = do
+  bs <- BS.packCString tuningJson
+  let tuning = fromMaybe defaultTuning (decodeTuningOverride (BSL.fromStrict bs))
+  newIORef (genesisWorldWith seed tuning) >>= newStablePtr
+
+foreign export ccall "historian_default_tuning" historianDefaultTuning :: IO CString
+
+-- | 'Historian.World.defaultTuning', encoded — what a host reads first to
+-- learn the full set of tunable fields and their default values, before
+-- building a UI that sends a partial override to 'historianNewTuned'.
+historianDefaultTuning :: IO CString
+historianDefaultTuning = bsToCString (BSL.toStrict (encodeTuning defaultTuning))
 
 foreign export ccall "historian_step" historianStep :: Handle -> IO CString
 

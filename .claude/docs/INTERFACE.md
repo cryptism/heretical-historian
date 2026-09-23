@@ -62,9 +62,15 @@ steps at once and let me read the result."
 ### Incremental: the `historian_*` family
 
 ```c
-void*  historian_new(int seed);          // -> opaque handle
-char*  historian_step(void* handle);     // advances by exactly one step
+void*  historian_new(int seed);                          // -> opaque handle, defaultTuning
+void*  historian_new_tuned(int seed, const char* tuningJson); // -> opaque handle, caller-tuned
+char*  historian_default_tuning(void);                    // defaultTuning, encoded
+char*  historian_step(void* handle);                      // advances by exactly one step
 char*  historian_query(void* handle, int entityId);
+char*  historian_rules_for(void* handle, const char* poolJson);
+char*  historian_next_slot(void* handle, const char* ruleName, const char* poolJson);
+char*  historian_alloc(int n);                            // n writable bytes, for a CString argument
+void   historian_dealloc(char* buf);                      // pairs with historian_alloc
 void   historian_free(void* handle);
 ```
 
@@ -72,33 +78,62 @@ A live `World` stays resident on the wasm module's own heap behind a
 `StablePtr`, so a host can drive history one step at a time and inspect it
 along the way without re-marshaling the whole thing every call.
 
-- `historian_new(seed)`: a freshly-founded world (`genesisWorld`), handle
-  returned.
+- `historian_new(seed)`: a freshly-founded world (`genesisWorld`) under
+  `Historian.World.defaultTuning`, handle returned.
+- `historian_new_tuned(seed, tuningJson)`: same, but under a caller-
+  supplied `Tuning` override — `tuningJson` is a JSON object naming only
+  the fields to change (`Historian.Json.decodeTuningOverride` fills in
+  everything else from `defaultTuning`), e.g. `{"tnMundaneMiracleChance":
+  80}`. Malformed `tuningJson` (not an object, or a field present with the
+  wrong shape) falls back to `defaultTuning` outright rather than
+  trapping — see Decision 42.
+- `historian_default_tuning()`: `defaultTuning` itself, encoded — call
+  this first to learn every tunable field and its default value before
+  building a UI that sends a partial override to `historian_new_tuned`.
+  See §4's wire shape.
 - `historian_step(handle)`: advances exactly one autonomous step
-  (`stepAutonomous`, every `RuleSpec` in `ruleSpecs`) and returns only
-  that step's *delta* — `{ "fired": bool, "newEntities": [...],
-  "newEvents": [...], "newFacts": [...] }` — not the whole world. A quiet
-  step (nothing fired) still advances the epoch, so repeated calls always
-  make forward progress (CLAUDE.md bug #2's fix, now shared by both step
+  (`stepAutonomous`, every `RuleSpec` in `ruleSpecs`, under whichever
+  `Tuning` the handle's `World` itself carries) and returns only that
+  step's *delta* — `{ "fired": bool, "newEntities": [...], "newEvents":
+  [...], "newFacts": [...] }` — not the whole world. A quiet step
+  (nothing fired) still advances the epoch, so repeated calls always make
+  forward progress (CLAUDE.md bug #2's fix, now shared by both step
   paths).
 - `historian_query(handle, id)`: the handle's *current* world, one
   entity's dossier — `{ id, kind, name, culture, born, bornDate, facts,
   satisfiesSlotOf }` — or JSON `null` for an id that doesn't resolve.
   Read-only. `satisfiesSlotOf` is which `RuleSpec`s (by name) this entity
-  could fill at least one slot of right now — see §3.
-- `historian_free(handle)`: releases it. **Ownership is the host's
-  problem, same as any C FFI** — call exactly once per `historian_new`,
-  never touch a handle again after freeing it. Nothing here enforces that
-  from the Haskell side.
+  could fill at least one slot of right now.
+- `historian_rules_for(handle, poolJson)` / `historian_next_slot(handle,
+  ruleName, poolJson)`: the item 21/22 query surface (`rulesFor`/
+  `nextSlotFromPool`, §3) over the wasm boundary — see §3 for the
+  semantics and §4 for the wire shapes. `poolJson` is a JSON array of
+  entity ids, e.g. `"[1,2,5]"`; a malformed one is treated as an empty
+  pool rather than trapping. `historian_next_slot` on an unrecognised
+  `ruleName` comes back as the `"done"` shape (nothing to resolve) — there
+  is no separate "rule not found" wire shape, since a host holding a name
+  it got from `historian_rules_for` can never actually hit this case.
+- `historian_alloc(n)` / `historian_dealloc(buf)`: these two functions are
+  the *only* reason a host can call anything above that takes a `const
+  char*` argument at all — nothing before them ever took string input, so
+  there was previously no way for a host to get bytes onto this module's
+  own heap. Allocate `n` bytes (your UTF-8 string's length plus one for
+  the trailing NUL), write into them, pass the pointer, then
+  `historian_dealloc` it — ordinary C ABI `malloc`/`free` discipline, one
+  `historian_dealloc` per `historian_alloc`.
+- `historian_free(handle)`: releases a handle. **Ownership is the host's
+  problem, same as any C FFI** — call exactly once per
+  `historian_new`/`historian_new_tuned`, never touch a handle again after
+  freeing it. Nothing here enforces that from the Haskell side.
 
 **Ownership of returned strings:** every `CString` a function here hands
 back is a pointer the host reads as NUL-terminated UTF-8; nothing here
 frees it (an actual host script doing this today: `wasm/verify.mjs`, a
-real Node WASI harness exercising all five functions end to end).
+real Node WASI harness exercising every function above end to end).
 
 ### Wire shapes (`Historian.Json`)
 
-- **Entity**: `id, kind, name, culture, born, bornDate, modifier, property`
+- **Entity**: `id, kind, name, culture, born, bornDate, property`
   (`property`'s an `Item`'s embodied `Concept`'s *name*, not a bare id —
   readable straight off the wire).
 - **Event**: `id, epoch, date, kind, text (neutral), narratedText,
@@ -109,13 +144,33 @@ real Node WASI harness exercising all five functions end to end).
   constructor rename can't silently change the wire format. `object` is
   one of `{entity}`, `{event}`, `{entity, omen}`, or `{name}` — mirroring
   `Referent`'s four constructors (invariant 4).
+- **RulesFor result** (`historian_rules_for`): a JSON array of `{rule,
+  score}`, ranked highest score first — `rule` is the `RuleSpec`'s own
+  `rsName`.
+- **NextSlotFromPool result** (`historian_next_slot`): a `status`-tagged
+  object, one of three shapes rather than one loosely-typed object, so a
+  host can dispatch without probing which fields are present —
+  `{"status":"ambiguous","shapes":[...]}` (the pool admits more than one
+  genuinely different binding; each shape is a parallel array of entity
+  ids/`null`s), `{"status":"done"}` (the pool already fully resolves the
+  rule, or the rule name wasn't recognised), or `{"status":"slot",
+  "slotIndex":i,"slotKind":"Person","candidates":[...EntityDossier...]}`
+  (the next open slot and its real candidates, reusing the exact
+  `EntityDossier` shape `historian_query` already exposes).
+- **Tuning** (`historian_default_tuning`, and what `historian_new_tuned`'s
+  `tuningJson` argument accepts a subset of): one key per `Tuning` field,
+  by name (`tnMundaneMiracleChance`, `tnCultureDriftChance`, ...) — see
+  `Historian.Types.Tuning`'s own Haddock for what each one does. An
+  `(existing, generate, omit)` weight triple (`tnBackfillWeights`,
+  `tnBackdatedSaintWeights`) crosses as a 3-element array in that order,
+  e.g. `[60, 15, 25]`.
 
 ## 3. The Haskell query surface (`Historian.Engine`)
 
-Not exposed over the wasm boundary yet (only `historian_query`'s
-`satisfiesSlotOf` is) — this is the library-level API a future web app's
-backend would sit on top of, or that any other Haskell caller already has
-today. All pure except where noted.
+`rulesFor`/`nextSlotFromPool` reach the wasm boundary too now
+(`historian_rules_for`/`historian_next_slot`, §2) — this section is the
+underlying library-level API, which is also directly available to any
+other Haskell caller. All pure except where noted.
 
 **"What could fill the rest of this rule, given some entities I already
 have and no rule pinned down"** — the `rulesFor`/`nextSlotFromPool`
@@ -177,7 +232,12 @@ dependent slots.
 - Anything that would let a caller mutate a `World` outside `Chronicle` —
   there's no external "add a fact" call; invariant 4's `record` stays the
   only path facts take into the world (see CLAUDE.md "Things not to do").
-- §3's query surface over the wasm boundary — only `historian_query`'s
-  `satisfiesSlotOf` field is exposed today; `rulesFor`/`nextSlotFromPool`
-  would need their own `ccall` wrappers plus JSON shapes for
-  `EntityDossier`/`PoolAmbiguity` if a host ever needs them directly.
+- `generateJson`/`historian_new`'s own plain (non-tuned) forms stay on
+  `defaultTuning` and always will — they exist for a host that doesn't
+  care about configuration; `historian_new_tuned` is additive, not a
+  replacement (Decision 42).
+- A way to change a handle's `Tuning` *after* creation. `wTuning` is set
+  once, at `historian_new`/`historian_new_tuned` time, same as everything
+  else about a `World`'s own starting conditions (seed, epoch) — nothing
+  in this codebase mutates a world's own configuration mid-run, and
+  `Tuning` isn't a special case of that.

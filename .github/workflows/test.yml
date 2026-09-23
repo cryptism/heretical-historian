@@ -1,0 +1,29 @@
+name: Test
+
+# Runs `cabal test` (the full check suite documented in CLAUDE.md's
+# Status section) on every push and pull request — the plain regression
+# net that never previously existed in CI (release-wasm.yml only builds
+# the wasm artifact, and only on a version tag). See Decision 41 in
+# .claude/docs/DESIGN.md: this exists specifically so an RNG-cascade
+# regression (a witness seed knocked out by an unrelated change) is
+# caught automatically instead of relying on someone remembering to run
+# `cabal test` locally.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: cabal test
+        run: nix develop --command cabal test

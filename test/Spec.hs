@@ -19,7 +19,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Historian.Corpus (constructedSiteNouns, hailWords, hollowtongue, meanderClauses, mundaneItems, mundanePersons, naturalSiteNouns, omissionTexts, siteNouns, vaurethine)
 import Historian.Engine
-import Historian.Json (encodeQueryResult, encodeStepResult, encodeWorld)
+import Historian.Json (decodeTuningOverride, encodeQueryResult, encodeStepResult, encodeTuning, encodeWorld)
 import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice)
 import Historian.Rules (
   apprenticeshipClaim,
@@ -38,8 +38,10 @@ import Historian.Rules (
   foundingPurposeClaim,
   generate,
   generateViaEngine,
+  generateWith,
   genesis,
   genesisWorld,
+  genesisWorldWith,
   giftSpec,
   mergerSpec,
   mintBackdatedSaint,
@@ -139,17 +141,35 @@ wideSeeds = [1 .. 250]
 -- #3\/#5). Longer runs don't help (reinterpretation only grows more
 -- dominant with more steps), so this is a wider pool of independent
 -- trials, not a longer one, the same reasoning 'wideSeeds' already
--- documents for the dying-curse check. Widened again (was 1500) after the
--- syllable-grammar naming rewrite and the five new cultures both reshuffled
--- every seed's RNG cascade — a fresh scan found trial by combat's first
--- instance at seed 5012 and coup's at seed 4326. Widened again (was 6000)
--- after the mundane-entity feature's new `chance` roll inside
--- `Historian.Rules.fireMiracleSaint`\/`fireMiracleRelic`'s fresh branch
--- reshuffled the cascade yet again — a fresh scan found trial by combat's
--- first instance pushed out to seed 10047 (coup's own first instance,
--- 1143, stayed comfortably inside the old bound).
+-- documents for the dying-curse check. Widened several times over this
+-- project's history (1500 → 6000 → 11000) purely because each unrelated
+-- RNG addition elsewhere kept pushing the one lucky witness seed further
+-- out — never because the events themselves were shown to be rare in
+-- principle. Decision 41 addressed the actual cause instead of widening a
+-- fifth time: 'Historian.Rules.ruleTrialByCombat'\/'ruleCoup' were
+-- default-weight-1 rules competing for a uniform pick against every other
+-- rule's typically much larger candidate list, which is what made them
+-- rare in practice, not `Rivalry` itself (a coronation produces one 40%
+-- of the time). `rivalryRuleWeight` fixes the actual dilution; this range
+-- shrank from 11000 to 1000 as a direct result — trial by combat's first
+-- instance is now seed 182, coup's is seed 420, both comfortably inside
+-- with real margin. See 'trialByCombatWitnessSeed'\/'coupWitnessSeed'
+-- below for the fast, pinned-seed counterpart to this scan the user
+-- specifically asked for — this wide scan stays too, as confirmation the
+-- capability isn't *uniquely* dependent on one lucky seed.
 veryWideSeeds :: [Int]
-veryWideSeeds = [1 .. 11000]
+veryWideSeeds = [1 .. 1000]
+
+-- | The fast counterpart to 'veryWideSeeds': a single known-good seed per
+-- rare event, checked directly (one 'generate' call, not a thousand-seed
+-- scan) so a regression is caught in milliseconds rather than requiring
+-- the multi-minute hunt a shrunk 'veryWideSeeds' would otherwise need.
+-- Re-pin these, the same way 'seeds'\/`richWorld`'s own witnesses already
+-- get re-pinned, whenever an RNG-cascade change knocks either one out —
+-- found via 'veryWideSeeds' own scan, not guessed.
+trialByCombatWitnessSeed, coupWitnessSeed :: Int
+trialByCombatWitnessSeed = 182
+coupWitnessSeed = 420
 
 steps :: Int
 steps = 14
@@ -297,6 +317,14 @@ main = do
           , "a coup occurs for at least one seed (at longSteps, veryWideSeeds)"
           )
         ,
+          ( any ((== "trial-by-combat") . evKind) (M.elems (wEvents (generate trialByCombatWitnessSeed longSteps)))
+          , "Fast: trial by combat occurs at its pinned witness seed (no scan)"
+          )
+        ,
+          ( any ((== "coup") . evKind) (M.elems (wEvents (generate coupWitnessSeed longSteps)))
+          , "Fast: a coup occurs at its pinned witness seed (no scan)"
+          )
+        ,
           ( all jsonRoundTrips aggregateSeeds
           , "JSON encoding round-trips with matching entity/event/fact counts for every seed"
           )
@@ -334,7 +362,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -1388,6 +1416,19 @@ ruinsNever = defaultTuning {tnRuinsNameChance = 0}
 trainedWorld :: World
 trainedWorld = execState (record "test-setup" "" [Claim rP0 TrainedBy (Just (ROf rP1)) (Just rS0) Nothing]) richWorld
 
+-- | 'trainedWorld' plus a committed 'MiracleSaint' outcome naming rP1 as
+-- the saint — rP0's own mentor. The one world 'apprenticeBoost's lineage
+-- branch (Decision 43) actually needs: a trainee whose mentor was
+-- themselves already recognized.
+sainthoodWorld :: World
+sainthoodWorld =
+  execState
+    ( do
+        commitOutcomes [MiracleSaint (MiracleSaintOutcome rS0 rSt0 rP1 False Nothing [])]
+        record "test-setup" "" [Claim rP0 TrainedBy (Just (ROf rP1)) (Just rS0) Nothing]
+    )
+    richWorld
+
 backstoryChecks :: [(Bool, Text)]
 backstoryChecks =
   [
@@ -1425,6 +1466,18 @@ backstoryChecks =
     , "Direct: apprenticeBoost gives the full boost only to a trained candidate"
     )
   ,
+    ( mentorOf trainedWorld rP0 == Just rP1 && isNothing (mentorOf richWorld rP0)
+    , "Direct: mentorOf finds the recorded TrainedBy mentor, and only a recorded one"
+    )
+  ,
+    ( wasSaint sainthoodWorld rP1 && not (wasSaint richWorld rP1)
+    , "Direct: wasSaint finds a committed MiracleSaint outcome naming the person, and only a committed one"
+    )
+  ,
+    ( apprenticeBoost defaultTuning sainthoodWorld rP0 == 1 + tnApprenticeBoost defaultTuning + tnLineageBoost defaultTuning
+    , "Direct: apprenticeBoost gives the full lineage boost on top of the base one when the trainee's own mentor was already recognized as a saint"
+    )
+  ,
     ( maybe False (T.isInfixOf "recovered from the ruins of") (evalState (ruinsItemName ruinsAlways richWorld) richWorld)
     , "Direct: ruinsItemName with chance 100 names the item as recovered from a terminated society's ruins"
     )
@@ -1445,6 +1498,44 @@ backstoryChecks =
     , "Direct: siteNounFor with chance 0 always draws from the plain unflavored pool"
     )
   ]
+
+-- | Decision 42: 'wTuning' on 'World' and 'generateWith'\/'genesisWorldWith'
+-- (the whole point of moving 'Tuning' up to 'Historian.Types'), plus the
+-- JSON encode\/decode the wasm boundary's @historian_new_tuned@ needs.
+tuningChecks :: [(Bool, Text)]
+tuningChecks =
+  [
+    ( wTuning (generateWith 1 5 customTuning) == customTuning
+    , "Direct: generateWith's resulting World carries the caller-supplied Tuning"
+    )
+  ,
+    ( wTuning (genesisWorldWith 1 customTuning) == customTuning
+    , "Direct: genesisWorldWith's resulting World carries the caller-supplied Tuning"
+    )
+  ,
+    ( decodeTuningOverride (encodeTuning defaultTuning) == Just defaultTuning
+    , "Direct: encodeTuning/decodeTuningOverride round-trip defaultTuning exactly"
+    )
+  ,
+    ( decodeTuningOverride "{\"tnMundaneMiracleChance\": 99}" == Just (defaultTuning {tnMundaneMiracleChance = 99})
+    , "Direct: decodeTuningOverride merges a partial override onto defaultTuning, leaving every other field unchanged"
+    )
+  ,
+    ( isNothing (decodeTuningOverride "[1,2,3]")
+    , "Direct: decodeTuningOverride rejects JSON that isn't an object"
+    )
+  ,
+    ( isNothing (decodeTuningOverride "not json at all")
+    , "Direct: decodeTuningOverride rejects malformed JSON outright"
+    )
+  ,
+    ( not (any (\s -> any entMundane (M.elems (wEntities (generateWith s longSteps mundaneOffTuning)))) aggregateSeeds)
+    , "Direct: generateWith actually threads Tuning through real generation — tnMundaneMiracleChance 0 means zero mundane entities across every aggregateSeeds seed"
+    )
+  ]
+  where
+    customTuning = defaultTuning {tnMundaneMiracleChance = 77, tnCultureDriftChance = 3}
+    mundaneOffTuning = defaultTuning {tnMundaneMiracleChance = 0}
 
 -- | Work queue item 15's wasm stateful-handle follow-up (.claude/docs/DESIGN.md
 -- Decision 33): 'Historian.Engine.intelligentStep's 'StepAny'\/

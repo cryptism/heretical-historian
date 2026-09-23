@@ -11,6 +11,7 @@
 module Historian.Types where
 
 import Data.Map.Strict (Map)
+import Data.Set (Set)
 import Data.Text (Text)
 import Historian.Markov (Chain)
 import System.Random (StdGen)
@@ -73,18 +74,17 @@ data Entity = Entity
   -- ^ Minted once, at creation. Never regenerated at render time.
   , entCulture :: Culture
   , entBorn :: Epoch
-  , entModifier :: Maybe Int
-  -- ^ -2..+4, rolled once at creation for every 'Item' ('Nothing' for
-  -- every other 'Kind'). A placeholder for future mechanical use — nothing
-  -- reads it yet. The 'Concept' an 'Item' embodies is deliberately *not* a
-  -- field here — unlike this scalar, it's a relationship to another
-  -- entity, so it's an 'Embodies' fact instead (see 'Predicate'), keeping
-  -- every relationship in this model fact-based rather than baked onto
-  -- 'Entity'.
   , entVoice :: Maybe Voice
   -- ^ Rolled once at creation for every 'Society' ('Nothing' for every
-  -- other 'Kind') — the same "scalar, no entity reference inside it, fine
-  -- as a plain field" shape 'entModifier' already has.
+  -- other 'Kind') — a scalar, no entity reference inside it, so it's a
+  -- plain field rather than a fact. An 'Item''s embodied 'Concept' is
+  -- deliberately *not* a field of this same shape: unlike a scalar, it's
+  -- a relationship to another entity, so it's an 'Embodies' fact instead
+  -- (see 'Predicate'), keeping every relationship in this model
+  -- fact-based rather than baked onto 'Entity'. (An earlier scalar field
+  -- here, 'entModifier' — a rolled, never-read placeholder on every
+  -- 'Item' — was removed outright once nothing ever came to read it; see
+  -- Decision 40 in .claude/docs/DESIGN.md.)
   , entMundane :: Bool
   -- ^ True only for a 'Person'\/'Item' minted as background dressing for
   -- someone else's event ('Historian.World.newMundanePerson'\/
@@ -593,6 +593,138 @@ data Month = Month
   }
   deriving stock (Eq, Show)
 
+-- | Every hand-tuned probability weight in the codebase, in one place
+-- (work queue item 18) — covers 'Historian.World.backfillWard',
+-- 'Historian.Rules.mintBackdatedSaint', and 'Historian.Render.
+-- pickNarrator', which each picked their own ad hoc constants before this
+-- existed, with no way to tune one without hunting down the others.
+-- Lives here rather than in 'Historian.World' (where it was originally
+-- built) because 'World' itself now carries one ('wTuning') — a lower
+-- layer can't reference a type defined in a higher one. See Decision 42.
+data Tuning = Tuning
+  { tnBackfillWeights :: (Int, Int, Int)
+  -- ^ existing\/generate\/omit, for 'Historian.World.backfillWard' —
+  -- depth 1 prefers binding an existing cult over minting a fresh one.
+  , tnBackfillMaxDepth :: Int
+  , tnBackdatedSaintWeights :: (Int, Int, Int)
+  -- ^ existing\/generate\/omit, for 'Historian.Rules.mintBackdatedSaint'.
+  , tnNarratorAttested :: Int
+  -- ^ 'Historian.Render.pickNarrator': weight for the society whose claim
+  -- is actually attested to the outcome.
+  , tnNarratorOtherShare :: Int
+  -- ^ 'Historian.Render.pickNarrator': weight split evenly across every
+  -- other active society.
+  , tnAllCapsChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 that a
+  -- narrated reading gets shouted in full caps.
+  , tnHailChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 of a
+  -- recurring hailing word opening the reading.
+  , tnMeanderChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 of a
+  -- rambling aside tacked onto the end of the reading.
+  , tnOmitChance :: Int
+  -- ^ 'Historian.Render.applyIdiosyncrasies': chance out of 100 that the
+  -- narrator declines to elaborate at all, replacing the reading with a
+  -- non-committal stand-in rather than the actual account.
+  , tnThemedItemNameChance :: Int
+  -- ^ 'Historian.World.themedItemName': chance out of 100 that a
+  -- freshly-minted item with a known commissioning cult gets named after
+  -- something that cult already venerates or shuns, rather than an
+  -- arbitrary stem — checked only once the cult is confirmed to have at
+  -- least one current Venerates\/Shuns stance to draw on at all.
+  , tnMundaneMiracleChance :: Int
+  -- ^ 'Historian.Rules.fireMiracleSaint'\/'fireMiracleRelic': chance out
+  -- of 100 that a miracle's freshly-minted saint\/relic is mundane
+  -- background dressing ('Historian.World.newMundanePerson'\/
+  -- 'newMundaneItem') rather than a full, backfill-eligible
+  -- 'newPerson'\/'newItem'. Only consulted when no existing Ward was
+  -- offered for the slot — the same "only the fresh branch has a choice
+  -- to make" shape 'mintBackdatedSaint' and 'themedItemName' already
+  -- have.
+  , tnCultureDriftChance :: Int
+  -- ^ 'Historian.World.driftCulture': chance out of 100 that a fresh
+  -- society minted where culture would otherwise simply be inherited (a
+  -- schismatic offshoot, 'Historian.Rules.fireSchism'; a
+  -- backfill-generated cult, 'Historian.World.generateCultFor') instead
+  -- picks a different culture at random from 'Historian.Corpus.
+  -- allCultures'. Without this, every society in a generated world shares
+  -- one culture forever — 'Historian.Rules.genesis' is the only call site
+  -- that ever drew one fresh, and every other society-minting path
+  -- inherits an existing entity's. See Decision 38.
+  , tnSameCultureBoost :: Int
+  -- ^ 'Historian.Rules.ruleMerger': how many *extra* times a same-culture
+  -- merger candidate pairing is replicated in the rule's own candidate
+  -- list, on top of the one copy every valid pairing already gets — the
+  -- same "weighting is candidate-list replication, not a bolted-on
+  -- probability" idiom every other self-weighting rule in this codebase
+  -- already uses (`ruleWeight`, `step`'s own uniform pool-and-pick). A
+  -- cross-culture pairing still gets exactly one copy; 0 disables the
+  -- boost entirely without disabling merger itself.
+  , tnFoundingPurposeChance :: Int
+  -- ^ 'Historian.Rules.fireSchism': chance out of 100 that a fresh
+  -- splinter's own founding purpose is recorded as inherited from the
+  -- parent's current regard toward some Ward — either continuing it or
+  -- reacting against it — rather than founding with no stated purpose at
+  -- all (the splinter still gets its own ordinary 'Historian.World.
+  -- backfillPatron' chance either way, via 'Historian.World.newSociety').
+  -- Only consulted when the parent actually has some current
+  -- Venerates\/Shuns stance to draw from. See Decision 39.
+  , tnRuinsNameChance :: Int
+  -- ^ 'Historian.World.ruinsItemName': chance out of 100 that a
+  -- freshly-minted item with no themed name ('themedItemName' either
+  -- found nothing to draw on or simply missed) is instead named as
+  -- recovered from a terminated society's ruins, rather than an
+  -- arbitrary stem. Only consulted when at least one society has
+  -- actually terminated. See Decision 39.
+  , tnSiteOriginChance :: Int
+  -- ^ 'Historian.World.siteNounFor': chance out of 100 that a
+  -- freshly-minted site's noun is drawn from a built-vs-discovered-
+  -- flavored pool ('Historian.Corpus.constructedSiteNouns'\/
+  -- 'naturalSiteNouns') instead of the plain, unflavored
+  -- 'Historian.Corpus.siteNouns'. See Decision 39.
+  , tnApprenticeshipChance :: Int
+  -- ^ 'Historian.Rules.fireSchism': chance out of 100 that a fresh
+  -- heresiarch is recorded as 'TrainedBy' the parent society's own
+  -- current leader, when it has one.
+  , tnApprenticeBoost :: Int
+  -- ^ 'Historian.Rules.ruleMiracle': how many *extra* times a
+  -- 'TrainedBy' candidate is replicated in the miracle-saint candidate
+  -- list — the same list-replication idiom 'tnSameCultureBoost' already
+  -- uses, applied here instead of a bolted-on probability.
+  , tnLineageBoost :: Int
+  -- ^ 'Historian.World.apprenticeBoost': how many *further* extra times a
+  -- 'TrainedBy' candidate is replicated on top of 'tnApprenticeBoost',
+  -- when their own mentor was themselves already recognized as a miracle
+  -- saint ('Historian.World.wasSaint') — sainthood running in a lineage,
+  -- not just apprenticeship alone.
+  }
+  deriving stock (Eq, Show)
+
+defaultTuning :: Tuning
+defaultTuning =
+  Tuning
+    { tnBackfillWeights = (60, 15, 25)
+    , tnBackfillMaxDepth = 3
+    , tnBackdatedSaintWeights = (60, 15, 25)
+    , tnNarratorAttested = 70
+    , tnNarratorOtherShare = 30
+    , tnAllCapsChance = 8
+    , tnHailChance = 12
+    , tnMeanderChance = 10
+    , tnOmitChance = 4
+    , tnThemedItemNameChance = 40
+    , tnMundaneMiracleChance = 35
+    , tnCultureDriftChance = 12
+    , tnSameCultureBoost = 2
+    , tnFoundingPurposeChance = 25
+    , tnRuinsNameChance = 60
+    , tnSiteOriginChance = 30
+    , tnApprenticeshipChance = 30
+    , tnApprenticeBoost = 2
+    , tnLineageBoost = 3
+    }
+
 data World = World
   { wEntities :: Map EntityId Entity
   , wFacts :: [Fact]
@@ -610,4 +742,17 @@ data World = World
   , wNextEntity :: Int
   , wNextEvent :: Int
   , wGen :: StdGen
+  , wNameSubstrings :: Set Text
+  -- ^ Every substring of length >= 4 of every entity's 'entName' so far,
+  -- maintained incrementally by 'Historian.World.mint' — the index
+  -- 'Historian.World.markovWord'\/'syllableName's collision check queries
+  -- in O(log n) instead of linearly scanning every existing name on every
+  -- mint (see Decision 40). Exists purely to make that one check fast;
+  -- nothing else reads it.
+  , wTuning :: Tuning
+  -- ^ The 'Tuning' this particular world was generated under — 'genesis'
+  -- and every rule reads this instead of the hardcoded 'defaultTuning'
+  -- constant they used to, so a caller (the wasm boundary, in particular)
+  -- can configure a world's own probabilities at creation time. See
+  -- Decision 42.
   }

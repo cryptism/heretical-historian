@@ -40,6 +40,14 @@ rule name = Rule name 1
 weightedRule :: Int -> Text -> (World -> [Chronicle [Outcome]]) -> Rule
 weightedRule w name = Rule name w
 
+-- | 'ruleTrialByCombat'\/'ruleCoup's shared weight — tuned empirically
+-- (a scratch scan across many seeds, the same technique this file's own
+-- witness-seed hunts already use) rather than guessed, to bring the
+-- "does this ever happen" wide-seed scan test/Spec.hs needs down from an
+-- 11000-seed range to a much smaller one. See Decision 41.
+rivalryRuleWeight :: Int
+rivalryRuleWeight = 20
+
 rules :: [Rule]
 rules = [ruleSchism, ruleBattle, ruleSanctify, ruleDefile, ruleMiracle, ruleAssassinate, ruleMerger, ruleDissolve, ruleRevive, ruleProphesy, ruleTheft, ruleDestroyRelic, ruleGift, ruleCoronation, ruleTrialByCombat, ruleCoup]
 
@@ -123,13 +131,13 @@ fireSchism w s mh = do
   -- applies to the *society* a schism founds, per Decision 38: this is
   -- one of the two places (alongside 'generateCultFor') a fresh society
   -- can end up in a different culture from the one that produced it.
-  splitCult <- driftCulture defaultTuning cult
+  splitCult <- driftCulture (wTuning w) cult
   (c, concept) <- newSociety splitCult
-  purposeClaims <- foundingPurposeClaim defaultTuning w s c
+  purposeClaims <- foundingPurposeClaim (wTuning w) w s c
   -- Apprenticeship is a backstory for a newly-invented character, not a
   -- retroactive claim about someone who already existed — see
   -- 'apprenticeshipClaim's own Haddock.
-  trainedClaims <- if fresh then apprenticeshipClaim defaultTuning w s h else pure []
+  trainedClaims <- if fresh then apprenticeshipClaim (wTuning w) w s h else pure []
   let outcome = SchismOutcome s h fresh c (patronClaims c concept ++ purposeClaims ++ trainedClaims)
   disputes <- maybeDispute s
   pure (Schism outcome : disputes)
@@ -390,14 +398,14 @@ defileSpec =
 -- Never applied to the 'Nothing' (fresh saint) candidate itself.
 ruleMiracle :: Rule
 ruleMiracle = rule "miracle" $ \w ->
-  [ fireMiracleSaint defaultTuning w s site msaint
+  [ fireMiracleSaint (wTuning w) w s site msaint
   | s <- activeSocieties w
   , site <- entitiesOf Site w
   , venerates w s site
   , msaint <- Nothing : map Just (livingMembers w s ++ deadMembers w s)
-  , _ <- replicate (maybe 1 (apprenticeBoost defaultTuning w) msaint) ()
+  , _ <- replicate (maybe 1 (apprenticeBoost (wTuning w) w) msaint) ()
   ]
-    ++ [fireMiracleRelic defaultTuning w s site mrelic | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, mrelic <- Nothing : map Just (activeItems w)]
+    ++ [fireMiracleRelic (wTuning w) w s site mrelic | s <- activeSocieties w, site <- entitiesOf Site w, venerates w s site, mrelic <- Nothing : map Just (activeItems w)]
     ++ [ fireMiracleOn w s site actor target
        | s <- activeSocieties w
        , site <- entitiesOf Site w
@@ -526,7 +534,7 @@ miracleSaintSpec =
       (s : _) -> saint `elem` livingMembers w s ++ deadMembers w s
       [] -> False
     fire w assignment = case assignment of
-      [Just s, Just site, msaint] -> fireMiracleSaint defaultTuning w s site msaint
+      [Just s, Just site, msaint] -> fireMiracleSaint (wTuning w) w s site msaint
       _ -> pure []
 
 miracleRelicSpec :: RuleSpec
@@ -538,7 +546,7 @@ miracleRelicSpec =
     }
   where
     fire w assignment = case assignment of
-      [Just s, Just site, mrelic] -> fireMiracleRelic defaultTuning w s site mrelic
+      [Just s, Just site, mrelic] -> fireMiracleRelic (wTuning w) w s site mrelic
       _ -> pure []
 
 miracleOnPersonSpec :: RuleSpec
@@ -954,8 +962,16 @@ coronationSpec =
 -- shape exactly, just with 'rivalPairs' and a same-society check in place
 -- of a defunctness check (a person can't outlive their society the way a
 -- society can go defunct, so there's nothing else to guard here).
+--
+-- Weighted ('rivalryRuleWeight') rather than the default 1: a real
+-- 'Rivalry' isn't actually rare on its own (coronation produces one 40%
+-- of the time), but once it exists it was getting drowned out by every
+-- other rule's own, typically much larger, candidate list in 'step's
+-- uniform pool-and-pick — trial by combat and a coup were "the two
+-- rarest" events almost entirely because of that pooling dilution, not
+-- because a real rivalry itself is scarce. See Decision 41.
 ruleTrialByCombat :: Rule
-ruleTrialByCombat = rule "trial-by-combat" $ \w ->
+ruleTrialByCombat = weightedRule rivalryRuleWeight "trial-by-combat" $ \w ->
   [ fireTrialByCombat w s a b
   | (a, b) <- rivalPairs w
   , s <- activeSocieties w
@@ -1008,9 +1024,11 @@ trialByCombatSpec =
 
 -- | A rivalry specifically against the *current* leader — unlike trial by
 -- combat, which is symmetric between any two rivals, a coup only makes
--- sense aimed at whoever actually holds power.
+-- sense aimed at whoever actually holds power. Weighted the same as
+-- 'ruleTrialByCombat' and for the same reason — see its own Haddock and
+-- Decision 41.
 ruleCoup :: Rule
-ruleCoup = rule "coup" $ \w ->
+ruleCoup = weightedRule rivalryRuleWeight "coup" $ \w ->
   [ fireCoup w s usurper leader
   | s <- activeSocieties w
   , Just leader <- [currentLeader w s]
@@ -1147,7 +1165,7 @@ ruleMerger = rule "merger" $ \w ->
   , a < b
   , not (holdsGrievance w a b || holdsGrievance w b a)
   , sharesGrievanceTarget w a b || sharesVeneration w a b
-  , _ <- replicate (cultureBoost defaultTuning w a b) ()
+  , _ <- replicate (cultureBoost (wTuning w) w a b) ()
   ]
 
 fireMerger :: World -> EntityId -> EntityId -> Chronicle [Outcome]
@@ -1409,15 +1427,27 @@ step :: Chronicle Bool
 step = stepWith rules
 
 generate :: Int -> Int -> World
-generate seed steps =
-  execState (genesis >>= commitOutcomes >> replicateM_ steps step) (emptyWorld seed)
+generate seed steps = generateWith seed steps defaultTuning
+
+-- | 'generate', but under a caller-supplied 'Tuning' instead of
+-- 'defaultTuning' — the batch counterpart to 'genesisWorldWith'. 'generate'
+-- itself is unchanged and stays the stable, pure-of-just-two-Ints entry
+-- point invariant 5 names; this is additive. See Decision 42.
+generateWith :: Int -> Int -> Tuning -> World
+generateWith seed steps tuning =
+  execState (genesis >>= commitOutcomes >> replicateM_ steps step) (emptyWorldWith seed tuning)
 
 -- | A freshly-founded 'World' — genesis committed, nothing else — as
 -- opposed to 'generate's own "run N steps up front" shape. The starting
 -- point for incremental, one-step-at-a-time driving (wasm's
 -- @historian_new@, via 'Historian.Engine.stepAutonomous').
 genesisWorld :: Int -> World
-genesisWorld seed = execState (genesis >>= commitOutcomes) (emptyWorld seed)
+genesisWorld seed = genesisWorldWith seed defaultTuning
+
+-- | 'genesisWorld', but under a caller-supplied 'Tuning' — what wasm's
+-- @historian_new_tuned@ builds on. See Decision 42.
+genesisWorldWith :: Int -> Tuning -> World
+genesisWorldWith seed tuning = execState (genesis >>= commitOutcomes) (emptyWorldWith seed tuning)
 
 -- | Turns a 'RuleSpec' into an ordinary 'Rule' by enumerating every
 -- satisfying assignment via 'Historian.Engine.allAssignments' and firing

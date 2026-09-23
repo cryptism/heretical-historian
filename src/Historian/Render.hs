@@ -710,7 +710,7 @@ commitOutcomes :: [Outcome] -> Chronicle ()
 commitOutcomes outcomes = do
   w <- get
   forM_ outcomes $ \o -> do
-    narrator <- pickNarrator defaultTuning w o
+    narrator <- pickNarrator (wTuning w) w o
     let claims = outcomeClaims w o
         neutral = render w Nothing o
     narrated <- case narrator of
@@ -718,5 +718,5 @@ commitOutcomes outcomes = do
       -- Idiosyncrasies dress only the in-voice reading — 'evNeutralText'
       -- stays the permanent, unmangled "generic log" (.claude/docs/DESIGN.md
       -- Decision 29), same as before this existed.
-      Just sid -> applyIdiosyncrasies defaultTuning (render w (Just sid) o)
+      Just sid -> applyIdiosyncrasies (wTuning w) (render w (Just sid) o)
     recordOutcome (outcomeKind o) o narrator narrated neutral (claims ++ fulfillProphecies w claims)

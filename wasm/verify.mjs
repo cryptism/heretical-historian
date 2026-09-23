@@ -1,11 +1,12 @@
 // Verifies a patched historian-wasm.wasm (see wasm/patch-reactor.sh) end to
 // end against a real Node WASI host: the batch entry point (generateJson),
-// the stateful-handle family (historian_new/step/query/free), and the
+// the stateful-handle family (historian_new/step/query/free), the
 // item 21/22 query surface (historian_rules_for/historian_next_slot, plus
 // the historian_alloc/historian_dealloc pair that lets a host write a
-// CString argument onto this module's heap in the first place) — see
-// .claude/docs/DESIGN.md Decision 7, its Decision 33 follow-up, and
-// Decision 39.
+// CString argument onto this module's heap in the first place), and
+// configurable Tuning (historian_default_tuning/historian_new_tuned) —
+// see .claude/docs/DESIGN.md Decision 7, its Decision 33 follow-up,
+// Decision 39, and Decision 42.
 //
 // Requires Node's WASI module (--experimental-wasi-unstable-preview1 not
 // needed on recent Node; the `WASI` import below is enough). Run with:
@@ -152,6 +153,32 @@ instance.exports.historian_dealloc(emptyPoolPtr2);
 check("historian_next_slot with an unrecognised rule name comes back 'done', not a trap", unknownRuleResult && unknownRuleResult.status === "done");
 
 instance.exports.historian_free(handle2);
+
+// --- historian_default_tuning / historian_new_tuned (Decision 42) ---
+const defaultTuning = readJson(instance.exports.historian_default_tuning());
+check(
+  "historian_default_tuning returns an object with the expected field shape",
+  defaultTuning && typeof defaultTuning.tnMundaneMiracleChance === "number" && Array.isArray(defaultTuning.tnBackfillWeights) && defaultTuning.tnBackfillWeights.length === 3,
+);
+
+const overridePtr = writeCString(JSON.stringify({ tnMundaneMiracleChance: 100 }));
+const tunedHandle = instance.exports.historian_new_tuned(7, overridePtr);
+instance.exports.historian_dealloc(overridePtr);
+check("historian_new_tuned returned a non-null handle", tunedHandle !== 0);
+
+let sawMundane = false;
+for (let i = 0; i < 40 && !sawMundane; i++) {
+  const r = readJson(instance.exports.historian_step(tunedHandle));
+  if (r.newEntities.some((e) => e.name && (e.name.startsWith("a ") || e.name.startsWith("an ")))) sawMundane = true;
+}
+check("historian_new_tuned actually applies the override (tnMundaneMiracleChance 100 -> a mundane entity shows up within 40 steps)", sawMundane);
+instance.exports.historian_free(tunedHandle);
+
+const malformedTuningPtr = writeCString("not json");
+const fallbackHandle = instance.exports.historian_new_tuned(1, malformedTuningPtr);
+instance.exports.historian_dealloc(malformedTuningPtr);
+check("historian_new_tuned with malformed tuningJson still returns a usable handle (falls back to defaultTuning)", fallbackHandle !== 0);
+instance.exports.historian_free(fallbackHandle);
 
 instance.exports.historian_free(handle);
 check("historian_free did not trap", true);

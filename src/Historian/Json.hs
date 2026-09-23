@@ -13,10 +13,11 @@
 -- chains, which are generator-internal bookkeeping with no business
 -- leaving Haskell. Only entities, events, and facts — the queryable
 -- output — cross the boundary.
-module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult, encodeRulesFor, encodeNextSlotFromPool) where
+module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult, encodeRulesFor, encodeNextSlotFromPool, encodeTuning, decodeTuningOverride) where
 
-import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson (Value (..), object, (.:?), (.=))
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Types as Aeson (Parser, parseMaybe)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
@@ -123,7 +124,6 @@ entityJson w e =
     , "culture" .= unCulture (entCulture e)
     , "born" .= unEpoch (entBorn e)
     , "bornDate" .= dateOf w (entBorn e)
-    , "modifier" .= entModifier e
     , -- The concept's name, not a bare id: a relic's nature should be
       -- readable straight off the wire format, not need a second lookup.
       "property" .= fmap (nameIn w) (propertyOf w (entId e))
@@ -199,3 +199,83 @@ referentJson = \case
   REvent e -> object ["event" .= unEventId e]
   ROmen e mp -> object ["entity" .= unEntityId e, "omen" .= fmap predicateText mp]
   RName t -> object ["name" .= t]
+
+-- | Every 'Tuning' field, spelled out by name rather than derived — the
+-- wire format a wasm host reads (to build a "here's what's tunable" UI
+-- from) and writes (see 'decodeTuningOverride'). An @(existing, generate,
+-- omit)@ weight triple crosses as a 3-element array in that same order,
+-- via 'tripleJson'\/'parseTriple' below rather than aeson's own generic
+-- tuple instance — explicit, not implicit, the same reasoning
+-- 'predicateText' already documents for why this module hand-writes
+-- every shape it exposes.
+encodeTuning :: Tuning -> BSL.ByteString
+encodeTuning t =
+  Aeson.encode $
+    object
+      [ "tnBackfillWeights" .= tripleJson (tnBackfillWeights t)
+      , "tnBackfillMaxDepth" .= tnBackfillMaxDepth t
+      , "tnBackdatedSaintWeights" .= tripleJson (tnBackdatedSaintWeights t)
+      , "tnNarratorAttested" .= tnNarratorAttested t
+      , "tnNarratorOtherShare" .= tnNarratorOtherShare t
+      , "tnAllCapsChance" .= tnAllCapsChance t
+      , "tnHailChance" .= tnHailChance t
+      , "tnMeanderChance" .= tnMeanderChance t
+      , "tnOmitChance" .= tnOmitChance t
+      , "tnThemedItemNameChance" .= tnThemedItemNameChance t
+      , "tnMundaneMiracleChance" .= tnMundaneMiracleChance t
+      , "tnCultureDriftChance" .= tnCultureDriftChance t
+      , "tnSameCultureBoost" .= tnSameCultureBoost t
+      , "tnFoundingPurposeChance" .= tnFoundingPurposeChance t
+      , "tnRuinsNameChance" .= tnRuinsNameChance t
+      , "tnSiteOriginChance" .= tnSiteOriginChance t
+      , "tnApprenticeshipChance" .= tnApprenticeshipChance t
+      , "tnApprenticeBoost" .= tnApprenticeBoost t
+      , "tnLineageBoost" .= tnLineageBoost t
+      ]
+
+tripleJson :: (Int, Int, Int) -> Value
+tripleJson (a, b, c) = Aeson.toJSON ([a, b, c] :: [Int])
+
+parseTriple :: Value -> Aeson.Parser (Int, Int, Int)
+parseTriple v = do
+  xs <- Aeson.parseJSON v :: Aeson.Parser [Int]
+  case xs of
+    [a, b, c] -> pure (a, b, c)
+    _ -> fail "expected a 3-element [existing, generate, omit] array"
+
+-- | Decodes a *partial* 'Tuning' override — any field the JSON object
+-- omits keeps 'defaultTuning's own value, so a frontend offering only a
+-- handful of sliders doesn't need to round-trip every field it isn't
+-- customizing. 'Nothing' for malformed JSON (not an object, or a field
+-- present with the wrong shape) rather than silently falling back to
+-- defaults for a caller's own typo — the wasm boundary's own
+-- 'historian_new_tuned' treats that the same way 'historian_next_slot'
+-- already treats an unrecognised rule name: a safe, named fallback
+-- shape, not a trap.
+decodeTuningOverride :: BSL.ByteString -> Maybe Tuning
+decodeTuningOverride bs = Aeson.decode bs >>= Aeson.parseMaybe parseTuning
+  where
+    parseTuning = Aeson.withObject "Tuning" $ \o -> do
+      let base = defaultTuning
+          optTriple key d = o .:? key >>= maybe (pure d) parseTriple
+          optInt key d = o .:? key Aeson..!= d
+      Tuning
+        <$> optTriple "tnBackfillWeights" (tnBackfillWeights base)
+        <*> optInt "tnBackfillMaxDepth" (tnBackfillMaxDepth base)
+        <*> optTriple "tnBackdatedSaintWeights" (tnBackdatedSaintWeights base)
+        <*> optInt "tnNarratorAttested" (tnNarratorAttested base)
+        <*> optInt "tnNarratorOtherShare" (tnNarratorOtherShare base)
+        <*> optInt "tnAllCapsChance" (tnAllCapsChance base)
+        <*> optInt "tnHailChance" (tnHailChance base)
+        <*> optInt "tnMeanderChance" (tnMeanderChance base)
+        <*> optInt "tnOmitChance" (tnOmitChance base)
+        <*> optInt "tnThemedItemNameChance" (tnThemedItemNameChance base)
+        <*> optInt "tnMundaneMiracleChance" (tnMundaneMiracleChance base)
+        <*> optInt "tnCultureDriftChance" (tnCultureDriftChance base)
+        <*> optInt "tnSameCultureBoost" (tnSameCultureBoost base)
+        <*> optInt "tnFoundingPurposeChance" (tnFoundingPurposeChance base)
+        <*> optInt "tnRuinsNameChance" (tnRuinsNameChance base)
+        <*> optInt "tnSiteOriginChance" (tnSiteOriginChance base)
+        <*> optInt "tnApprenticeshipChance" (tnApprenticeshipChance base)
+        <*> optInt "tnApprenticeBoost" (tnApprenticeBoost base)
+        <*> optInt "tnLineageBoost" (tnLineageBoost base)
