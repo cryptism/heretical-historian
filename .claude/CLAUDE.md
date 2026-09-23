@@ -840,7 +840,11 @@ unbuilt rule.
     `python3`/`jupyter`/`pandas`/`numpy`/`matplotlib`, evaluated but not
     yet exercised with a full package build). **The actual notebooks are
     not started** — no exploratory analysis of any of the four
-    distributions named above has been written yet.
+    distributions named above has been written yet. Deferred to next
+    week's work at the user's request (2026-09-24): not a feature, so it
+    loses out to whatever feature work is live in a given week's token
+    budget. Parked, not abandoned — pick it up when a new week starts or
+    the user asks what's next.
 
 ## Things not to do
 
