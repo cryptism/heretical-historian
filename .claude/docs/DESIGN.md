@@ -3932,3 +3932,46 @@ follow-up, blocked on a `VoiceRegister`-over-the-wire design decision
 nobody's made yet, not on anything built here); a Foundry-`RollTable`-
 shaped export (the plan's own Research section flags this as a good idea
 if Foundry interop ever becomes a real ask, never scoped into any tier).
+
+## Decision 46: `entVoice` reaches the wire, as `voice` on `Entity`
+
+**Needed for:** work item 24, Tier 3 (`.claude/docs/plans/24-ttrpg-cult-export.md`
+§5) — the 3×d10 hook table's Axis A ("Manner") is specified as a handful
+of variants per `VoiceRegister`, a `Grim` cult's list reading different
+from a `Fervent` one's. A frontend can't pick the right variant set for a
+queried society without knowing its register, and nothing exposed
+`entVoice` client-side before this — Decision 45 flagged exactly this gap
+(in the context of a `historian_practice_text` export, deferred there
+since it also needed a design for a new wasm function, not just a wire
+field) without closing it.
+
+**One field, additive, on the existing `Entity` wire shape.**
+`Historian.Json.entityJson` gains `"voice" .= fmap (voiceRegisterText .
+voiceRegister) (entVoice e)` — `null` for every `Kind` but `Society`,
+one of `"Plain"`/`"Fervent"`/`"Grim"` for a `Society`, spelled out
+explicitly via a new `voiceRegisterText` (same "not derived `Show`"
+discipline `kindText`/`predicateText` already establish, so a future
+constructor rename can't silently change the wire format). No new wasm
+function — every existing entity-shaped export (`encodeWorld`,
+`encodeStepResult`, `historian_query`'s dossier, `historian_add_society`,
+`historian_next_slot`'s candidates) carries it for free, same "one shared
+`entityJson`" reasoning Decision 45 used for `significance`.
+
+**Deliberately not built alongside this:** a `historian_practice_text`
+wasm export. Tier 3's own "Suggested phasing" text names only the 3×d10
+table (Axis A/C content, Axis B fallback logic, the interactive roller)
+as in scope — the practices/rituals corpus register itself
+(`Historian.Corpus.practiceFrames`/`Historian.World.practiceText`) was
+already built in Decision 45 and stays wasm-unexposed; wiring it is still
+a real follow-up, now blocked on nothing but someone actually doing it
+(the wire-field gap that used to block it — no `VoiceRegister` crossing
+the wire at all — is what this decision closes, incidentally, but the
+export itself wasn't asked for this round).
+
+**Verified:** two new deterministic checks in `ttrpgExportChecks`
+(`WireEntity`/`WireWorldEntities` decoders mirroring `WireFact`'s own
+pattern) — every `Society` entity has `Just` a voice and every other kind
+has `Nothing`, across every `aggregateSeeds` run at `longSteps`; every
+non-null voice is one of the three real labels. `cabal test` 296 → 298
+checks, hlint/fourmolu clean, no RNG-cascade fallout (pure additive read
+of an existing field, nothing touches `Chronicle`).

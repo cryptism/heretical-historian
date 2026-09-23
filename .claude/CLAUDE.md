@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (296 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (298 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -701,20 +701,26 @@ unbuilt rule.
     citizen added to an existing society; an optional initial stance) and
     Tier 3 (a founding narrative) are not started.** Plan:
     `.claude/docs/plans/23-user-configurable-societies.md`.
-24. ~~A generic TTRPG "cult fact file" export, Tiers 1-2.~~ Done —
+24. ~~A generic TTRPG "cult fact file" export, Tiers 1-2, plus Tier 3's
+    heretical-historian-side prerequisite.~~ Done —
     `Historian.Json.significanceOf` (an additive `significance` field on
     every fact), `Historian.World.generateWordSeeded`/`generateNameSeeded`
     plus wasm `historian_generate_word`/`historian_generate_name`
     (handle-free, seed-scoped), and a new practices/rituals corpus
     register (`Historian.Corpus.practiceFrames`/`Historian.World.
     practiceText`, not yet wasm-exposed — see Decision 45 for why).
-    `.claude/docs/DESIGN.md` Decision 45. **Tier 3 (the 3×d10 hook table,
-    the interactive roller, fact-file assembly) is `hh-site`-side work,
-    not started here.** Also flagged as real follow-ups, not built:
-    wiring `historian_practice_text` onto the wasm boundary (needs
-    `VoiceRegister` to cross the wire for the first time — no design yet)
-    and a Foundry-`RollTable`-shaped export. Plan:
-    `.claude/docs/plans/24-ttrpg-cult-export.md`.
+    `.claude/docs/DESIGN.md` Decision 45. **Tier 3's own prerequisite
+    closed too:** `entVoice` now reaches the wire as `voice` on `Entity`
+    (`null` for every `Kind` but `Society`), so a frontend can pick
+    register-flavored table content for a queried society — needed by
+    Tier 3's Axis A (§5) and the exact gap Decision 45 flagged without
+    closing. `.claude/docs/DESIGN.md` Decision 46. `cabal test` 296 → 298.
+    **Tier 3 itself (the 3×d10 hook table, the interactive roller) is
+    `hh-site`-side work, in progress there now.** Also flagged as real
+    follow-ups, not built: wiring `historian_practice_text` onto the wasm
+    boundary (the wire-field blocker is gone as of Decision 46, but the
+    export itself still isn't built) and a Foundry-`RollTable`-shaped
+    export. Plan: `.claude/docs/plans/24-ttrpg-cult-export.md`.
 
 ## Things not to do
 

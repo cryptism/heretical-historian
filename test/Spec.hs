@@ -259,6 +259,21 @@ newtype WireWorldFacts = WireWorldFacts {unWireWorldFacts :: [WireFact]}
 instance FromJSON WireWorldFacts where
   parseJSON = withObject "World" $ \o -> WireWorldFacts <$> o .: "facts"
 
+-- | Work item 24, Tier 3's own wire addition — enough of an entity to
+-- check 'entVoice' round-trips correctly: kind plus the new field.
+data WireEntity = WireEntity
+  { weKind :: Text
+  , weVoice :: Maybe Text
+  }
+
+instance FromJSON WireEntity where
+  parseJSON = withObject "Entity" $ \o -> WireEntity <$> o .: "kind" <*> o .: "voice"
+
+newtype WireWorldEntities = WireWorldEntities {unWireWorldEntities :: [WireEntity]}
+
+instance FromJSON WireWorldEntities where
+  parseJSON = withObject "World" $ \o -> WireWorldEntities <$> o .: "entities"
+
 -- | A dying curse, not a normal prophecy: a 'Prophesied' fact whose omen
 -- is 'Shuns' — currently only 'Historian.Rules.fireDyingWords' ever
 -- produces one, since no 'prophecyFramings' line offers 'Shuns' as an
@@ -1676,11 +1691,26 @@ ttrpgExportChecks =
     ( length (nub [evalState (practiceText Grim "Fire") (emptyWorld s) | s <- [1 .. 20]]) > 1
     , "Direct: practiceText varies its frame across seeds rather than always picking the same one"
     )
+  , -- entVoice on the wire (plan §5): needed so a frontend can pick a
+    -- register-flavored Axis A variant for the society it actually queried.
+
+    ( all (\e -> (weKind e == "Society") == isJust (weVoice e)) allWireEntities
+    , "Wire: voice is Just for every Society entity and Nothing for every other kind, across every seed scanned"
+    )
+  ,
+    ( all (maybe True (`elem` ["Plain", "Fervent", "Grim"]) . weVoice) allWireEntities
+    , "Wire: every non-null voice is one of the three real VoiceRegister labels"
+    )
   ]
   where
     allWireFacts =
       concat
         [ maybe [] unWireWorldFacts (Aeson.decode (encodeWorld (generate s longSteps)))
+        | s <- aggregateSeeds
+        ]
+    allWireEntities =
+      concat
+        [ maybe [] unWireWorldEntities (Aeson.decode (encodeWorld (generate s longSteps)))
         | s <- aggregateSeeds
         ]
 

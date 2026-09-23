@@ -69,6 +69,11 @@ check(
   "every fact carries the new significance field, 1-5 (work item 24, Tier 1)",
   genWorld.facts.length > 0 && genWorld.facts.every((f) => Number.isInteger(f.significance) && f.significance >= 1 && f.significance <= 5),
 );
+check(
+  "every Society entity carries a voice, every other kind carries null (work item 24, Tier 3)",
+  genWorld.entities.some((e) => e.kind === "Society") &&
+    genWorld.entities.every((e) => (e.kind === "Society") === ["Plain", "Fervent", "Grim"].includes(e.voice)),
+);
 
 // --- the stateful handle: historian_new/step/query/free ---
 const handle = instance.exports.historian_new(42);

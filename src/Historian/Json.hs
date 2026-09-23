@@ -127,6 +127,14 @@ entityJson w e =
     , -- The concept's name, not a bare id: a relic's nature should be
       -- readable straight off the wire format, not need a second lookup.
       "property" .= fmap (nameIn w) (propertyOf w (entId e))
+    , -- 'Nothing' for every 'Kind' but 'Society' (see 'entVoice'). Additive
+      -- field — needed by work item 24 Tier 3's register-flavored Axis A
+      -- content (@.claude/docs/plans/24-ttrpg-cult-export.md@ §5): a
+      -- frontend can't pick a "Grim cult reads different from a Fervent
+      -- one" table variant without knowing which register a queried
+      -- society actually has. Nothing else has needed 'entVoice'
+      -- client-side before this.
+      "voice" .= fmap (voiceRegisterText . voiceRegister) (entVoice e)
     ]
 
 kindText :: Kind -> Text
@@ -136,6 +144,12 @@ kindText = \case
   Site -> "Site"
   Item -> "Item"
   Concept -> "Concept"
+
+voiceRegisterText :: VoiceRegister -> Text
+voiceRegisterText = \case
+  Plain -> "Plain"
+  Fervent -> "Fervent"
+  Grim -> "Grim"
 
 eventJson :: World -> Event -> Value
 eventJson w ev =

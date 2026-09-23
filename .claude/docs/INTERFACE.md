@@ -169,9 +169,12 @@ real Node WASI harness exercising every function above end to end).
 
 ### Wire shapes (`Historian.Json`)
 
-- **Entity**: `id, kind, name, culture, born, bornDate, property`
+- **Entity**: `id, kind, name, culture, born, bornDate, property, voice`
   (`property`'s an `Item`'s embodied `Concept`'s *name*, not a bare id —
-  readable straight off the wire).
+  readable straight off the wire). `voice` (work item 24, Tier 3) is one
+  of `"Plain"`/`"Fervent"`/`"Grim"` for a `Society`, `null` for every
+  other `Kind` — a host uses this to pick which register-flavored table
+  content applies to a queried society (e.g. a hook table's Axis A).
 - **Event**: `id, epoch, date, kind, text (neutral), narratedText,
   narrator`. `text` is invariant-3's permanent neutral reading; `narrator`
   is `null` when nobody in particular is telling it.
