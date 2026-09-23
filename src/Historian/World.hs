@@ -553,8 +553,27 @@ generateMergedSocietyName primary secondary
 -- other minting function's 'backfillWard' call, and work queue item 19's
 -- own "give newSociety its own hook" follow-up.
 newSociety :: Culture -> Chronicle (EntityId, EntityId)
-newSociety c = do
-  name <- generateSocietyName c
+newSociety c = newSocietyNamed c Nothing
+
+-- | 'newSociety', but with an optional caller-supplied name in place of
+-- 'generateSocietyName' — the wasm boundary's @historian_add_society@
+-- (Decision 44), letting a host found a society of their own choosing
+-- rather than only ever getting an auto-rolled one. Everything else
+-- (patron concept, 'backfillPatron's own weighted veneration chance,
+-- 'Embodies' claims) runs exactly as 'newSociety' already does, so a
+-- user-named society is indistinguishable from a generated one to every
+-- existing rule the moment it exists — no rule anywhere needs to learn
+-- about "user-added" as a concept. A caller-supplied name still flows
+-- through 'mint' into 'wNameSubstrings' (Decision 40) exactly as an
+-- auto-rolled one does, so future auto-generated names correctly avoid
+-- colliding with it. Deliberately *not* collision-checked against
+-- existing names the way 'markovWord'\/'syllableName' are — that
+-- rejection is a generation-quality heuristic for auto-rolled names, not
+-- an invariant; a caller is allowed to name two societies the same thing
+-- if they want to.
+newSocietyNamed :: Culture -> Maybe Text -> Chronicle (EntityId, EntityId)
+newSocietyNamed c mName = do
+  name <- maybe (generateSocietyName c) pure mName
   voice <- rollVoice
   s <- mint Society c name defaultMintOptions {moVoice = Just voice}
   conceptName <- pickOr "the Unnamed" conceptNames

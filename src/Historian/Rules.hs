@@ -91,6 +91,31 @@ genesis = do
   let outcome = FoundingOutcome s p (patronClaims s concept)
   pure [Founding outcome]
 
+-- | 'genesis', but under a caller-supplied name and\/or culture instead
+-- of always auto-rolling both — the wasm boundary's own
+-- @historian_add_society@ (Decision 44,
+-- .claude/docs/plans/23-user-configurable-societies.md's Tier 1).
+-- 'Nothing' for either falls back to 'genesis's own default: an
+-- auto-generated name, a culture picked uniformly from 'allCultures'.
+-- Still mints an ordinary auto-generated founder and commits through the
+-- same 'FoundingOutcome' shape 'genesis' itself uses, deliberately going
+-- one step past the plan's own minimal "just the society" reading of
+-- Tier 1: a memberless society can't be coronated, sainted, or drawn
+-- into a trial by combat — everything that makes a society feel alive in
+-- this engine needs a living member — so a user-added one gets the same
+-- auto-generated founder a real founding always has, keeping it just as
+-- "indistinguishable from a generated one to every existing rule" (the
+-- plan's own phrase) in practice, not just in principle. Committed as a
+-- real 'Founding' 'Outcome' (not a bare 'record') so it gets the same
+-- voiced narration and 'Event' treatment every other founding does.
+addSociety :: Maybe Text -> Maybe Culture -> Chronicle [Outcome]
+addSociety mName mCulture = do
+  culture <- maybe (pickOr vaurethine allCultures) pure mCulture
+  (s, concept) <- newSocietyNamed culture mName
+  p <- newPerson culture
+  let outcome = FoundingOutcome s p (patronClaims s concept)
+  pure [Founding outcome]
+
 -- | Every society's two intrinsic patron-concept claims — 'Embodies'
 -- (unattested, like a fresh item's own) and an initial 'Venerates' (self-
 -- attested), the starting regard a later leadership change can flip. Every

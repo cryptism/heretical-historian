@@ -3732,3 +3732,76 @@ mentor) checks `wasSaint`\/`mentorOf`\/`apprenticeBoost`'s lineage branch
 against an exact expected multiplier, not a sampled rate. `cabal test`
 265 to 268 checks — built and landed first, before Decisions 41\/42 in
 this same session moved the count further to 277.
+
+## Decision 44: user-configurable societies, Tier 1 — `historian_add_society`
+
+**Needed for:** direct user request to implement work queue item 23
+(`.claude/docs/plans/23-user-configurable-societies.md`) Tier 1, ahead of
+wiring it into the `hh-site` frontend and a Saturday presentation — landed
+under time pressure, so scoped deliberately to exactly Tier 1 rather than
+also reaching for Tier 2.
+
+**Built exactly the plan's own shape, one deliberate addition beyond its
+literal reading.** `Historian.World.newSocietyNamed :: Culture -> Maybe
+Text -> Chronicle (EntityId, EntityId)` — `newSociety` factored to take an
+optional name, `generateSocietyName` only running when the override is
+`Nothing`; `newSociety` itself becomes `newSocietyNamed c Nothing`, a pure
+refactor with no behavior change for any existing caller. The one
+addition: `Historian.Rules.addSociety` mints an ordinary auto-generated
+founder and commits through the same `FoundingOutcome` shape `genesis`
+itself uses, rather than stopping at a memberless society (the plan's own
+literal Tier 1 scope, "everything else... runs exactly as `newSociety`
+already does"). Reasoning: a memberless society can't be coronated,
+sainted, or drawn into a trial by combat — everything that makes a
+society feel *alive* in this engine needs a living member — so shipping a
+user-added society that can't yet do anything would have undercut the
+plan's own stated goal ("indistinguishable from a generated one to every
+existing rule") in practice, even though it technically satisfied Tier
+1's narrower text. Committing through a real `Founding` `Outcome` (not a
+bare `record`) also means it gets the same voiced narration every other
+founding does — a real quality-of-demo consideration, not just a
+correctness one, given what this was built for.
+
+**Wasm surface: `historian_add_society(handle, nameJson, cultureJson)`,
+reusing every discipline Decision 42 already established rather than
+inventing new ones for this call.** Both arguments are JSON — `null` or a
+bare string; `cultureJson` matched case-sensitively against an existing
+culture's own label (`find ((== label) . unCulture) allCultures`).
+`null`, an unrecognised culture name, or malformed JSON for either
+argument falls back to `genesis`'s own default (auto-generated name,
+culture picked uniformly at random) rather than trapping — the exact
+"never trap on bad input, fall back to a safe named shape" discipline
+`historianNextSlot`/`historianNewTuned` already use. Returns the new
+society's dossier via the existing `encodeQueryResult` shape, not a new
+one — `historian_query` already solved "what does a caller want back
+after minting something," no reason to solve it twice.
+
+**A caller-supplied name colliding with an existing one is allowed, not
+rejected — checked directly, not just asserted.** `markovWord`/
+`syllableName`'s collision avoidance (Decision 40) is a generation-quality
+heuristic for auto-rolled names specifically; it was never meant to be an
+invariant, and a caller choosing to name two societies the same thing on
+purpose is a legitimate choice this engine has no business overriding.
+Verified with a direct test: two `addSociety` calls with the identical
+name in the same world, neither one substituting a different name or
+failing.
+
+**Verified with no RNG-cascade fallout, matching the plan's own
+prediction rather than just hoping for it.** A caller-supplied name/
+culture is consumed by the exact same `mint` call site an auto-rolled one
+already was — nothing about *how many* draws happen for any seed that
+never calls these new functions changes. `cabal test` 277 to 284 checks,
+no witness-seed hunt needed (confirmed, not assumed — the full suite,
+including the wide `veryWideSeeds` scan, passed on the first run after
+this landed). Verified against a real wasm build too: cross-compiled,
+patched, and exercised via `wasm/verify.mjs` against a real Node WASI
+host — a named+cultured add, a fully-`null` auto-rolled add, and an
+unrecognised-culture fallback, all passing.
+
+**Tier 2 (a named founder/citizen added to an existing society, and an
+optional initial stance on a fresh `addSociety`) was not attempted in
+this pass** — Tier 1 alone is a complete, independently useful, and
+already-verified stopping point, and the plan itself says as much
+("Tier 1 alone is a completely acceptable, valuable stopping point").
+Left for a follow-up round rather than rushed alongside Tier 1 under the
+same time pressure that shaped this one.

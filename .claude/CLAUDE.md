@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (277 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (284 checks — seeds 1/2/3/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -176,9 +176,18 @@ a type defined in a module above it). **`TrainedBy` now runs in
 lineages** — a saint's own former apprentice gets a further
 `tnLineageBoost` on top of the ordinary apprentice boost
 (`.claude/docs/DESIGN.md` Decision 43). `cabal test` 265 → 277 checks
-across this round. Work queue item 23 (`.claude/docs/plans/
-23-user-configurable-societies.md`) is a plan only, not built: letting a
-caller add or configure a society of their own, scoped into three tiers.
+across this round.
+
+Work queue item 23's Tier 1 followed the same day, under deadline
+pressure (a presentation): `Historian.World.newSocietyNamed`,
+`Historian.Rules.addSociety`, wasm `historian_add_society` — a caller can
+now found a society with their own chosen name/culture instead of only
+ever getting an auto-rolled one, with an auto-generated founder so it's
+alive (coronable, sainthood-eligible, everything) from the moment it
+exists, not memberless. `.claude/docs/DESIGN.md` Decision 44. `cabal
+test` 277 → 284. Tiers 2/3 (a named founder for an existing society; a
+founding narrative) are not started — plan:
+`.claude/docs/plans/23-user-configurable-societies.md`.
 
 **`.claude/docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
@@ -660,11 +669,16 @@ unbuilt rule.
     the real search — the one place this touched actual firing behavior,
     done with zero risk since nothing called `StepEntities` yet). Full
     account: `.claude/docs/DESIGN.md` Decision 35's second follow-up.
-23. Let a caller add or configure a society of their own — a name/culture
-    override on an otherwise-ordinary founding at minimum, a named
-    founder and an initial stance beyond that. Not started; scoped into
-    three bounded tiers, deliberately not attempting user-defined new
-    cultures or entity editing/deletion. Plan:
+23. ~~Tier 1: name/culture override on an otherwise-ordinary founding.~~
+    Done — `Historian.World.newSocietyNamed`, `Historian.Rules.addSociety`
+    (commits through the same `FoundingOutcome` shape `genesis` uses, with
+    an auto-generated founder — a deliberate addition past Tier 1's own
+    literal "just the society" text, so a user-added society is alive
+    from the start, not memberless), wasm `historian_add_society`. Naming
+    two societies the same thing is allowed, not rejected. Full account:
+    `.claude/docs/DESIGN.md` Decision 44. **Tier 2 (a named founder/
+    citizen added to an existing society; an optional initial stance) and
+    Tier 3 (a founding narrative) are not started.** Plan:
     `.claude/docs/plans/23-user-configurable-societies.md`.
 
 ## Things not to do

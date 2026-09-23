@@ -65,6 +65,7 @@ steps at once and let me read the result."
 void*  historian_new(int seed);                          // -> opaque handle, defaultTuning
 void*  historian_new_tuned(int seed, const char* tuningJson); // -> opaque handle, caller-tuned
 char*  historian_default_tuning(void);                    // defaultTuning, encoded
+char*  historian_add_society(void* handle, const char* nameJson, const char* cultureJson);
 char*  historian_step(void* handle);                      // advances by exactly one step
 char*  historian_query(void* handle, int entityId);
 char*  historian_rules_for(void* handle, const char* poolJson);
@@ -91,6 +92,25 @@ along the way without re-marshaling the whole thing every call.
   this first to learn every tunable field and its default value before
   building a UI that sends a partial override to `historian_new_tuned`.
   See §4's wire shape.
+- `historian_add_society(handle, nameJson, cultureJson)`: founds a society
+  on the handle's own world under a caller-supplied name and/or culture
+  (Decision 44, `.claude/docs/plans/23-user-configurable-societies.md`'s
+  Tier 1) instead of only ever getting an auto-rolled one. Both arguments
+  are JSON — either the literal `null` or a bare string, e.g.
+  `historian_add_society(h, "\"The Whispering Order\"", "\"Ghenzai\"")`.
+  `cultureJson` is matched case-sensitively against an existing culture's
+  own label; `null`, an unrecognised culture name, or malformed JSON for
+  either argument falls back to the same default `genesis` itself uses
+  (an auto-generated name; a culture picked uniformly at random) rather
+  than trapping. Still mints an ordinary auto-generated founder and
+  commits through the same `Founding` outcome shape `genesis` uses, so the
+  new society gets the same voiced narration as any other founding and is
+  immediately eligible for every rule (coronation, miracle sainthood,
+  merger, everything) exactly like a generated one. Returns the new
+  society's own dossier — the same shape `historian_query` returns.
+  Naming two societies the same thing is allowed, not rejected — the
+  markov/syllable collision check is a generation-quality heuristic for
+  auto-rolled names, not an invariant.
 - `historian_step(handle)`: advances exactly one autonomous step
   (`stepAutonomous`, every `RuleSpec` in `ruleSpecs`, under whichever
   `Tuning` the handle's `World` itself carries) and returns only that

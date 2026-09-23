@@ -36,12 +36,14 @@
 -- exported directly at the link level instead (@--export=hs_init@ in the
 -- cabal file); a host must call it before any function below is usable.
 -- See @.claude/docs/DESIGN.md@ Decision 7.
-module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
+module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianAddSociety, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
 
+import Control.Monad.State.Strict (runState)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TE
@@ -52,10 +54,12 @@ import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (castPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (poke)
+import Historian.Corpus (allCultures)
 import Historian.Engine (RuleSpec (rsName), nextSlotFromPool, queryEntity, rulesFor, stepAutonomous)
 import Historian.Json (decodeTuningOverride, encodeNextSlotFromPool, encodeQueryResult, encodeRulesFor, encodeStepResult, encodeTuning, encodeWorld)
-import Historian.Rules (generate, genesisWorld, genesisWorldWith, ruleSpecs)
-import Historian.Types (EntityId (..), World, defaultTuning)
+import Historian.Render (commitOutcomes)
+import Historian.Rules (addSociety, generate, genesisWorld, genesisWorldWith, ruleSpecs)
+import Historian.Types (Culture (..), EntityId (..), FoundingOutcome (fdSociety), Outcome (Founding), World, defaultTuning)
 
 foreign export ccall "generateJson" generateJson :: Int -> Int -> IO CString
 
@@ -103,6 +107,44 @@ foreign export ccall "historian_default_tuning" historianDefaultTuning :: IO CSt
 -- building a UI that sends a partial override to 'historianNewTuned'.
 historianDefaultTuning :: IO CString
 historianDefaultTuning = bsToCString (BSL.toStrict (encodeTuning defaultTuning))
+
+foreign export ccall "historian_add_society" historianAddSociety :: Handle -> CString -> CString -> IO CString
+
+-- | Founds a society on the handle's own 'World' under a caller-supplied
+-- name and\/or culture (Decision 44,
+-- .claude/docs/plans/23-user-configurable-societies.md's Tier 1) — both
+-- @nameJson@ and @cultureJson@ are JSON, either the literal @null@ or a
+-- bare string (@cultureJson@ matched case-sensitively against an
+-- existing culture's own label, e.g. @"Ghenzai"@); either @null@, an
+-- unrecognised culture name, or malformed JSON for either argument falls
+-- back to 'Historian.Rules.genesis's own default (an auto-generated
+-- name; a culture picked uniformly at random) rather than trapping —
+-- the same discipline 'historianNewTuned' already established for a bad
+-- 'Tuning' override. Returns the new society's own dossier, the exact
+-- 'encodeQueryResult' shape 'historianQuery' already returns.
+historianAddSociety :: Handle -> CString -> CString -> IO CString
+historianAddSociety sp nameJson cultureJson = do
+  ref <- deRefStablePtr sp
+  before <- readIORef ref
+  nameBs <- BS.packCString nameJson
+  cultureBs <- BS.packCString cultureJson
+  let mName = decodeOptionalText (BSL.fromStrict nameBs)
+      mCultureLabel = decodeOptionalText (BSL.fromStrict cultureBs)
+      mCulture = mCultureLabel >>= \label -> find ((== label) . unCulture) allCultures
+      (outcomes, after) = runState (addSociety mName mCulture >>= \os -> os <$ commitOutcomes os) before
+  writeIORef ref after
+  case outcomes of
+    (Founding o : _) -> bsToCString (BSL.toStrict (encodeQueryResult after (queryEntity after ruleSpecs (fdSociety o))))
+    _ -> bsToCString (BSL.toStrict (Aeson.encode Aeson.Null))
+
+-- | A JSON value that's either the literal @null@ or a string, decoded to
+-- 'Nothing' for @null@ *or* malformed JSON alike — both mean "use the
+-- default," the same fallback 'historianAddSociety's own Haddock
+-- describes.
+decodeOptionalText :: BSL.ByteString -> Maybe Text
+decodeOptionalText bs = case Aeson.decode bs :: Maybe (Maybe Text) of
+  Just (Just t) -> Just t
+  _ -> Nothing
 
 foreign export ccall "historian_step" historianStep :: Handle -> IO CString
 

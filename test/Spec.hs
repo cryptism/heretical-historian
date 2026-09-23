@@ -22,6 +22,7 @@ import Historian.Engine
 import Historian.Json (decodeTuningOverride, encodeQueryResult, encodeStepResult, encodeTuning, encodeWorld)
 import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice)
 import Historian.Rules (
+  addSociety,
   apprenticeshipClaim,
   assassinateSpec,
   battleSpec,
@@ -362,7 +363,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -1536,6 +1537,66 @@ tuningChecks =
   where
     customTuning = defaultTuning {tnMundaneMiracleChance = 77, tnCultureDriftChance = 3}
     mundaneOffTuning = defaultTuning {tnMundaneMiracleChance = 0}
+
+-- | Decision 44: user-configurable societies, Tier 1
+-- (.claude/docs/plans/23-user-configurable-societies.md) —
+-- 'newSocietyNamed' and 'addSociety'.
+addSocietyChecks :: [(Bool, Text)]
+addSocietyChecks =
+  [
+    ( entName (wEntities namedWorld M.! namedSociety) == "The Custom Concordance"
+    , "Direct: newSocietyNamed with a supplied name uses it verbatim instead of generateSocietyName"
+    )
+  ,
+    ( entCulture (wEntities namedWorld M.! namedSociety) == hollowtongue
+    , "Direct: newSocietyNamed records the given culture on the entity"
+    )
+  ,
+    ( not (T.null (entName (wEntities unnamedWorld M.! unnamedSociety)))
+    , "Direct: newSocietyNamed with Nothing still falls back to an ordinary generated name"
+    )
+  ,
+    ( case addedOutcomes of
+        [Founding o] ->
+          entName (wEntities addedWorld M.! fdSociety o) == "The Whispering Order"
+            && entCulture (wEntities addedWorld M.! fdSociety o) == hollowtongue
+            && isJust (currentLeader addedWorld (fdSociety o))
+        _ -> False
+    , "Direct: addSociety commits a real Founding outcome — named, cultured, and with a living founder"
+    )
+  ,
+    ( case addedOutcomes of
+        [Founding o] -> any (\f -> factSubject f == fdSociety o && factPred f == Embodies) (wFacts addedWorld)
+        _ -> False
+    , "Direct: addSociety's society gets the same intrinsic patronClaims (Embodies) every other founding does"
+    )
+  ,
+    ( case defaultAddedOutcomes of
+        [Founding _] -> True
+        _ -> False
+    , "Direct: addSociety Nothing Nothing still produces a valid Founding outcome, fully auto-rolled"
+    )
+  ,
+    ( entName (wEntities dupWorld M.! fdSociety dupO1) == entName (wEntities dupWorld M.! fdSociety dupO2)
+    , "Direct: addSociety allows two societies to share the same caller-supplied name without rejecting either"
+    )
+  ]
+  where
+    namedSociety :: EntityId
+    (namedSociety, namedWorld) =
+      let ((s, _), w) = runState (newSocietyNamed hollowtongue (Just "The Custom Concordance")) (emptyWorld 1) in (s, w)
+    unnamedSociety :: EntityId
+    (unnamedSociety, unnamedWorld) =
+      let ((s, _), w) = runState (newSocietyNamed vaurethine Nothing) (emptyWorld 1) in (s, w)
+    (addedOutcomes, addedWorld) = runState (addSociety (Just "The Whispering Order") (Just hollowtongue) >>= \os -> os <$ commitOutcomes os) (emptyWorld 2)
+    (defaultAddedOutcomes, _) = runState (addSociety Nothing Nothing >>= \os -> os <$ commitOutcomes os) (emptyWorld 3)
+    ((dupO1, dupO2), dupWorld) = runState addTwoSameNamed (emptyWorld 4)
+    addTwoSameNamed = do
+      o1 <- oneFounding <$> (addSociety (Just "The Sundered Flame") Nothing >>= \os -> os <$ commitOutcomes os)
+      o2 <- oneFounding <$> (addSociety (Just "The Sundered Flame") Nothing >>= \os -> os <$ commitOutcomes os)
+      pure (o1, o2)
+    oneFounding [Founding o] = o
+    oneFounding _ = error "addSocietyChecks: addSociety didn't produce exactly one Founding outcome"
 
 -- | Work queue item 15's wasm stateful-handle follow-up (.claude/docs/DESIGN.md
 -- Decision 33): 'Historian.Engine.intelligentStep's 'StepAny'\/

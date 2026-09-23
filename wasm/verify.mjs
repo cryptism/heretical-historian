@@ -3,10 +3,11 @@
 // the stateful-handle family (historian_new/step/query/free), the
 // item 21/22 query surface (historian_rules_for/historian_next_slot, plus
 // the historian_alloc/historian_dealloc pair that lets a host write a
-// CString argument onto this module's heap in the first place), and
-// configurable Tuning (historian_default_tuning/historian_new_tuned) —
-// see .claude/docs/DESIGN.md Decision 7, its Decision 33 follow-up,
-// Decision 39, and Decision 42.
+// CString argument onto this module's heap in the first place),
+// configurable Tuning (historian_default_tuning/historian_new_tuned), and
+// user-addable societies (historian_add_society) — see
+// .claude/docs/DESIGN.md Decision 7, its Decision 33 follow-up,
+// Decision 39, Decision 42, and Decision 44.
 //
 // Requires Node's WASI module (--experimental-wasi-unstable-preview1 not
 // needed on recent Node; the `WASI` import below is enough). Run with:
@@ -179,6 +180,38 @@ const fallbackHandle = instance.exports.historian_new_tuned(1, malformedTuningPt
 instance.exports.historian_dealloc(malformedTuningPtr);
 check("historian_new_tuned with malformed tuningJson still returns a usable handle (falls back to defaultTuning)", fallbackHandle !== 0);
 instance.exports.historian_free(fallbackHandle);
+
+// --- historian_add_society (Decision 44) ---
+const addHandle = instance.exports.historian_new(3);
+
+const namePtr = writeCString(JSON.stringify("The Whispering Order"));
+const culturePtr = writeCString(JSON.stringify("Ghenzai"));
+const addedDossier = readJson(instance.exports.historian_add_society(addHandle, namePtr, culturePtr));
+instance.exports.historian_dealloc(namePtr);
+instance.exports.historian_dealloc(culturePtr);
+check(
+  "historian_add_society with a name/culture returns a dossier with exactly that name/culture",
+  addedDossier && addedDossier.name === "The Whispering Order" && addedDossier.culture === "Ghenzai",
+);
+
+const nullPtr = writeCString("null");
+const nullPtr2 = writeCString("null");
+const autoDossier = readJson(instance.exports.historian_add_society(addHandle, nullPtr, nullPtr2));
+instance.exports.historian_dealloc(nullPtr);
+instance.exports.historian_dealloc(nullPtr2);
+check("historian_add_society(handle, null, null) still returns a valid, non-null, auto-rolled dossier", autoDossier && typeof autoDossier.name === "string" && autoDossier.name.length > 0);
+
+const unknownCulturePtr = writeCString(JSON.stringify("NotARealCulture"));
+const namePtr2 = writeCString(JSON.stringify("The Fallback Test"));
+const fallbackDossier = readJson(instance.exports.historian_add_society(addHandle, namePtr2, unknownCulturePtr));
+instance.exports.historian_dealloc(namePtr2);
+instance.exports.historian_dealloc(unknownCulturePtr);
+check(
+  "historian_add_society with an unrecognised culture name falls back to a real culture rather than trapping",
+  fallbackDossier && fallbackDossier.name === "The Fallback Test" && typeof fallbackDossier.culture === "string" && fallbackDossier.culture.length > 0,
+);
+
+instance.exports.historian_free(addHandle);
 
 instance.exports.historian_free(handle);
 check("historian_free did not trap", true);

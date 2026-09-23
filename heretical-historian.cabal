@@ -76,6 +76,7 @@ executable historian-wasm
     , base
     , bytestring
     , heretical-historian
+    , mtl
     , text
 
   -- wasm-ld strips a foreign-exported symbol from the export table unless
@@ -106,6 +107,7 @@ executable historian-wasm
       -optl-Wl,--export=historian_new
       -optl-Wl,--export=historian_new_tuned
       -optl-Wl,--export=historian_default_tuning
+      -optl-Wl,--export=historian_add_society
       -optl-Wl,--export=historian_step
       -optl-Wl,--export=historian_query
       -optl-Wl,--export=historian_rules_for
