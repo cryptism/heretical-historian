@@ -104,6 +104,26 @@
           wasm = pkgs.mkShellNoCC {
             packages = [ (wasmToolsFor pkgs.system) ];
           };
+
+          # `nix develop .#notebooks` — work item 26/27's own follow-up
+          # (.claude/docs/plans/26-major-events-cataclysm.md §10, .claude/docs/DESIGN.md
+          # Decision 49): exploratory Jupyter notebooks over rare-event
+          # distributions (cataclysm timing, rivalry/trial-by-combat/coup
+          # frequency, prophecy fulfillment lag, backfill recursion depth),
+          # reading batch `nix run . -- --seed N --steps M --json` output —
+          # no new Haskell-side export needed, this is pure after-the-fact
+          # analysis of what already crosses the wire. A separate, purpose-
+          # scoped devShell rather than adding Python to `default`, the
+          # same reasoning `wasm` above already established.
+          notebooks = pkgs.mkShellNoCC {
+            packages = [
+              pkgs.python3
+              pkgs.python3Packages.jupyter
+              pkgs.python3Packages.pandas
+              pkgs.python3Packages.numpy
+              pkgs.python3Packages.matplotlib
+            ];
+          };
         });
 
       formatter = forAll (pkgs: pkgs.nixpkgs-fmt);

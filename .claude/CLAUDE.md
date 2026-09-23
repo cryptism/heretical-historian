@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (312 checks — seeds 1/2/3/42/5 for
+Builds and passes `cabal test` (323 checks — seeds 4/2/6/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -352,7 +352,12 @@ Break any of these and the project stops being what it is:
    calendar to influence a rule's outcome (a "born under an ill month" kind
    of effect), that's a real design decision to make deliberately, not
    something to fall into by wiring `dateOf` through `Chronicle` for
-   convenience.
+   convenience. First exercised by work item 26: `Historian.World.yearOf`
+   (pulled out of `dateOf`'s own walk) is read directly by
+   `Historian.Rules.stepWith` to detect a calendar year-boundary crossing
+   and force a cataclysm — a rule reading the calendar's own pure output
+   as an input, not the calendar consuming `wGen`, so this invariant still
+   holds; see `.claude/docs/DESIGN.md` Decision 49.
 
 ## Architecture in one paragraph
 
@@ -784,26 +789,54 @@ unbuilt rule.
     checks). Full account: `.claude/docs/DESIGN.md` Decision 47.
     **`hh-site`'s own `linkify` rewrite to consume the new fields is
     separate frontend work, not attempted here.**
-26. **Major events, first pass: cataclysms.** Not started — plan:
-    `.claude/docs/plans/26-major-events-cataclysm.md`. A new tier above
-    the sixteen ordinary rules: rare, world-scale events whose chance
-    grows with world age and cult count, guaranteed once (only once) at
-    the world's first calendar year-boundary crossing, never during
-    backfill. First kind is a cataclysm — most entities destroyed
-    (survival order: sites > items > societies > people), surviving
-    Wards gain a stronger chance of fresh veneration/shunning, and
-    active cultures have a chance to merge or split into newly
-    synthesized ones (plus three new base cultures for a richer
-    combination space). The real open problem the plan works out: culture
-    mutation needs a `World`-level home for a synthesized culture's own
-    phonology (`nameGrammarFor` is currently a closed, hardcoded
-    function, unlike `wChains`, which already stores per-culture Markov
-    chains in `World`) — without it, a "mutated" culture would silently
-    render as Vaurethine. Also plans a `nix develop .#notebooks` devshell
-    for exploratory Jupyter notebooks over rare-event distributions
-    (cataclysm timing, rivalry/trial-by-combat/coup frequency, prophecy
-    fulfillment lag, backfill recursion depth), reading batch `--json`
-    CLI runs rather than needing any new Haskell-side export.
+26. ~~Major events, first pass: cataclysms.~~ Done — plan:
+    `.claude/docs/plans/26-major-events-cataclysm.md`, full account
+    `.claude/docs/DESIGN.md` Decision 49. A new tier above the sixteen
+    ordinary rules: `Historian.Rules.stepWith` force-fires
+    `fireCataclysm` exactly once, at the world's first-ever calendar
+    year-boundary crossing (`Historian.World.yearOf`, the calendar's own
+    output read as a rule input for the first time — invariant 8's own
+    note names this as a real decision to make deliberately, not
+    something to fall into; made here); every crossing after that is
+    governed purely by `ruleCataclysm`'s ordinary, age/cult-count-scaling
+    weight (`cataclysmWeight`, `Historian.World.worldAgeYears`) as one
+    more entry in `rules`. Destruction rolls survival independently per
+    `Kind` (site > item > society > person), surviving Wards get a
+    weighted chance of fresh regard, and surviving cultures have a
+    chance to merge or split into a freshly synthesized one (plus three
+    new base cultures — Xanuvei, Ohanaki, Volnisk — for a richer
+    combination space). The real structural gap the plan didn't fully
+    anticipate: `NameGrammar` had to move from `Historian.Corpus` up to
+    `Historian.Types` (the same move `Tuning` made in Decision 42) so
+    `World` could carry a `Culture`-keyed map of them (`wGrammars`) at
+    all — without it, a synthesized culture's own phonology would have
+    silently rendered as Vaurethine, the exact class of bug the
+    themed-relic-naming incident already was, so a deterministic
+    regression check for exactly this now exists. **A real severity
+    finding surfaced during implementation, not just a tuning guess:**
+    probing real seeds before trusting the guaranteed mechanic showed
+    the initial survival percentages (guessed from the plan's own
+    ordering constraint alone) left most 1-2-entity genesis-era worlds a
+    coin-flip risk of permanent extinction on day one — flagged to the
+    user directly (a tone/mechanics judgment call, not a constant to
+    tune alone), who chose to soften survival odds globally; retuned
+    twice against real measurement, cutting a 60-seed full-extinction
+    rate from 60% to roughly 20%. `cabal test` 312 → 323
+    (`cataclysmChecks`), two witness-seed reseeds needed (`seeds`'
+    1/3 → 4/6, `trialByCombatWitnessSeed`/`coupWitnessSeed` 182/420 →
+    574/322) since a forced day-one cataclysm reshuffled the cascade for
+    those specific seeds. **Deliberately not attempted, per the plan's
+    own scope:** wiring into `rulesFromSpecs`/the wasm stateful-handle
+    boundary; a cataclysm-specific prophecy omen; population-aware
+    survival scaling; the `nix develop .#notebooks` devshell (tracked as
+    its own follow-up below, not part of the generator itself).
+27. A `nix develop .#notebooks` devshell for exploratory Jupyter
+    notebooks over rare-event distributions (cataclysm timing,
+    rivalry/trial-by-combat/coup frequency, prophecy fulfillment lag,
+    backfill recursion depth) — item 26's own plan §10, split out as its
+    own work-queue item since it's tooling, not a generator change.
+    Reads batch `--json` CLI runs rather than needing any new
+    Haskell-side export. Not started.
 
 ## Things not to do
 

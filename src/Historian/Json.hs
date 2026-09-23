@@ -303,6 +303,17 @@ encodeTuning t =
       , "tnApprenticeshipChance" .= tnApprenticeshipChance t
       , "tnApprenticeBoost" .= tnApprenticeBoost t
       , "tnLineageBoost" .= tnLineageBoost t
+      , "tnCataclysmBaseWeight" .= tnCataclysmBaseWeight t
+      , "tnCataclysmYearsPerWeight" .= tnCataclysmYearsPerWeight t
+      , "tnCataclysmCultsPerWeight" .= tnCataclysmCultsPerWeight t
+      , "tnCataclysmMaxWeight" .= tnCataclysmMaxWeight t
+      , "tnCataclysmSiteSurvival" .= tnCataclysmSiteSurvival t
+      , "tnCataclysmItemSurvival" .= tnCataclysmItemSurvival t
+      , "tnCataclysmSocietySurvival" .= tnCataclysmSocietySurvival t
+      , "tnCataclysmPersonSurvival" .= tnCataclysmPersonSurvival t
+      , "tnCataclysmRegardChance" .= tnCataclysmRegardChance t
+      , "tnCataclysmMergeChance" .= tnCataclysmMergeChance t
+      , "tnCataclysmSplitChance" .= tnCataclysmSplitChance t
       ]
 
 tripleJson :: (Int, Int, Int) -> Value
@@ -351,3 +362,14 @@ decodeTuningOverride bs = Aeson.decode bs >>= Aeson.parseMaybe parseTuning
         <*> optInt "tnApprenticeshipChance" (tnApprenticeshipChance base)
         <*> optInt "tnApprenticeBoost" (tnApprenticeBoost base)
         <*> optInt "tnLineageBoost" (tnLineageBoost base)
+        <*> optInt "tnCataclysmBaseWeight" (tnCataclysmBaseWeight base)
+        <*> optInt "tnCataclysmYearsPerWeight" (tnCataclysmYearsPerWeight base)
+        <*> optInt "tnCataclysmCultsPerWeight" (tnCataclysmCultsPerWeight base)
+        <*> optInt "tnCataclysmMaxWeight" (tnCataclysmMaxWeight base)
+        <*> optInt "tnCataclysmSiteSurvival" (tnCataclysmSiteSurvival base)
+        <*> optInt "tnCataclysmItemSurvival" (tnCataclysmItemSurvival base)
+        <*> optInt "tnCataclysmSocietySurvival" (tnCataclysmSocietySurvival base)
+        <*> optInt "tnCataclysmPersonSurvival" (tnCataclysmPersonSurvival base)
+        <*> optInt "tnCataclysmRegardChance" (tnCataclysmRegardChance base)
+        <*> optInt "tnCataclysmMergeChance" (tnCataclysmMergeChance base)
+        <*> optInt "tnCataclysmSplitChance" (tnCataclysmSplitChance base)

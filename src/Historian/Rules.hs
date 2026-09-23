@@ -8,9 +8,10 @@
 -- or typed bindings are needed — the binding is captured in the closure.
 module Historian.Rules where
 
-import Control.Monad (replicateM_)
+import Control.Monad (filterM, forM, replicateM_)
 import Control.Monad.State.Strict (execState, get)
-import Data.List (nub)
+import Data.List (nub, tails)
+import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Historian.Corpus (allCultures, curseFramings, defaultFraming, disputedFramings, prophecyFramings, vaurethine)
@@ -49,7 +50,7 @@ rivalryRuleWeight :: Int
 rivalryRuleWeight = 20
 
 rules :: [Rule]
-rules = [ruleSchism, ruleBattle, ruleSanctify, ruleDefile, ruleMiracle, ruleAssassinate, ruleMerger, ruleDissolve, ruleRevive, ruleProphesy, ruleTheft, ruleDestroyRelic, ruleGift, ruleCoronation, ruleTrialByCombat, ruleCoup]
+rules = [ruleSchism, ruleBattle, ruleSanctify, ruleDefile, ruleMiracle, ruleAssassinate, ruleMerger, ruleDissolve, ruleRevive, ruleProphesy, ruleTheft, ruleDestroyRelic, ruleGift, ruleCoronation, ruleTrialByCombat, ruleCoup, ruleCataclysm]
 
 -- | Every 'RuleSpec' (.claude/docs/DESIGN.md Decision 23), purely additive
 -- alongside 'rules' — not wired into 'generate'\/'step'; see
@@ -121,7 +122,8 @@ genesis = do
 -- straight into 'FoundingOutcome''s own new 'fdPurpose' field.
 addSociety :: Maybe Text -> Maybe Culture -> Maybe (EntityId, Regard) -> Maybe Text -> Chronicle [Outcome]
 addSociety mName mCulture mStance mPurpose = do
-  culture <- maybe (pickOr vaurethine allCultures) pure mCulture
+  w0 <- get
+  culture <- maybe (pickOr vaurethine (culturesOf w0)) pure mCulture
   (s, concept) <- newSocietyNamed culture mName
   p <- newPerson culture
   w <- get
@@ -1470,6 +1472,131 @@ prophesyPersonSpec = prophesySpecFor Person "person"
 prophesySiteSpec = prophesySpecFor Site "site"
 prophesyItemSpec = prophesySpecFor Item "item"
 
+-- Cataclysm (work item 26) ----------------------------------------------
+--
+-- A world-scale major event, above the sixteen ordinary rules above —
+-- see @.claude/docs/plans/26-major-events-cataclysm.md@. Doesn't bind
+-- entities via slots the way every other rule does (there's no
+-- meaningful "slot" for "every Person in the world"), so it stays a
+-- hand-written 'Rule' rather than a 'RuleSpec' (§8) — 'fireCataclysm'
+-- takes the whole 'World' and rolls against most of it at once. Fires
+-- two ways: unconditionally, exactly once, at the world's first-ever
+-- calendar year-boundary crossing ('stepWith's own check, not this
+-- module's candidate pool at all); and afterward, at an ordinary,
+-- age\/cult-count-scaling chance via 'ruleCataclysm' below.
+
+-- | Rolls survival independently for each of @candidates@ at @survivalPct@
+-- percent — returns who was *destroyed* (the roll that didn't survive),
+-- not who lived, since every caller below only ever needs the destroyed
+-- side to build its claims.
+rollDestroyed :: Int -> [EntityId] -> Chronicle [EntityId]
+rollDestroyed survivalPct = filterM (const (not <$> chance survivalPct))
+
+-- | The ordinary (non-guaranteed) candidate-list weight — dynamic, unlike
+-- every other weighted rule's fixed 'ruleWeight': it grows with the
+-- world's own age (in elapsed calendar years, 'Historian.World.worldAgeYears')
+-- and how many distinct cultures its active societies currently span,
+-- capped at 'tnCataclysmMaxWeight' however old or populous the world
+-- gets. §2 of the plan.
+cataclysmWeight :: Tuning -> World -> Int
+cataclysmWeight cfg w =
+  min (tnCataclysmMaxWeight cfg) $
+    tnCataclysmBaseWeight cfg
+      + (worldAgeYears w `div` max 1 (tnCataclysmYearsPerWeight cfg))
+      + (length (nub (map (cultureOf w) (activeSocieties w))) `div` max 1 (tnCataclysmCultsPerWeight cfg))
+
+-- | The ordinary entry in 'rules' — no slots, no 'RuleSpec' (see this
+-- section's own header); the weighting is baked directly into the
+-- candidate list's own length via 'cataclysmWeight', the same dynamic,
+-- per-'World' self-weighting idiom 'Historian.World.cultureBoost'\/
+-- 'apprenticeBoost' already use, rather than a static 'ruleWeight'.
+ruleCataclysm :: Rule
+ruleCataclysm = rule "cataclysm" $ \w -> replicate (cataclysmWeight (wTuning w) w) (fireCataclysm w)
+
+-- | Rolls a cataclysm against @w@: destruction (§3, highest survival
+-- first — Site > Item > Society > Person), then a weighted chance of
+-- fresh regard for every surviving (society, Ward) pair with no existing
+-- stance (§4), then culture mutation over whichever cultures survived
+-- (§5). Every claim this produces is built here and carried on the
+-- returned 'CataclysmOutcome' — nothing is recorded directly; that's
+-- still 'Historian.Render.commitOutcomes''s job alone, same as every
+-- other rule.
+fireCataclysm :: World -> Chronicle [Outcome]
+fireCataclysm w0 = do
+  let cfg = wTuning w0
+      liveSites = [s | s <- entitiesOf Site w0, not (isTerminated w0 s)]
+      liveItems = activeItems w0
+      liveSocieties = activeSocieties w0
+      livePeople = excludeMundane w0 [p | p <- entitiesOf Person w0, not (isDead w0 p)]
+  destroyedSites <- rollDestroyed (tnCataclysmSiteSurvival cfg) liveSites
+  destroyedItems <- rollDestroyed (tnCataclysmItemSurvival cfg) liveItems
+  destroyedSocieties <- rollDestroyed (tnCataclysmSocietySurvival cfg) liveSocieties
+  destroyedPeople <- rollDestroyed (tnCataclysmPersonSurvival cfg) livePeople
+  let terminatedClaims =
+        [Claim i Terminated Nothing Nothing Nothing | i <- destroyedSites ++ destroyedItems ++ destroyedSocieties]
+      slainClaims = [Claim p Slain Nothing Nothing Nothing | p <- destroyedPeople]
+      destroyedCounts =
+        M.fromListWith
+          (+)
+          ( [(Site, 1 :: Int) | _ <- destroyedSites]
+              ++ [(Item, 1) | _ <- destroyedItems]
+              ++ [(Society, 1) | _ <- destroyedSocieties]
+              ++ [(Person, 1) | _ <- destroyedPeople]
+          )
+      survivingSites = filter (`notElem` destroyedSites) liveSites
+      survivingItems = filter (`notElem` destroyedItems) liveItems
+      survivingSocieties = filter (`notElem` destroyedSocieties) liveSocieties
+      survivingPeople = filter (`notElem` destroyedPeople) livePeople
+      survivingWards = survivingSites ++ survivingItems ++ survivingPeople
+  examples <- sampleWithout 3 (destroyedSites ++ destroyedItems ++ destroyedSocieties ++ destroyedPeople)
+  -- §4: a weighted chance of fresh regard per surviving (society, Ward)
+  -- pair with no existing stance — the same 'regardOf'\/'venerates'
+  -- dup-guard 'Historian.World.backfillWard'\/'backfillPatron' already
+  -- use, so a cataclysm never overwrites a cult's pre-existing regard.
+  regardHits <-
+    fmap catMaybes $
+      forM [(s, ward) | s <- survivingSocieties, ward <- survivingWards, isNothing (regardOf w0 s ward)] $
+        \(s, ward) -> do
+          hit <- chance (tnCataclysmRegardChance cfg)
+          if not hit
+            then pure Nothing
+            else do
+              r <- pickOr Venerated [Venerated, Shunned]
+              pure (Just (s, ward, r))
+  -- §5: culture mutation, over cultures that survived the destruction
+  -- pass — merge rolled once per pair, split rolled once per culture,
+  -- independently. Neither retrofits any existing society's own
+  -- recorded culture; both only ever widen 'wDynamicCultures'.
+  let survivingCultures = nub (map (cultureOf w0) survivingSocieties)
+      culturePairs = [(a, b) | (a : rest) <- tails survivingCultures, b <- rest]
+  merged <-
+    fmap catMaybes $
+      forM culturePairs $ \(a, b) -> do
+        doMerge <- chance (tnCataclysmMergeChance cfg)
+        if not doMerge
+          then pure Nothing
+          else do
+            new <- mergeCultures a b
+            pure (Just (new, [a, b]))
+  split <-
+    fmap catMaybes $
+      forM survivingCultures $ \c -> do
+        doSplit <- chance (tnCataclysmSplitChance cfg)
+        if not doSplit
+          then pure Nothing
+          else do
+            new <- splitCulture c
+            pure (Just (new, [c]))
+  let outcome =
+        CataclysmOutcome
+          { cyDestroyedCounts = destroyedCounts
+          , cyExamples = examples
+          , cyNewRegard = regardHits
+          , cySynthesizedCultures = merged ++ split
+          , cyClaims = terminatedClaims ++ slainClaims ++ [regardClaim s ward r | (s, ward, r) <- regardHits]
+          }
+  pure [Cataclysm outcome]
+
 -- Driver ---------------------------------------------------------------
 
 -- | One historical step, pooling candidates across @rs@. Every satisfying
@@ -1483,18 +1610,37 @@ prophesyItemSpec = prophesySpecFor Item "item"
 -- Returns False when history has nothing to say. 'step' is this
 -- specialized to 'rules'; 'generateViaEngine' reuses it against
 -- 'rulesFromSpecs'.
+--
+-- Before pooling @rs@ at all: a forced, guaranteed cataclysm the instant
+-- this step's epoch advance crosses the world's first-ever calendar year
+-- boundary (work item 26 §1) — 'Historian.World.hasCataclysmFired' gates
+-- it to at most once per world, ever; every crossing after that is
+-- governed purely by 'ruleCataclysm's own age\/cult-scaling chance among
+-- @rs@ (only when @rs@ actually includes it, i.e. 'rules', not
+-- 'rulesFromSpecs'). Reading 'Historian.World.yearOf' here doesn't touch
+-- invariant 8: that invariant is about the calendar consuming 'wGen', not
+-- about a rule reading the calendar's own pure output as an input — see
+-- that invariant's own note.
 stepWith :: [Rule] -> Chronicle Bool
 stepWith rs = do
+  w0 <- get
   advanceEpoch
   w <- get
-  let cands = concatMap (\r -> concat (replicate (ruleWeight r) (ruleCandidates r w))) rs
-  case cands of
-    [] -> pure False
-    _ -> do
-      i <- roll (0, length cands - 1)
-      outcomes <- cands !! i
+  let firstCrossing = not (hasCataclysmFired w) && yearOf w (wEpoch w0) /= yearOf w (wEpoch w)
+  if firstCrossing
+    then do
+      outcomes <- fireCataclysm w
       commitOutcomes outcomes
       pure True
+    else do
+      let cands = concatMap (\r -> concat (replicate (ruleWeight r) (ruleCandidates r w))) rs
+      case cands of
+        [] -> pure False
+        _ -> do
+          i <- roll (0, length cands - 1)
+          outcomes <- cands !! i
+          commitOutcomes outcomes
+          pure True
 
 step :: Chronicle Bool
 step = stepWith rules

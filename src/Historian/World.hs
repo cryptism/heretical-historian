@@ -52,6 +52,8 @@ emptyWorldWith seed tuning =
     , wFacts = []
     , wEvents = M.empty
     , wChains = M.fromList [(c, buildChain 3 (corpusFor c)) | c <- allCultures]
+    , wGrammars = M.fromList [(c, nameGrammarFor c) | c <- allCultures]
+    , wDynamicCultures = Set.empty
     , wSeed = seed
     , wEpoch = Epoch backstoryHeadroomDays
     , wNextEntity = 1
@@ -259,26 +261,48 @@ eraLabel BeforeAfter era y
   | otherwise = "Year " <> T.pack (show (negate y)) <> " Before " <> era
 eraLabel SignedYear era y = "Year " <> T.pack (show y) <> " of " <> era
 
+-- | Walks whole years forward from @y0@, each with its own freshly
+-- generated, never-reused months, until @daysLeft@ lands inside one —
+-- returning that year alongside how many days are left within it. Shared by
+-- 'dateOf' (which needs the day-within-year remainder to find the month)
+-- and 'yearOf' (which only needs the year itself), so the walk itself is
+-- never duplicated between the two.
+walkYears :: Int -> Int -> Int -> (Int, Int)
+walkYears seed = go
+  where
+    go year daysLeft =
+      let yearLen = sum (map monLength (yearMonths seed year))
+       in if daysLeft < yearLen
+            then (year, daysLeft)
+            else go (year + 1) (daysLeft - yearLen)
+
+-- | The absolute calendar year a given 'Epoch' falls in — pure and
+-- decorrelated from 'wGen' like the rest of the calendar (invariant 8),
+-- 'dateOf' builds on the same 'walkYears' walk rather than a second copy of
+-- it. Lets a rule's precondition read the calendar's own output (e.g. "has
+-- this world crossed into a new year yet") without the calendar itself ever
+-- consuming 'Chronicle''s RNG stream — see 'Historian.Rules.stepWith's own
+-- first-cataclysm-crossing check, the first caller to do this.
+yearOf :: World -> Epoch -> Int
+yearOf w (Epoch e) = fst (walkYears (wSeed w) y0 e)
+  where
+    (_, _, y0) = calendarParams (wSeed w)
+
 -- | Render an epoch as a fictional calendar date — "23rd Dancing Butcher
 -- (Year 3 After the Sundering)". Walks whole years first (each with its own
 -- freshly generated, never-reused months) starting from wherever genesis
 -- landed (see 'calendarParams'), then the day within whatever year and
 -- month the epoch lands in.
 dateOf :: World -> Epoch -> Text
-dateOf w (Epoch e) = findYear y0 e
+dateOf w (Epoch e) = findMonth year (yearMonths seed year) daysLeft
   where
     seed = wSeed w
     (scheme, era, y0) = calendarParams seed
-    findYear year daysLeft =
-      let months = yearMonths seed year
-          yearLen = sum (map monLength months)
-       in if daysLeft < yearLen
-            then findMonth year months daysLeft
-            else findYear (year + 1) (daysLeft - yearLen)
-    findMonth year (m : ms) n
+    (year, daysLeft) = walkYears seed y0 e
+    findMonth yr (m : ms) n
       | n < monLength m =
-          ordinal (n + 1) <> " " <> monName m <> " (" <> eraLabel scheme era year <> ")"
-      | otherwise = findMonth year ms (n - monLength m)
+          ordinal (n + 1) <> " " <> monName m <> " (" <> eraLabel scheme era yr <> ")"
+      | otherwise = findMonth yr ms (n - monLength m)
     findMonth _ [] _ = "an unrecorded day"
 
 -- | "1st", "2nd", "3rd", "4th" .. "11th/12th/13th" as the exceptions the
@@ -298,9 +322,22 @@ ordinal n
 -- | A culture picked uniformly at random from 'allCultures' — the same
 -- fallback 'genesis'\/'addSociety' already use for an unspecified
 -- culture, reused here so 'generateWordSeeded'\/'generateNameSeeded' pick
--- one the same way rather than inventing a second convention.
+-- one the same way rather than inventing a second convention. Always run
+-- against a throwaway 'emptyWorld' (see both callers' own Haddocks), which
+-- never has any synthesized culture to draw from, so this deliberately
+-- doesn't read 'wDynamicCultures' the way 'driftCulture'\/'culturesOf' do.
 pickCulture :: Maybe Culture -> Chronicle Culture
 pickCulture = maybe (pickOr vaurethine allCultures) pure
+
+-- | 'allCultures', widened with whatever this specific world has
+-- synthesized so far (work item 26 §5) — every live-world call site that
+-- draws an unspecified culture uniformly should read this instead of the
+-- bare corpus list, so a cataclysm-synthesized culture genuinely enters
+-- the same selectable palette everything else already draws from, rather
+-- than only ever being reachable by the entities the cataclysm itself
+-- minted.
+culturesOf :: World -> [Culture]
+culturesOf w = allCultures ++ Set.toList (wDynamicCultures w)
 
 -- | 'markovWord', run against a throwaway world freshly seeded just for
 -- this one call rather than a live handle's — the wasm boundary's
@@ -374,21 +411,29 @@ markovWord c = go (6 :: Int)
             else go (n - 1)
 
 -- | A componential "prefix + syllable-chain root + suffix" name, per
--- 'Historian.Corpus.NameGrammar' — used only for persons and relics (see
--- 'newPerson'\/'newItem'); sites and societies stay on 'markovWord'. Same
--- bounded-retry rejection discipline as 'markovWord'.
+-- 'NameGrammar' — used only for persons and relics (see 'newPerson'\/
+-- 'newItem'); sites and societies stay on 'markovWord'. Same bounded-retry
+-- rejection discipline as 'markovWord'. Looks up 'wGrammars' first — the
+-- only way a cataclysm-synthesized culture's own grammar (work item 26 §5)
+-- is ever actually reachable, rather than every mint in that culture
+-- silently rendering as Vaurethine — falling back to
+-- 'Historian.Corpus.nameGrammarFor' only for a culture 'wGrammars' has no
+-- entry for, which should never happen once 'emptyWorldWith' has run but
+-- keeps this total regardless.
 syllableName :: Culture -> Chronicle Text
-syllableName c = go (6 :: Int)
+syllableName c = do
+  w0 <- get
+  let grammar = fromMaybe (nameGrammarFor c) (M.lookup c (wGrammars w0))
+  go grammar (6 :: Int)
   where
-    grammar = nameGrammarFor c
-    go :: Int -> Chronicle Text
-    go 0 = pure "Nameless"
-    go n = do
+    go :: NameGrammar -> Int -> Chronicle Text
+    go _ 0 = pure "Nameless"
+    go grammar n = do
       t <- buildName grammar
       w <- get
       if T.length t >= 4 && Set.notMember t (wNameSubstrings w)
         then pure t
-        else go (n - 1)
+        else go grammar (n - 1)
 
 buildName :: NameGrammar -> Chronicle Text
 buildName g = do
@@ -522,7 +567,201 @@ driftCulture cfg inherited = do
   drift <- chance (tnCultureDriftChance cfg)
   if not drift
     then pure inherited
-    else pickOr inherited (filter (/= inherited) allCultures)
+    else do
+      w <- get
+      pickOr inherited (filter (/= inherited) (culturesOf w))
+
+-- Culture synthesis (work item 26 §5) --------------------------------------
+--
+-- A cataclysm's culture-mutation pass: merging two cultures, or splitting
+-- one, into a freshly synthesized one. Neither retrofits any existing
+-- society's own recorded 'Culture' — see both functions' own Haddocks —
+-- they only ever widen 'wDynamicCultures' going forward.
+
+-- | Every 'Culture' at least one still-active 'Society' currently belongs
+-- to — the "currently active cultures" pool work item 26 §5's merge\/
+-- split both draw from (merge: candidate pairs to combine; split: the
+-- fragment pool to mutate from).
+activeCultures :: World -> [Culture]
+activeCultures w = nub (map (cultureOf w) (activeSocieties w))
+
+-- | Sample up to @n@ distinct elements from @xs@ without replacement,
+-- order not preserved — merge\/split both use this to discard a combined
+-- or pooled fragment list back down to roughly one parent culture's usual
+-- size ("takes and discards combined qualities," not an ever-growing
+-- union across repeated cataclysms). Returns fewer than @n@ only when
+-- @xs@ itself has fewer elements; small lists only (a culture's own
+-- grammar fragments and word corpus, at most a few dozen entries), so the
+-- @O(n^2)@ removal-by-index below is in no danger of mattering.
+sampleWithout :: Int -> [a] -> Chronicle [a]
+sampleWithout n = go (max 0 n)
+  where
+    go 0 _ = pure []
+    go _ [] = pure []
+    go k ys = do
+      i <- roll (0, length ys - 1)
+      case splitAt i ys of
+        (before, y : after) -> (y :) <$> go (k - 1) (before ++ after)
+        (_, []) -> pure [] -- unreachable: i is always < length ys
+
+-- | A single numeric 'NameGrammar' knob, jittered by a random offset in
+-- @[-range, range]@ — merge averages two parents' values first
+-- ('averageKnob'); split jitters the splitting culture's own value
+-- directly. Callers clamp the result themselves ('clampPct' for a
+-- percent-chance field; 'ngMaxSyllables' just needs @max 1@, applied at
+-- the call site).
+jitterKnob :: Int -> Int -> Chronicle Int
+jitterKnob range v = do
+  j <- roll (negate range, range)
+  pure (v + j)
+
+averageKnob :: Int -> Int -> Int -> Chronicle Int
+averageKnob range a b = jitterKnob range ((a + b) `div` 2)
+
+clampPct :: Int -> Int
+clampPct = max 0 . min 100
+
+-- | A small chance to mutate one grammar fragment (a prefix\/root\/suffix,
+-- or one word of a synthesized culture's own corpus) — "modified
+-- somewhat," per the plan, not a clean resample: drop a trailing letter,
+-- swap a vowel, or append one, each equally likely once the mutation
+-- itself is rolled to happen at all.
+mutateFragment :: Text -> Chronicle Text
+mutateFragment frag = do
+  doMutate <- chance 30
+  if not doMutate || T.null frag
+    then pure frag
+    else do
+      action <- pickOr (0 :: Int) [0, 1, 2]
+      case action of
+        0 -> pure (if T.length frag > 1 then T.dropEnd 1 frag else frag)
+        1 -> case T.findIndex isVowel frag of
+          Nothing -> pure frag
+          Just i -> do
+            v <- pickOr 'a' vowels
+            pure (T.take i frag <> T.singleton v <> T.drop (i + 1) frag)
+        _ -> do
+          v <- pickOr 'a' vowels
+          pure (frag <> T.singleton v)
+  where
+    vowels = "aeiou"
+    isVowel c = c `elem` vowels
+
+mutateFragments :: [Text] -> Chronicle [Text]
+mutateFragments = mapM mutateFragment
+
+-- | 'markovWord', but against a throwaway 'Chain' built from @corpus@
+-- itself rather than a culture already registered in 'wChains' — used
+-- only to name a freshly synthesized culture (work item 26 §5): "the
+-- generator naming its own offspring with the same machinery it names
+-- everything else with," per the plan, rather than a bespoke naming rule.
+-- No collision rejection against 'wNameSubstrings' the way 'markovWord'
+-- has: a culture's own label is never checked against entity names
+-- (nothing about 'Culture' feeds 'nameSubstrings'), so that discipline
+-- doesn't transfer here.
+nameCultureFrom :: [String] -> Chronicle Text
+nameCultureFrom corpus = do
+  w <- get
+  let ch = buildChain 3 corpus
+      (s, g) = runChain ch 13 (wGen w)
+  put w {wGen = g}
+  pure (capitalizeName (T.pack s))
+
+-- | Registers a freshly synthesized 'Culture' in 'wChains'\/'wGrammars'\/
+-- 'wDynamicCultures' — shared tail end of 'mergeCultures'\/'splitCulture'
+-- so a new culture behaves exactly like a built-in one to every existing
+-- call site (@syllableName@, @markovWord@, @culturesOf@) from the moment
+-- it exists.
+registerCulture :: Culture -> NameGrammar -> [String] -> Chronicle ()
+registerCulture culture grammar corpus =
+  modify' $ \w ->
+    w
+      { wChains = M.insert culture (buildChain 3 corpus) (wChains w)
+      , wGrammars = M.insert culture grammar (wGrammars w)
+      , wDynamicCultures = Set.insert culture (wDynamicCultures w)
+      }
+
+-- | Merges two cultures into a freshly synthesized one: the union of both
+-- parents' name-grammar fragments, discarded back down to roughly one
+-- parent's original size; the four numeric knobs averaged with a small
+-- jitter rather than inherited from one parent wholesale; the corpus
+-- concatenated and subsampled the same way as the fragments. Neither
+-- parent's own existing societies are retrofitted onto the result — see
+-- work item 26 §5's own "existing societies keep their own culture
+-- unchanged" discussion; this only ever adds a new option to
+-- 'culturesOf' going forward.
+mergeCultures :: Culture -> Culture -> Chronicle Culture
+mergeCultures a b = do
+  w0 <- get
+  let gA = fromMaybe (nameGrammarFor a) (M.lookup a (wGrammars w0))
+      gB = fromMaybe (nameGrammarFor b) (M.lookup b (wGrammars w0))
+      targetSize xs ys = max 1 ((length xs + length ys) `div` 2)
+  prefixes <- sampleWithout (targetSize (ngPrefixes gA) (ngPrefixes gB)) (nub (ngPrefixes gA ++ ngPrefixes gB))
+  roots <- sampleWithout (targetSize (ngRoots gA) (ngRoots gB)) (nub (ngRoots gA ++ ngRoots gB))
+  suffixes <- sampleWithout (targetSize (ngSuffixes gA) (ngSuffixes gB)) (nub (ngSuffixes gA ++ ngSuffixes gB))
+  maxSyl <- averageKnob 1 (ngMaxSyllables gA) (ngMaxSyllables gB)
+  prefixChance <- averageKnob 8 (ngPrefixChance gA) (ngPrefixChance gB)
+  suffixChance <- averageKnob 8 (ngSuffixChance gA) (ngSuffixChance gB)
+  hyphenChance <- averageKnob 8 (ngHyphenChance gA) (ngHyphenChance gB)
+  let grammar =
+        NameGrammar
+          { ngPrefixes = prefixes
+          , ngRoots = roots
+          , ngSuffixes = suffixes
+          , ngMaxSyllables = max 1 maxSyl
+          , ngPrefixChance = clampPct prefixChance
+          , ngSuffixChance = clampPct suffixChance
+          , ngHyphenChance = clampPct hyphenChance
+          }
+      corpusA = corpusFor a
+      corpusB = corpusFor b
+  corpus <- sampleWithout (targetSize corpusA corpusB) (corpusA ++ corpusB)
+  label <- nameCultureFrom corpus
+  let culture = Culture label
+  registerCulture culture grammar corpus
+  pure culture
+
+-- | Splits one culture into a freshly synthesized one: pools grammar
+-- fragments across *every* currently-active culture (not just @src@),
+-- samples a subset sized to @src@'s own usual fragment count, then
+-- mutates a few of them ('mutateFragments') — "modified somewhat," not a
+-- clean resample. Numeric knobs are @src@'s own, jittered the same way
+-- 'mergeCultures''s are. @src@ itself is untouched, same "existing
+-- societies keep their own culture unchanged" discipline as
+-- 'mergeCultures'.
+splitCulture :: Culture -> Chronicle Culture
+splitCulture src = do
+  w0 <- get
+  let cultures = activeCultures w0
+      grammarOf c = fromMaybe (nameGrammarFor c) (M.lookup c (wGrammars w0))
+      base = grammarOf src
+      pooledPrefixes = nub (concatMap (ngPrefixes . grammarOf) cultures)
+      pooledRoots = nub (concatMap (ngRoots . grammarOf) cultures)
+      pooledSuffixes = nub (concatMap (ngSuffixes . grammarOf) cultures)
+  prefixes <- sampleWithout (max 1 (length (ngPrefixes base))) pooledPrefixes >>= mutateFragments
+  roots <- sampleWithout (max 1 (length (ngRoots base))) pooledRoots >>= mutateFragments
+  suffixes <- sampleWithout (max 1 (length (ngSuffixes base))) pooledSuffixes >>= mutateFragments
+  maxSyl <- jitterKnob 1 (ngMaxSyllables base)
+  prefixChance <- jitterKnob 8 (ngPrefixChance base)
+  suffixChance <- jitterKnob 8 (ngSuffixChance base)
+  hyphenChance <- jitterKnob 8 (ngHyphenChance base)
+  let grammar =
+        NameGrammar
+          { ngPrefixes = prefixes
+          , ngRoots = roots
+          , ngSuffixes = suffixes
+          , ngMaxSyllables = max 1 maxSyl
+          , ngPrefixChance = clampPct prefixChance
+          , ngSuffixChance = clampPct suffixChance
+          , ngHyphenChance = clampPct hyphenChance
+          }
+      baseCorpus = corpusFor src
+  sampledCorpus <- sampleWithout (max 1 (length baseCorpus)) baseCorpus
+  corpus <- mapM (fmap T.unpack . mutateFragment . T.pack) sampledCorpus
+  label <- nameCultureFrom corpus
+  let culture = Culture label
+  registerCulture culture grammar corpus
+  pure culture
 
 -- | How many times a candidate pairing should be replicated in a rule's
 -- own candidate list — the self-weighting idiom every other weighted rule
@@ -560,6 +799,19 @@ wasSaint w p = any isSaintEvent (M.elems (wEvents w))
   where
     isSaintEvent ev = case evOutcome ev of
       Just (MiracleSaint o) -> msSaint o == p
+      _ -> False
+
+-- | Whether a 'Cataclysm' has ever fired in this world — same "scan
+-- committed 'Event's for a specific 'Outcome' constructor" shape 'wasSaint'
+-- already uses, since a cataclysm needs no dedicated 'World' field any more
+-- than sainthood does. What gates the guaranteed first-year-crossing firing
+-- in 'Historian.Rules.stepWith' from ever firing a second time on its own —
+-- see work item 26.
+hasCataclysmFired :: World -> Bool
+hasCataclysmFired w = any isCataclysmEvent (M.elems (wEvents w))
+  where
+    isCataclysmEvent ev = case evOutcome ev of
+      Just (Cataclysm _) -> True
       _ -> False
 
 -- | 'cultureBoost's mirror for 'Historian.Rules.ruleMiracle's own
@@ -1166,6 +1418,16 @@ ageOf :: World -> EntityId -> Int
 ageOf w i = case M.lookup i (wEntities w) of
   Nothing -> 0
   Just e -> unEpoch (wEpoch w) - unEpoch (entBorn e)
+
+-- | The world's own age, in elapsed calendar years since genesis
+-- (@backstoryHeadroomDays@, where 'wEpoch' starts) — 'yearOf's own
+-- year-boundary walk applied to both ends and subtracted, so a run of
+-- short years counts more elapsed years than the same day-span made of
+-- long ones. 'Historian.Rules.cataclysmWeight' is the one consumer (work
+-- item 26 §2) — the age half of "increasing with age of the world and
+-- number of cults."
+worldAgeYears :: World -> Int
+worldAgeYears w = yearOf w (wEpoch w) - yearOf w (Epoch backstoryHeadroomDays)
 
 -- | Current allegiance only. Facts are newest-first, so keeping the first
 -- entry per person gives the most recent 'LeaderOf' — a heresiarch who

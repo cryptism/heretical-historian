@@ -36,6 +36,32 @@ newtype Culture = Culture {unCulture :: Text}
   deriving stock (Show)
   deriving newtype (Eq, Ord)
 
+-- | A componential name grammar for persons and relics only — see
+-- 'Historian.World.syllableName' and Decision 20 in .claude/docs/DESIGN.md
+-- for why this exists alongside 'markovWord' rather than replacing it
+-- (sites and societies still use the character chain unchanged). Fragments
+-- are stored lowercase; 'Historian.World.capitalizeName' handles casing.
+-- Lives here rather than in 'Historian.Corpus' (where it was originally
+-- built) because 'World' now carries a 'Culture'-keyed map of these
+-- ('wGrammars', work item 26) and a lower layer can't reference a type
+-- defined in a higher one — the same move 'Tuning' made in Decision 42.
+-- 'Historian.Corpus.nameGrammarFor' and every built-in culture's own value
+-- stay put; only the type itself moved.
+data NameGrammar = NameGrammar
+  { ngPrefixes :: [Text]
+  , ngRoots :: [Text]
+  , ngSuffixes :: [Text]
+  , ngMaxSyllables :: Int
+  -- ^ Root chain length is drawn uniformly from @[1, ngMaxSyllables]@.
+  , ngPrefixChance :: Int
+  -- ^ Percent chance (0-100) a prefix is included at all.
+  , ngSuffixChance :: Int
+  , ngHyphenChance :: Int
+  -- ^ Percent chance, rolled independently at *each* internal seam of a
+  -- multi-syllable root chain, that the seam is a hyphen rather than a
+  -- direct join.
+  }
+
 -- | A 'Ward' isn't a separate type — it's any entity whose 'Kind' is
 -- 'Person', 'Item', or 'Site': the class of things a cult can hold in
 -- regard, for good ('Venerates') or ill ('Shuns'). Nothing enforces this at
@@ -519,6 +545,35 @@ data CoupOutcome = CoupOutcome
   , cpLeadership :: LeadershipChange
   }
 
+-- | A world-scale major event, above the sixteen ordinary rules — see
+-- work item 26 (@.claude/docs/plans/26-major-events-cataclysm.md@). Unlike
+-- every other 'Outcome', a cataclysm doesn't bind a handful of specific
+-- entities via slots; it acts on most of the world at once, so it carries
+-- counts and a few representative examples rather than exhaustive entity
+-- lists (which could number in the hundreds for a long-running world).
+data CataclysmOutcome = CataclysmOutcome
+  { cyDestroyedCounts :: Map Kind Int
+  -- ^ How many of each 'Kind' the destruction pass actually claimed —
+  -- zero entries for a 'Kind' nothing happened to roll against, not an
+  -- explicit zero.
+  , cyExamples :: [EntityId]
+  -- ^ A handful of representative victims across every destroyed 'Kind',
+  -- for narration — "a couple of named victims read better than '47
+  -- people died'" (the plan's own framing), not one-per-'Kind'
+  -- guaranteed and not exhaustive.
+  , cyNewRegard :: [(EntityId, EntityId, Regard)]
+  -- ^ (society, ward, regard) triples — every fresh stance the
+  -- post-destruction regard pass actually recorded (§4 of the plan).
+  , cySynthesizedCultures :: [(Culture, [Culture])]
+  -- ^ Each newly synthesized culture alongside the parent culture(s) it
+  -- was drawn from — one parent for a split, two for a merge (§5).
+  , cyClaims :: [Claim]
+  -- ^ Every 'Terminated'\/'Slain'\/'Venerates'\/'Shuns' claim this
+  -- cataclysm actually produced — claims-only, the same "term carries
+  -- everything" shape 'RelicMoment' already established; render's
+  -- 'Cataclysm' case never reads it.
+  }
+
 -- | Every outcome a rule can hand to 'Historian.Render.commitOutcomes' to
 -- become a permanent 'Event', wrapped as one sum type — this is the
 -- closed set 'Historian.World.record' ever gets called against, made
@@ -555,6 +610,7 @@ data Outcome
   | Coronation CoronationOutcome
   | TrialByCombat TrialByCombatOutcome
   | Coup CoupOutcome
+  | Cataclysm CataclysmOutcome
 
 -- | The Private Use Area codepoint 'AText' marks an entity mention with —
 -- guaranteed never to appear in any generated corpus text, and (unlike
@@ -797,6 +853,48 @@ data Tuning = Tuning
   -- when their own mentor was themselves already recognized as a miracle
   -- saint ('Historian.World.wasSaint') — sainthood running in a lineage,
   -- not just apprenticeship alone.
+  , tnCataclysmBaseWeight :: Int
+  -- ^ 'Historian.Rules.cataclysmWeight': the ordinary (non-guaranteed)
+  -- candidate-list weight a cataclysm starts at before age/cult scaling —
+  -- work item 26, §2.
+  , tnCataclysmYearsPerWeight :: Int
+  -- ^ 'Historian.Rules.cataclysmWeight': one extra weight point per this
+  -- many elapsed calendar years.
+  , tnCataclysmCultsPerWeight :: Int
+  -- ^ 'Historian.Rules.cataclysmWeight': one extra weight point per this
+  -- many distinct active cultures.
+  , tnCataclysmMaxWeight :: Int
+  -- ^ 'Historian.Rules.cataclysmWeight': the hard cap age/cult scaling
+  -- can't exceed, however old or populous the world gets.
+  , tnCataclysmSiteSurvival :: Int
+  -- ^ 'Historian.Rules.fireCataclysm': percent chance any one 'Site'
+  -- survives the destruction pass — highest of the four 'Kind's (§3).
+  , tnCataclysmItemSurvival :: Int
+  -- ^ 'Historian.Rules.fireCataclysm': percent chance any one 'Item'
+  -- survives.
+  , tnCataclysmSocietySurvival :: Int
+  -- ^ 'Historian.Rules.fireCataclysm': percent chance any one active
+  -- 'Society' survives.
+  , tnCataclysmPersonSurvival :: Int
+  -- ^ 'Historian.Rules.fireCataclysm': percent chance any one living
+  -- 'Person' survives — lowest of the four 'Kind's.
+  , tnCataclysmRegardChance :: Int
+  -- ^ 'Historian.Rules.fireCataclysm': percent chance, rolled
+  -- independently per (surviving society, surviving Ward) pair with no
+  -- existing stance, that a fresh 50\/50 'Venerates'\/'Shuns' claim is
+  -- recorded (§4).
+  , tnCataclysmMergeChance :: Int
+  -- ^ 'Historian.Rules.fireCataclysm': percent chance, rolled
+  -- independently per pair of currently-active cultures that survived the
+  -- destruction pass, that 'Historian.World.mergeCultures' actually fires
+  -- for that pair (§5). Not named explicitly in the plan's own Tuning
+  -- list — an implied knob filled in during implementation, the same
+  -- "rolled" language every other per-pair\/per-entity chance here
+  -- already gets a 'Tuning' field for.
+  , tnCataclysmSplitChance :: Int
+  -- ^ 'Historian.Rules.fireCataclysm': percent chance, rolled
+  -- independently per currently-active culture, that
+  -- 'Historian.World.splitCulture' actually fires for it (§5).
   }
   deriving stock (Eq, Show)
 
@@ -822,6 +920,17 @@ defaultTuning =
     , tnApprenticeshipChance = 30
     , tnApprenticeBoost = 2
     , tnLineageBoost = 3
+    , tnCataclysmBaseWeight = 1
+    , tnCataclysmYearsPerWeight = 50
+    , tnCataclysmCultsPerWeight = 2
+    , tnCataclysmMaxWeight = 15
+    , tnCataclysmSiteSurvival = 97
+    , tnCataclysmItemSurvival = 93
+    , tnCataclysmSocietySurvival = 90
+    , tnCataclysmPersonSurvival = 85
+    , tnCataclysmRegardChance = 30
+    , tnCataclysmMergeChance = 15
+    , tnCataclysmSplitChance = 15
     }
 
 data World = World
@@ -854,4 +963,23 @@ data World = World
   -- constant they used to, so a caller (the wasm boundary, in particular)
   -- can configure a world's own probabilities at creation time. See
   -- Decision 42.
+  , wGrammars :: Map Culture NameGrammar
+  -- ^ Every culture's 'NameGrammar', built-in and cataclysm-synthesized
+  -- alike — the 'NameGrammar' counterpart to 'wChains', which the corpus
+  -- half of naming already had. Seeded at construction with an entry for
+  -- every 'Historian.Corpus.allCultures' member; a synthesized culture
+  -- (work item 26) gets an entry added here at the moment it's minted.
+  -- 'Historian.World.syllableName' looks this up first, falling back to
+  -- 'Historian.Corpus.nameGrammarFor' only for a culture with no entry —
+  -- which should never actually happen once construction has run, but
+  -- keeps the function total regardless.
+  , wDynamicCultures :: Set Culture
+  -- ^ Which 'Culture's were synthesized during this run (as opposed to
+  -- one of 'Historian.Corpus.allCultures') — distinct from 'wGrammars'\/
+  -- 'wChains', which need entries for every culture, static and dynamic
+  -- alike. What every 'Historian.Corpus.allCultures'-drawing call site
+  -- that should also see a synthesized culture (@driftCulture@, an
+  -- unspecified-culture founding) unions in, so the selectable palette
+  -- genuinely widens after a cataclysm rather than staying fixed at the
+  -- seven built-in cultures forever. See work item 26 §5.
   }

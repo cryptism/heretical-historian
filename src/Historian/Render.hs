@@ -22,7 +22,7 @@ import Control.Monad (forM_)
 import Control.Monad.State.Strict (get)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isNothing, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Historian.Corpus (foundingVoicing, hailWords, meanderClauses, miracleSaintVoicing, omissionTexts, schismFreshVoicing, schismRenouncedVoicing)
@@ -93,7 +93,13 @@ verbForFact :: World -> Fact -> Text
 verbForFact w f = case factPred f of
   Terminated -> case kindOf w (factSubject f) of
     Just Item -> "was destroyed"
+    Just Site -> "was reduced to ruin"
     _ -> "passed from history"
+  -- A cataclysm's own 'Slain' claims (work item 26 §3) have no single
+  -- killer to name as the object — every other 'Slain' claim always
+  -- does — so 'verbFor's "was slain by" would otherwise read as a
+  -- dangling sentence fragment with nothing appended after it.
+  Slain | isNothing (factObject f) -> "perished in the cataclysm"
   p -> verbFor p
 
 -- | An entity object renders as its name; an event object (only ever the
@@ -248,6 +254,59 @@ intercalateA :: AText -> [AText] -> AText
 intercalateA _ [] = mempty
 intercalateA sep (x : xs) = x <> mconcat [sep <> y | y <- xs]
 
+-- | Pluralizes a destroyed count for 'cataclysmCountsClause' — "1 person"
+-- vs "14 people", etc. 'Concept' is never actually reachable (a cataclysm
+-- never touches one — see work item 26 §3) but included so the function
+-- stays total over every 'Kind'.
+cataclysmKindLabel :: Kind -> Int -> Text
+cataclysmKindLabel k n = case k of
+  Person -> noun "person" "people"
+  Item -> noun "item" "items"
+  Society -> noun "society" "societies"
+  Site -> noun "site" "sites"
+  Concept -> noun "concept" "concepts"
+  where
+    noun sing plural = if n == 1 then sing else plural
+
+-- | "14 people, 3 items, and 1 site were lost." — every 'Kind' the
+-- destruction pass actually claimed at least one of, joined in one
+-- sentence; a 'Kind' with a zero (or absent) count is simply omitted
+-- rather than named as "0 sites".
+cataclysmCountsClause :: M.Map Kind Int -> AText
+cataclysmCountsClause counts = case [tshow n <> " " <> cataclysmKindLabel k n | (k, n) <- M.toList counts, n > 0] of
+  [] -> lit "the world held its breath, and nothing was lost."
+  parts -> lit (T.intercalate ", " parts <> " were lost.")
+
+-- | "Among the lost: <name> and <name>." — 'cyExamples' is a handful of
+-- representative victims, not exhaustive, so this never claims to be a
+-- complete accounting.
+cataclysmExampleClause :: World -> [EntityId] -> AText
+cataclysmExampleClause _ [] = ""
+cataclysmExampleClause w egs = " Among the lost: " <> intercalateA " and " (map (mention w) egs) <> "."
+
+-- | A short, deliberately non-enumerating clause for 'cyNewRegard' — the
+-- regard pass (§4) can touch many (society, Ward) pairs at once, so this
+-- names the *shape* of what happened rather than every pair, the same
+-- "counts, not full entity lists" discipline the rest of the outcome
+-- follows.
+cataclysmRegardClause :: [(EntityId, EntityId, Regard)] -> AText
+cataclysmRegardClause [] = ""
+cataclysmRegardClause _ = " Amid the ruin, new devotions and denunciations took root."
+
+-- | "In the aftermath, a new tradition, Xanuvei, rose from Vaurethine and
+-- Hollowtongue." per synthesized culture — plain text, not a 'mention':
+-- a 'Culture' has no 'EntityId' of its own to track one against.
+cataclysmCultureClause :: [(Culture, [Culture])] -> AText
+cataclysmCultureClause [] = ""
+cataclysmCultureClause cults = lit (T.concat (map clause cults))
+  where
+    clause (new, parents) =
+      " In the aftermath, a new tradition, "
+        <> unCulture new
+        <> ", rose from "
+        <> T.intercalate " and " (map unCulture parents)
+        <> "."
+
 -- | The always-neutral, voice-agnostic reading of any 'Outcome' — one
 -- branch per case. Never modified by voice; this is what 'render' falls
 -- back to for 'Nothing' and for any outcome type not yet migrated to a
@@ -389,6 +448,12 @@ renderNeutral w = \case
       <> lcMention (cpLeadership o)
       <> " without a drop of blood spilled."
       <> renameText (cpLeadership o)
+  Cataclysm o ->
+    "The world reeled beneath a cataclysm: "
+      <> cataclysmCountsClause (cyDestroyedCounts o)
+      <> cataclysmExampleClause w (cyExamples o)
+      <> cataclysmRegardClause (cyNewRegard o)
+      <> cataclysmCultureClause (cySynthesizedCultures o)
 
 -- | Voiced readings for the three outcome types migrated so far —
 -- substitutive, not just an appended clause: a cult's 'VoiceRegister'
@@ -726,6 +791,7 @@ outcomeKind = \case
   Coronation _ -> "coronation"
   TrialByCombat _ -> "trial-by-combat"
   Coup _ -> "coup"
+  Cataclysm _ -> "cataclysm"
 
 -- | Dispatches to the @xClaims@ function above matching each constructor.
 -- Takes 'World' because 'mergerClaims' needs it ('transferClaims'\/
@@ -755,6 +821,7 @@ outcomeClaims w = \case
   Coronation o -> coronationClaims o
   TrialByCombat o -> trialByCombatClaims o
   Coup o -> coupClaims o
+  Cataclysm o -> cyClaims o
 
 -- | The only place 'record' and 'render' are ever called together — every
 -- fired rule's effect ('Historian.Rules') only ever builds 'Outcome'

@@ -5,7 +5,7 @@ module Historian.Corpus where
 
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
-import Historian.Types (Culture (..), Kind (..), Predicate (..), VoiceRegister (..))
+import Historian.Types (Culture (..), Kind (..), NameGrammar (..), Predicate (..), VoiceRegister (..))
 
 vaurethine :: Culture
 vaurethine = Culture "Vaurethine"
@@ -53,8 +53,27 @@ mesoamerican = Culture "Tzalapec"
 baboon :: Culture
 baboon = Culture "Baboon"
 
+-- | Invented, evoking East\/Southeast Asian phonology — short, open
+-- syllables, soft sibilants, vowel-final — the same "invented label,
+-- invented words, real phonological inspiration" discipline as every
+-- other culture here (Decision 21\/37). Added purely to widen merge\/
+-- split's own starting palette (work item 26 §5), the same reason
+-- 'ohanaki'\/'volnisk' exist.
+xanuvei :: Culture
+xanuvei = Culture "Xanuvei"
+
+-- | Invented, evoking Polynesian\/Austronesian phonology — vowel-heavy,
+-- reduplicated-feeling syllables, no consonant clusters.
+ohanaki :: Culture
+ohanaki = Culture "Ohanaki"
+
+-- | Invented, evoking Slavic\/Baltic phonology — consonant clusters,
+-- "-sk"\/"-ov"\/"-en"-style endings.
+volnisk :: Culture
+volnisk = Culture "Volnisk"
+
 allCultures :: [Culture]
-allCultures = [vaurethine, hollowtongue, ethiopian, southAsian, semitic, mesoamerican, baboon]
+allCultures = [vaurethine, hollowtongue, ethiopian, southAsian, semitic, mesoamerican, baboon, xanuvei, ohanaki, volnisk]
 
 -- | Total by construction: an unrecognised culture falls back rather than
 -- crashing, which matters once cultures are minted at runtime.
@@ -65,6 +84,9 @@ corpusFor (Culture "Vindrasha") = southAsianWords
 corpusFor (Culture "Zabreth") = semiticWords
 corpusFor (Culture "Tzalapec") = mesoamericanWords
 corpusFor (Culture "Baboon") = baboonWords
+corpusFor (Culture "Xanuvei") = xanuveiWords
+corpusFor (Culture "Ohanaki") = ohanakiWords
+corpusFor (Culture "Volnisk") = volniskWords
 corpusFor _ = vaureWords
 
 vaureWords :: [String]
@@ -274,27 +296,87 @@ baboonWords =
   , "oowaheeoo"
   ]
 
--- | A componential name grammar for persons and relics only — see
--- 'Historian.World.syllableName' and Decision 20 in .claude/docs/DESIGN.md for why
--- this exists alongside 'markovWord' rather than replacing it (sites and
--- societies still use the character chain unchanged). Fragments are
--- stored lowercase; 'Historian.World.capitalizeName' handles casing.
-data NameGrammar = NameGrammar
-  { ngPrefixes :: [Text]
-  , ngRoots :: [Text]
-  , ngSuffixes :: [Text]
-  , ngMaxSyllables :: Int
-  -- ^ Root chain length is drawn uniformly from @[1, ngMaxSyllables]@.
-  , ngPrefixChance :: Int
-  -- ^ Percent chance (0-100) a prefix is included at all.
-  , ngSuffixChance :: Int
-  , ngHyphenChance :: Int
-  -- ^ Percent chance, rolled independently at *each* internal seam of a
-  -- multi-syllable root chain, that the seam is a hyphen rather than a
-  -- direct join.
-  }
+xanuveiWords :: [String]
+xanuveiWords =
+  [ "shanrei"
+  , "meiruko"
+  , "kaosen"
+  , "tanrei"
+  , "linzao"
+  , "saemoto"
+  , "waitoshi"
+  , "renkao"
+  , "mairu"
+  , "hanzei"
+  , "toaren"
+  , "shumako"
+  , "kailen"
+  , "renzou"
+  , "tosane"
+  , "shuzao"
+  , "kaimeru"
+  , "wanreo"
+  , "seiruko"
+  , "noalin"
+  , "raemoto"
+  ]
 
--- | Total by construction, mirroring 'corpusFor' exactly.
+ohanakiWords :: [String]
+ohanakiWords =
+  [ "manaoa"
+  , "tokoroa"
+  , "hinalei"
+  , "waikona"
+  , "fanoa"
+  , "teimana"
+  , "roahiti"
+  , "kailoa"
+  , "nohea"
+  , "manawai"
+  , "tokoloa"
+  , "hialani"
+  , "faroa"
+  , "teahiwa"
+  , "koaloa"
+  , "nianoa"
+  , "waikoa"
+  , "tohana"
+  , "roakea"
+  , "fanui"
+  , "hinaroa"
+  ]
+
+volniskWords :: [String]
+volniskWords =
+  [ "bronivosk"
+  , "vetrogorsk"
+  , "zdenomir"
+  , "krivosek"
+  , "dobrenko"
+  , "yaroslen"
+  , "mirosk"
+  , "stanivoy"
+  , "bezrodin"
+  , "chernavik"
+  , "gorislen"
+  , "velemirsk"
+  , "dragomil"
+  , "kostrovan"
+  , "yarovek"
+  , "bratislen"
+  , "voronsk"
+  , "milogorod"
+  , "zdravoysk"
+  , "ostravik"
+  , "radomisk"
+  , "tveresk"
+  ]
+
+-- | 'NameGrammar' itself now lives in 'Historian.Types' — 'World' needs to
+-- reference it ('wGrammars', work item 26) and 'Historian.Types' sits below
+-- this module, so the type moved the same way 'Tuning' did (Decision 42).
+-- What stays here: every built-in culture's own grammar value, and the
+-- total dispatch function below, mirroring 'corpusFor' exactly.
 nameGrammarFor :: Culture -> NameGrammar
 nameGrammarFor (Culture "Hollowtongue") = hollowGrammar
 nameGrammarFor (Culture "Ghenzai") = ethiopianGrammar
@@ -302,6 +384,9 @@ nameGrammarFor (Culture "Vindrasha") = southAsianGrammar
 nameGrammarFor (Culture "Zabreth") = semiticGrammar
 nameGrammarFor (Culture "Tzalapec") = mesoamericanGrammar
 nameGrammarFor (Culture "Baboon") = baboonGrammar
+nameGrammarFor (Culture "Xanuvei") = xanuveiGrammar
+nameGrammarFor (Culture "Ohanaki") = ohanakiGrammar
+nameGrammarFor (Culture "Volnisk") = volniskGrammar
 nameGrammarFor _ = vaureGrammar
 
 -- | Smooth and Latinate, matching 'vaureWords'\'s liquid consonants and
@@ -405,6 +490,52 @@ baboonGrammar =
     , ngPrefixChance = 55
     , ngSuffixChance = 55
     , ngHyphenChance = 70
+    }
+
+-- | Short, open, vowel-final syllables and soft sibilants, matching
+-- 'xanuveiWords'. A low hyphen chance keeps names reading as smooth,
+-- unbroken syllable runs rather than compounds.
+xanuveiGrammar :: NameGrammar
+xanuveiGrammar =
+  NameGrammar
+    { ngPrefixes = ["sha", "mei", "kao", "ren", "lin", "sae", "tao", "wai", "han", "sei"]
+    , ngRoots = ["rei", "ruko", "sen", "zao", "moto", "toshi", "kao", "ru", "nae", "zou"]
+    , ngSuffixes = ["a", "i", "o", "ei", "an", "u"]
+    , ngMaxSyllables = 2
+    , ngPrefixChance = 50
+    , ngSuffixChance = 60
+    , ngHyphenChance = 5
+    }
+
+-- | Vowel-heavy, no consonant clusters, matching 'ohanakiWords' — the
+-- longest syllable cap of any non-Baboon culture gives names a
+-- reduplicated, chant-like feel without literally repeating a syllable
+-- the way Baboon's own grammar does.
+ohanakiGrammar :: NameGrammar
+ohanakiGrammar =
+  NameGrammar
+    { ngPrefixes = ["ma", "na", "ka", "lo", "hi", "fa", "wai", "noa", "tea", "roa"]
+    , ngRoots = ["noa", "hiti", "kona", "lei", "waia", "mana", "roa", "tahi", "wana", "kea"]
+    , ngSuffixes = ["a", "i", "o", "ea", "oa", "ai"]
+    , ngMaxSyllables = 3
+    , ngPrefixChance = 40
+    , ngSuffixChance = 55
+    , ngHyphenChance = 5
+    }
+
+-- | Consonant clusters and "-sk"\/"-ov"\/"-en"-style endings, matching
+-- 'volniskWords'. A moderately high hyphen chance gives the compound-place-
+-- name feel real Slavic\/Baltic toponyms have.
+volniskGrammar :: NameGrammar
+volniskGrammar =
+  NameGrammar
+    { ngPrefixes = ["bron", "vetro", "zdeno", "krivo", "dobren", "yaros", "mir", "stani", "bezro", "cherna"]
+    , ngRoots = ["grad", "mir", "sek", "enko", "slen", "osk", "voy", "din", "vik", "gorod"]
+    , ngSuffixes = ["sk", "ov", "en", "in", "ek", "grad"]
+    , ngMaxSyllables = 2
+    , ngPrefixChance = 60
+    , ngSuffixChance = 65
+    , ngHyphenChance = 25
     }
 
 societyEpithets :: [Text]
@@ -936,4 +1067,11 @@ disputedFramings "revival" =
 disputedFramings "prophecy" =
   "no true foresight, but a threat dressed up as a vision"
     :| ["words with nothing behind them, spoken only to be remembered later"]
+disputedFramings "cataclysm" =
+  -- Entry kept for symmetry with every other kind, even though nothing
+  -- calls 'Historian.Rules.maybeDispute' for a cataclysm in this first
+  -- pass — see work item 26 §7 for why: no single natural disputant for a
+  -- world-scale event, the same precedent 'ruleDissolve' already set.
+  "no cataclysm at all, but an old order's own ruin dressed up as fate"
+    :| ["a reckoning too convenient to be anything but arranged"]
 disputedFramings _ = "not as it is commonly told" :| []

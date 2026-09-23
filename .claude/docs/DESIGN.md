@@ -4222,3 +4222,187 @@ outcomes, the purpose clause, and both `historian_add_person` outcomes).
 **Deliberately not attempted:** the plan's own explicitly-out-of-scope
 items (user-defined new cultures, replay/determinism tooling, editing or
 removing an existing entity) — none of that changed here.
+
+## Decision 49: Cataclysms — work item 26, built as planned
+
+**Needed for:** work item 26's own plan
+(`.claude/docs/plans/26-major-events-cataclysm.md`), the first "major
+event" tier above the sixteen ordinary rules. Built essentially as the
+plan specified — the plan itself already resolved the open design
+questions with the user before implementation started (three new
+cultures accepted as proposed; `Terminated` extended to `Site`; no
+`maybeDispute` call for cataclysm) — with one real structural gap the
+plan didn't fully anticipate, and one severity finding made during
+implementation that needed a real retuning, not a guess.
+
+**The structural gap: `NameGrammar` had to move to `Historian.Types`.**
+The plan's §5 already knew `wGrammars :: Map Culture NameGrammar` needed
+to exist on `World` for a synthesized culture's phonology to be
+reachable at all — what it didn't call out explicitly is that
+`NameGrammar` itself was defined in `Historian.Corpus`, which imports
+from `Historian.Types` (for `Culture`/`Kind`/etc.), so `Types` referencing
+it back would be a cycle. Same shape as `Tuning`'s own move in Decision
+42, same fix: the type definition moved up to `Historian.Types`;
+`Historian.Corpus.nameGrammarFor` and every built-in culture's own grammar
+value stayed exactly where they were. `Historian.World.syllableName` now
+looks up `wGrammars` first, falling back to `nameGrammarFor` only for a
+culture with no entry (should never happen once `emptyWorldWith` has
+seeded one for every `allCultures` member, but keeps the function total).
+
+**The calendar becomes a rule input for the first time.** `yearOf ::
+World -> Epoch -> Int` (`Historian.World`) is pulled out of `dateOf`'s own
+`findYear` walk (renamed `walkYears`, shared by both rather than
+duplicated) and read directly by `Historian.Rules.stepWith` to detect the
+world's first-ever calendar year-boundary crossing. Invariant 8 already
+named this exact possibility as a real design decision to make
+deliberately rather than fall into ("a future feature wants the calendar
+to influence a rule's outcome... that's a real design decision to make
+deliberately, not something to fall into by wiring `dateOf` through
+`Chronicle` for convenience") — this is that decision, made here: reading
+the calendar's own pure output as a rule's input is fine and doesn't
+touch the invariant, which is specifically about the calendar *consuming*
+`wGen`, not about being *read* by rule logic. `yearOf` stays exactly as
+pure and `wGen`-free as `dateOf` always was.
+
+**Mechanism, as planned:** `stepWith` advances the epoch unconditionally
+(as it always has, per bug #2), then checks
+`not (hasCataclysmFired w) && yearOf w (wEpoch w0) /= yearOf w (wEpoch w)`
+— the world's first crossing, ever — and if true, force-fires
+`fireCataclysm` instead of the ordinary pool-and-pick, unconditionally
+bypassing `rs` entirely. `hasCataclysmFired` (mirroring `wasSaint`'s own
+"scan committed `Event`s for a specific `Outcome` constructor" shape)
+gates this to at most once per world. Every crossing after that falls
+through to the ordinary path, where `ruleCataclysm` is just another entry
+in `rules` — no `RuleSpec` (§8: a cataclysm binds no specific entities,
+so the `Slot`/CSP model doesn't fit), its own candidate list length set
+directly to `cataclysmWeight (wTuning w) w` copies of one candidate,
+rather than going through the static `ruleWeight` field every other
+weighted rule uses — the same dynamic, per-`World` self-weighting idiom
+`Historian.World.cultureBoost`/`apprenticeBoost` already established,
+applied here because the weight itself (age in elapsed calendar years via
+the new `worldAgeYears`, plus distinct active-culture count) isn't a
+constant `Rule` can carry. Because `stepWith` is shared by both `rules`
+and `rulesFromSpecs` (`generateViaEngine` calls `stepWith rulesFromSpecs`
+directly), the *guaranteed* firing applies to both — a `World`-level
+property anchored to its own calendar, not something that should depend
+on which rule-list happens to be driving it. The *ordinary* chance still
+only ever fires through `rules`, since only `rules` contains
+`ruleCataclysm` — matching the plan's "not wired into `rulesFromSpecs`"
+framing, which was about the ordinary weighted rule, not the one-time
+forced check.
+
+**Destruction, regard, and culture mutation all built as specified in
+§3/§4/§5** — `Historian.Rules.fireCataclysm` rolls survival independently
+per `Kind` (`rollDestroyed`), builds `Terminated`/`Slain` claims with no
+attestor/killer (a cataclysm has none to name — the same reasoning
+`Terminated`'s own `Nothing` case already carries, extended here to
+`Slain` for the first time: `Historian.Render.verbForFact` gained a
+`Slain`-with-no-object branch, "perished in the cataclysm", so a
+dossier's own fact line reads as a complete sentence rather than a
+dangling "was slain by" with nothing after it), then a regard pass over
+every surviving (society, Ward) pair with no existing stance
+(`regardOf`-guarded, same discipline `backfillWard`/`backfillPatron`
+use), then culture mutation (`Historian.World.mergeCultures`/
+`splitCulture`) over whichever cultures survived. Two `Tuning` fields the
+plan's own list didn't name explicitly —
+`tnCataclysmMergeChance`/`tnCataclysmSplitChance`, the per-pair/per-culture
+roll the plan's prose says happens ("rolled once per pair... rolled once
+per currently-active culture independently") but didn't give a knob for
+— filled in during implementation, the same "rolled" language every
+other per-pair/per-entity chance here already gets a field for.
+`mergeCultures`/`splitCulture` both end at a shared `registerCulture`
+(adds the synthesized culture to `wChains`/`wGrammars`/`wDynamicCultures`
+in one place) and `nameCultureFrom` (runs `markovWord`'s own throwaway-
+`Chain` idiom against the freshly assembled corpus — "the generator
+naming its own offspring with the same machinery it names everything
+else with," per the plan, not a bespoke naming rule). `sampleWithout`
+(sample-without-replacement, used by both to discard a combined/pooled
+fragment list back to roughly one parent's usual size) and
+`mutateFragment`/`mutateFragments` (split's own "modified somewhat" pass
+— drop a trailing letter, swap a vowel, or append one, each equally
+likely once a 30% per-fragment mutation chance actually fires) are new,
+general `Historian.World` helpers with no other callers yet.
+
+**A real severity finding, not just a tuning guess.** Probing real seeds
+before trusting the guaranteed mechanic at all (per this project's own
+"verify with a deterministic check, don't just sample" discipline)
+surfaced a genuine problem: the world's first calendar year-boundary
+crossing lands within the very first step or two after genesis — exactly
+"day 1" as the plan's own framing intended — but at that point the world
+has essentially nothing in it (one founder, one society). The survival
+percentages first guessed from the plan's own ordering constraint alone
+(Site > Item > Society > Person, no specific numbers given — "tuned
+empirically... during implementation," per the plan) turned out far too
+harsh at that population size: across 10 probed seeds at the initial
+guess (70/55/40/20), 6 ended with zero active societies for the *entire
+rest* of a 14-step run — a `Society`'s own 40% survival roll, or a lone
+founder's 20% survival roll, applied to a population of exactly one, is a
+coin-flip-grade risk of permanent extinction, not a rare "world-scale
+disaster." Flagged to the user directly rather than silently reseeding
+around a degenerate mechanic (a judgment call about tone/mechanics, not
+a constant to tune alone) — the user chose to soften survival odds
+globally rather than exempt the guaranteed firing's own destruction pass
+or accept the wipeout rate as intended. Retuned twice against real
+measurement (not guessed once and left): 85/70/55/... first, then
+97/93/90/85 (Site/Item/Society/Person) — cut the 60-seed, 14-step
+full-extinction rate from 6/10 (60%) down to roughly 12/60 (20%), the
+point where continuing to chase a lower number stopped being worth the
+diminishing returns against a mechanic that's supposed to carry *some*
+real risk. A mature, populous world still loses a meaningful absolute
+count at the same percentages — the tension between "gentle to a newborn
+world" and "still feels like a disaster to a developed one" is real and
+inherent to flat per-entity percentages, not fully resolved, and not
+attempted to be: the user's own choice was to soften the constants
+uniformly, not to add population-aware scaling (a larger, different
+design the plan never proposed).
+
+**RNG-cascade fallout, found and fixed the same way every past round of
+this size has been:** two per-seed witness slots in `seeds` (1 and 3)
+stopped producing a schism within `steps` — not a bug, genuinely bad luck
+for those two specific seeds now that a forced cataclysm can consume the
+first step or terminate the sole genesis society outright. Replaced with
+4 and 6, found via a compiled scanner (not interpreted `ghci` — a
+2000-seed, 40-step interpreted scan was abandoned mid-run for being far
+too slow; a `cabal exec ghc`-compiled one with the project's own
+`default-extensions` flags passed explicitly took seconds instead).
+`trialByCombatWitnessSeed`/`coupWitnessSeed` (182/420) needed the same
+treatment, replaced with 574/322 — both still comfortably inside
+`veryWideSeeds`' own `[1..1000]` range, matching that range's existing
+"comfortably inside with real margin" framing. The wide `aggregateSeeds`/
+`wideSeeds`/`veryWideSeeds` scans themselves needed no changes — wide
+enough pools that losing two specific lucky seeds within them didn't
+register as a failure.
+
+**Verified:** eleven new deterministic checks in `test/Spec.hs`
+(`cataclysmChecks`, 312 → 323) — `fireCataclysm` against a small
+hand-built world (two societies in genuinely different cultures, one
+extra member each, one site, one item) with every survival chance forced
+to 100 destroys nothing; forced to 0 destroys exactly one of each live
+`Kind`, with `Terminated`/`Slain` claims correctly object-less; regard
+forced to 100 (survival 100) records exactly 8 fresh claims (2 surviving
+societies × 4 surviving Wards, none with a prior stance) and only ever
+names real entities from that world; merge forced to 100 (survival 100,
+one culture pair) synthesizes exactly one culture whose grammar fragments
+are all drawn from its two parents' pools and genuinely registered in
+`wGrammars`; a synthetic culture inserted directly into `wGrammars` (with
+one-element fragment lists and every chance forced to a deterministic
+edge) produces an exact, predictable name — direct proof `syllableName`
+consults `wGrammars` rather than silently falling back to
+`nameGrammarFor`'s Vaurethine catch-all, the precise class of bug the
+themed-relic-naming incident already was; with the ordinary chance fully
+disabled (`tnCataclysmMaxWeight = 0`), every one of 20 seeds fires the
+guaranteed cataclysm exactly once, never zero, never more than one;
+`hasCataclysmFired`/`worldAgeYears` both read correctly at genesis, before
+any step has run. hlint/fourmolu clean. Full `cabal test` (323 checks,
+including the wide/very-wide scans) re-run clean after every reseed.
+Wasm cross-compile and `wasm/verify.mjs` not re-run for this item —
+cataclysm is deliberately not wired to any wasm export in this pass (§8's
+own scope), so nothing about the wire boundary changed.
+
+**Deliberately not attempted, per the plan's own scope:** wiring
+`ruleCataclysm` into `rulesFromSpecs`/the wasm stateful-handle boundary; a
+cataclysm-specific prophecy omen (§6); an `activeSites` filter (§3 —
+flagged as forward-looking, no current rule needs it); population-aware
+survival scaling (this decision's own severity-finding paragraph); the
+`nix develop .#notebooks` devshell (§10, tracked separately, not part of
+the generator itself).

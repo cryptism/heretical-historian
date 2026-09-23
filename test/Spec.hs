@@ -17,9 +17,10 @@ import Data.Maybe (catMaybes, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Historian.Corpus (allCultures, constructedSiteNouns, hailWords, hollowtongue, meanderClauses, mundaneItems, mundanePersons, naturalSiteNouns, omissionTexts, siteNouns, vaurethine)
+import Historian.Corpus (allCultures, constructedSiteNouns, hailWords, hollowtongue, meanderClauses, mundaneItems, mundanePersons, nameGrammarFor, naturalSiteNouns, omissionTexts, siteNouns, vaurethine)
 import Historian.Engine
 import Historian.Json (decodeTuningOverride, encodeQueryResult, encodeStepResult, encodeTuning, encodeWorld)
+import Historian.Markov (buildChain)
 import Historian.Render (applyIdiosyncrasies, chronicle, commitOutcomes, mention, miracleRelicClaims, miracleSaintClaims, pickNarrator, render, renderNeutral, renderWithVoice, toUpperA)
 import Historian.Rules (
   addPerson,
@@ -32,6 +33,7 @@ import Historian.Rules (
   defileSpec,
   destroyRelicSpec,
   dissolveSpec,
+  fireCataclysm,
   fireDispute,
   fireMiracleRelic,
   fireMiracleSaint,
@@ -102,9 +104,17 @@ instance FromJSON WireWorld where
 -- branch) knocked out 99; the culture-mixing and backstory RNG additions
 -- inside `fireSchism` itself (`driftCulture`, `foundingPurposeClaim`,
 -- `apprenticeshipClaim`) knocked out 4 in turn. Verified 5 still passes
--- every other checksFor assertion too.
+-- every other checksFor assertion too. 1 and 3 replaced with 4 and 6
+-- (work item 26's own cascade): the guaranteed day-1 cataclysm now fires
+-- inside `stepWith` before `steps` = 14 is up, and for seeds 1 and 3 it
+-- happened to terminate the sole genesis society (1) or leave it alive
+-- but too depleted to ever schism within the remaining steps (3) — not a
+-- bug, just genuinely bad luck for those two specific seeds under the new
+-- mechanic (see Decision 49 for the wider RNG-cascade account, including
+-- why survival odds were retuned rather than left as first guessed).
+-- Verified 4 and 6 still pass every other checksFor assertion too.
 seeds :: [Int]
-seeds = [1, 2, 3, 42, 5]
+seeds = [4, 2, 6, 42, 5]
 
 -- | A much wider pool used only by the aggregate existence checks below.
 -- Every rule or RNG-consumption change reshuffles the entire downstream
@@ -168,10 +178,13 @@ veryWideSeeds = [1 .. 1000]
 -- the multi-minute hunt a shrunk 'veryWideSeeds' would otherwise need.
 -- Re-pin these, the same way 'seeds'\/`richWorld`'s own witnesses already
 -- get re-pinned, whenever an RNG-cascade change knocks either one out —
--- found via 'veryWideSeeds' own scan, not guessed.
+-- found via 'veryWideSeeds' own scan, not guessed. Re-pinned once already:
+-- 182\/420 replaced with 574\/322 (work item 26's own guaranteed day-1
+-- cataclysm reshuffled the cascade — same account as 'seeds's own
+-- Haddock, Decision 49).
 trialByCombatWitnessSeed, coupWitnessSeed :: Int
-trialByCombatWitnessSeed = 182
-coupWitnessSeed = 420
+trialByCombatWitnessSeed = 574
+coupWitnessSeed = 322
 
 steps :: Int
 steps = 14
@@ -401,7 +414,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks ++ cataclysmChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -1725,6 +1738,217 @@ addSocietyChecks =
       runState (addSociety (Just "The Ember Choir") Nothing Nothing (Just "For the glory of the Ember Choir") >>= \os -> os <$ commitOutcomes os) (emptyWorld 6)
     (noPurposeOutcomes, noPurposeWorld) =
       runState (addSociety (Just "The Quiet Choir") Nothing Nothing Nothing >>= \os -> os <$ commitOutcomes os) (emptyWorld 7)
+
+-- | Work item 26 (@.claude/docs/plans/26-major-events-cataclysm.md@):
+-- cataclysms. Following this project's own established discipline (see
+-- feedback memory: verify with a deterministic hand-built check before
+-- trusting sampling) — every check below forces its own outcome to a
+-- deterministic edge (a Tuning override at 0 or 100, or a hand-built
+-- world), not a lucky seed.
+
+-- | Backfill\/drift\/theming chances all forced off, so 'buildCataclysmWorld'
+-- mints exactly the entities it asks for and nothing more — the same
+-- "no surprise extras" discipline every other exact-count hand-built
+-- world in this file needs, just reached through a Tuning override here
+-- rather than a raw record ('richWorld's own approach) since this world
+-- is built via ordinary minting calls.
+quietTuning :: Tuning
+quietTuning =
+  defaultTuning
+    { tnBackfillWeights = (0, 0, 100)
+    , tnCultureDriftChance = 0
+    , tnFoundingPurposeChance = 0
+    , tnApprenticeshipChance = 0
+    , tnThemedItemNameChance = 0
+    , tnRuinsNameChance = 0
+    , tnSiteOriginChance = 0
+    , tnMundaneMiracleChance = 0
+    }
+
+-- | Two societies in genuinely different cultures (so the culture-mutation
+-- checks below have two distinct parents to draw from), one extra living
+-- member each, one site, one item — built via ordinary minting
+-- ('newSocietyNamed'\/'newPersonNamed'\/'newSite'\/'newItem'), not a
+-- bespoke record, so it goes through the same 'wChains'\/'wGrammars'\/
+-- 'wNameSubstrings' bookkeeping any real generation does. Membership
+-- ('LeaderOf'\/'Leads') recorded directly, the same shape 'addPerson'
+-- itself uses.
+buildCataclysmWorld :: Chronicle (EntityId, EntityId, EntityId, EntityId, EntityId, EntityId)
+buildCataclysmWorld = do
+  (s1, _) <- newSocietyNamed vaurethine (Just "Vaurethine Cult")
+  (s2, _) <- newSocietyNamed hollowtongue (Just "Hollow Cult")
+  p1 <- newPersonNamed vaurethine (Just "Person One")
+  p2 <- newPersonNamed hollowtongue (Just "Person Two")
+  record
+    "test-setup"
+    ""
+    [ Claim p1 LeaderOf (Just (ROf s1)) (Just s1) Nothing
+    , Claim p1 Leads (Just (ROf s1)) (Just s1) Nothing
+    , Claim p2 LeaderOf (Just (ROf s2)) (Just s2) Nothing
+    , Claim p2 Leads (Just (ROf s2)) (Just s2) Nothing
+    ]
+  st <- newSite vaurethine
+  (item, _) <- newItem vaurethine Nothing
+  pure (s1, s2, p1, p2, st, item)
+
+cataclysmIds :: (EntityId, EntityId, EntityId, EntityId, EntityId, EntityId)
+cataclysmSetup :: World
+(cataclysmIds, cataclysmSetup) = runState buildCataclysmWorld (emptyWorldWith 999 quietTuning)
+
+cS1, cS2, cP1, cP2, cSt, cItem :: EntityId
+(cS1, cS2, cP1, cP2, cSt, cItem) = cataclysmIds
+
+-- | Every survival chance at 100, regard\/merge\/split all at 0 — nothing
+-- should be destroyed, no fresh regard, no synthesized culture.
+allSurviveTuning :: Tuning
+allSurviveTuning =
+  defaultTuning
+    { tnCataclysmSiteSurvival = 100
+    , tnCataclysmItemSurvival = 100
+    , tnCataclysmSocietySurvival = 100
+    , tnCataclysmPersonSurvival = 100
+    , tnCataclysmRegardChance = 0
+    , tnCataclysmMergeChance = 0
+    , tnCataclysmSplitChance = 0
+    }
+
+-- | Every survival chance at 0 — everything currently live should be
+-- destroyed, exactly once each; regard\/merge\/split still off so this
+-- check isolates the destruction pass alone.
+allDieTuning :: Tuning
+allDieTuning = allSurviveTuning {tnCataclysmSiteSurvival = 0, tnCataclysmItemSurvival = 0, tnCataclysmSocietySurvival = 0, tnCataclysmPersonSurvival = 0}
+
+-- | Survival still 100 (nothing destroyed, so every entity from
+-- 'buildCataclysmWorld' is still a candidate) but regard forced to 100 —
+-- every eligible (society, Ward) pair with no existing stance should get
+-- a fresh claim.
+allRegardTuning :: Tuning
+allRegardTuning = allSurviveTuning {tnCataclysmRegardChance = 100}
+
+-- | Survival still 100, merge forced to 100 (split off, so this isolates
+-- merge alone) — the one culture pair here (Vaurethine\/Hollowtongue)
+-- should merge exactly once.
+allMergeTuning :: Tuning
+allMergeTuning = allSurviveTuning {tnCataclysmMergeChance = 100}
+
+fireOn :: Tuning -> (Outcome, World)
+fireOn tuning =
+  let w0 = cataclysmSetup {wTuning = tuning}
+      (outcomes, w1) = runState (fireCataclysm w0) w0
+   in (firstOrErr "fireCataclysm produced no outcome" outcomes, w1)
+
+cataclysmOutcome :: Outcome -> CataclysmOutcome
+cataclysmOutcome (Cataclysm o) = o
+cataclysmOutcome _ = error "cataclysmOutcome: not a Cataclysm outcome"
+
+-- | A synthetic culture with obviously distinctive fragments, inserted
+-- directly into 'wGrammars'\/'wChains' — bypassing 'mergeCultures'\/
+-- 'splitCulture' entirely. This is the exact class of bug the
+-- themed-relic-naming incident already was: a feature that looks like it
+-- works from sampling alone but has a systemic collision with an
+-- unrelated code path (there, the collision-rejection guard; here, a
+-- missing\/wrong 'wGrammars' lookup falling back to
+-- 'Historian.Corpus.nameGrammarFor's catch-all, which is 'vaureGrammar').
+-- Every knob forced to a deterministic edge (100\/0\/one-element lists)
+-- so the produced name has exactly one possible value regardless of RNG
+-- state — proof 'syllableName' actually consulted this grammar, not a
+-- sample that could coincidentally look right.
+syntheticCulture :: Culture
+syntheticCulture = Culture "TestSynthetic"
+
+syntheticGrammar :: NameGrammar
+syntheticGrammar =
+  NameGrammar
+    { ngPrefixes = ["zzq"]
+    , ngRoots = ["xxr"]
+    , ngSuffixes = ["yyw"]
+    , ngMaxSyllables = 1
+    , ngPrefixChance = 100
+    , ngSuffixChance = 100
+    , ngHyphenChance = 0
+    }
+
+syntheticWorld :: World
+syntheticWorld =
+  let w0 = emptyWorld 1
+   in w0
+        { wGrammars = M.insert syntheticCulture syntheticGrammar (wGrammars w0)
+        , wChains = M.insert syntheticCulture (buildChain 3 ["zzqxxryyw"]) (wChains w0)
+        }
+
+-- | Ordinary (non-guaranteed) cataclysm chance fully disabled — 'min 0'
+-- floors 'cataclysmWeight' to 0 regardless of age\/cult count, so
+-- 'ruleCataclysm's own candidate list is always empty. Isolates the
+-- guaranteed first-year-crossing firing ('stepWith's own check) from the
+-- ordinary one for the "fires exactly once, ever" check below.
+noOrdinaryCataclysm :: Tuning
+noOrdinaryCataclysm = defaultTuning {tnCataclysmMaxWeight = 0}
+
+cataclysmEventCount :: Int -> Int
+cataclysmEventCount seed = length [e | e <- M.elems (wEvents (generateWith seed 30 noOrdinaryCataclysm)), evKind e == "cataclysm"]
+
+cataclysmChecks :: [(Bool, Text)]
+cataclysmChecks =
+  [
+    ( M.null (cyDestroyedCounts (cataclysmOutcome (fst (fireOn allSurviveTuning))))
+        && null (cyClaims (cataclysmOutcome (fst (fireOn allSurviveTuning))))
+    , "Direct: fireCataclysm with every survival chance at 100 destroys nothing"
+    )
+  ,
+    ( cyDestroyedCounts (cataclysmOutcome (fst (fireOn allDieTuning)))
+        == M.fromList [(Site, 1), (Item, 1), (Society, 2), (Person, 2)]
+    , "Direct: fireCataclysm with every survival chance at 0 destroys exactly every live entity of each kind, once each"
+    )
+  ,
+    ( let claims = cyClaims (cataclysmOutcome (fst (fireOn allDieTuning)))
+       in length [c | c <- claims, clPred c == Terminated, clSubject c `elem` [cS1, cS2, cSt, cItem]] == 4
+            && length [c | c <- claims, clPred c == Slain, clSubject c `elem` [cP1, cP2]] == 2
+            && all (isNothing . clObject) claims
+    , "Direct: a full-wipe cataclysm's own claims have no single attestor/killer to name (Terminated/Slain both object-less)"
+    )
+  ,
+    ( length (cyNewRegard (cataclysmOutcome (fst (fireOn allRegardTuning)))) == 8
+    , "Direct: fireCataclysm with regard forced to 100 (survival 100, so 2 societies x 4 surviving Wards, none with an existing stance) records exactly 8 fresh regard claims"
+    )
+  ,
+    ( all (\(s, ward, _) -> s `elem` [cS1, cS2] && ward `elem` [cP1, cP2, cSt, cItem]) (cyNewRegard (cataclysmOutcome (fst (fireOn allRegardTuning))))
+    , "Direct: fireCataclysm's fresh regard claims are only ever (surviving society, surviving Ward) pairs from this world, nothing stray"
+    )
+  ,
+    ( let o = cataclysmOutcome (fst (fireOn allMergeTuning))
+       in length (cySynthesizedCultures o) == 1
+    , "Direct: fireCataclysm with merge forced to 100 (survival 100, one culture pair) synthesizes exactly one new culture"
+    )
+  ,
+    ( let (o, w1) = fireOn allMergeTuning
+       in case cySynthesizedCultures (cataclysmOutcome o) of
+            [(newCulture, parents)] ->
+              let parentPool sel = nub (concatMap (sel . nameGrammarFor) parents)
+                  newGrammar = M.findWithDefault (nameGrammarFor newCulture) newCulture (wGrammars w1)
+               in parents == [vaurethine, hollowtongue]
+                    && all (`elem` parentPool ngPrefixes) (ngPrefixes newGrammar)
+                    && all (`elem` parentPool ngRoots) (ngRoots newGrammar)
+                    && all (`elem` parentPool ngSuffixes) (ngSuffixes newGrammar)
+            _ -> False
+    , "Direct: a merged culture's own grammar fragments are all drawn from its two parents' pools, registered in wGrammars"
+    )
+  ,
+    ( evalState (syllableName syntheticCulture) syntheticWorld == "Zzqxxryyw"
+    , "Direct: syllableName actually consults wGrammars for a culture it's never built in — proof against silently falling back to nameGrammarFor's Vaurethine catch-all"
+    )
+  ,
+    ( all (\s -> cataclysmEventCount s == 1) [1 .. 20]
+    , "Direct: with the ordinary chance fully disabled, every one of 20 seeds fires exactly one cataclysm (the guaranteed first-year-crossing one), never zero, never more than one"
+    )
+  ,
+    ( all (\s -> not (hasCataclysmFired (genesisWorldWith s noOrdinaryCataclysm))) [1 .. 20]
+    , "Direct: hasCataclysmFired is False right after genesis, before any step has run — the guaranteed firing hasn't happened yet"
+    )
+  ,
+    ( all (\s -> worldAgeYears (genesisWorld s) == 0) [1 .. 20]
+    , "Direct: worldAgeYears is 0 at genesis, before any epoch has advanced"
+    )
+  ]
 
 -- | Work item 24 (@.claude/docs/plans/24-ttrpg-cult-export.md@), Tiers 1-2:
 -- the additive @significance@ wire field, the two seed-scoped generation
