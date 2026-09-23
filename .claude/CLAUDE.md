@@ -836,7 +836,11 @@ unbuilt rule.
     backfill recursion depth) — item 26's own plan §10, split out as its
     own work-queue item since it's tooling, not a generator change.
     Reads batch `--json` CLI runs rather than needing any new
-    Haskell-side export. Not started.
+    Haskell-side export. **The devshell itself is built** (`flake.nix`,
+    `python3`/`jupyter`/`pandas`/`numpy`/`matplotlib`, evaluated but not
+    yet exercised with a full package build). **The actual notebooks are
+    not started** — no exploratory analysis of any of the four
+    distributions named above has been written yet.
 
 ## Things not to do
 
