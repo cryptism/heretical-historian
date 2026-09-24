@@ -4406,3 +4406,40 @@ flagged as forward-looking, no current rule needs it); population-aware
 survival scaling (this decision's own severity-finding paragraph); the
 `nix develop .#notebooks` devshell (§10, tracked separately, not part of
 the generator itself).
+
+### Follow-up: the ordinary (non-guaranteed) chance retuned against real notebook data
+
+Built the same day, once §10's own notebook (work item 27) was built and
+run for the first time. First real measurement of `cataclysmWeight`'s
+practical effect, rather than the "tuned empirically... during
+implementation" placeholder the plan itself flagged for these four
+constants: across 1000 seeds at 60 steps, 76.1% of runs saw a *second*
+cataclysm within the run (the ordinary chance, not the guaranteed one),
+averaging ~14.5 firings per run — nowhere near the "rare, world-scale
+disaster" framing this tier is supposed to be. The root cause reads the
+same way the survival-tuning finding above did: `tnCataclysmBaseWeight
+= 1` gave the ordinary chance a permanent floor of at least one
+candidate from the moment a world is born, which dominates a pool other
+rules can only fill sparsely in a young or already-depleted world — the
+same "flat weight against a thin population" dynamic, just on the
+*candidate-count* axis this time instead of the *survival-percentage*
+one.
+
+Retuned: `tnCataclysmBaseWeight`/`tnCataclysmYearsPerWeight`/
+`tnCataclysmCultsPerWeight`/`tnCataclysmMaxWeight`, `1/50/2/15` →
+`0/150/4/6` — zero floor (a cataclysm now has to actually earn a place
+in the pool via real age or cultural diversity, never for free), slower
+per-year/per-culture accrual, and a much lower ceiling. Re-measured
+against a fresh 1000-seed batch: the second-cataclysm rate dropped to
+0.1% at 60 steps. Checked this wasn't an overcorrection into
+permanently-dead territory, not just assumed: a separate 100-seed batch
+at 300 steps found 38% saw a second cataclysm — negligible within a
+short run, genuinely reachable over a long one, the same shape
+`rivalryRuleWeight`'s own tuning already established as this project's
+norm for a rare-but-real event (Decision 41).
+
+One further witness-seed reseed: `trialByCombatWitnessSeed` 574 → 652
+(`coupWitnessSeed`'s 322 survived this round). `cabal test` held at 323
+checks — a pure constant retune, no new assertions needed; the existing
+`cataclysmChecks` don't pin exact weight values, only behavior at forced
+0/100 edges, so none needed updating either.

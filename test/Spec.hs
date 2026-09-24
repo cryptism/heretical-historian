@@ -178,12 +178,12 @@ veryWideSeeds = [1 .. 1000]
 -- the multi-minute hunt a shrunk 'veryWideSeeds' would otherwise need.
 -- Re-pin these, the same way 'seeds'\/`richWorld`'s own witnesses already
 -- get re-pinned, whenever an RNG-cascade change knocks either one out —
--- found via 'veryWideSeeds' own scan, not guessed. Re-pinned once already:
+-- found via 'veryWideSeeds' own scan, not guessed. Re-pinned twice now:
 -- 182\/420 replaced with 574\/322 (work item 26's own guaranteed day-1
--- cataclysm reshuffled the cascade — same account as 'seeds's own
--- Haddock, Decision 49).
+-- cataclysm, Decision 49); 574 replaced with 652 (the same item's
+-- cataclysm-weight retune right after — 322 survived that one).
 trialByCombatWitnessSeed, coupWitnessSeed :: Int
-trialByCombatWitnessSeed = 574
+trialByCombatWitnessSeed = 652
 coupWitnessSeed = 322
 
 steps :: Int

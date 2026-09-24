@@ -830,6 +830,24 @@ unbuilt rule.
     boundary; a cataclysm-specific prophecy omen; population-aware
     survival scaling; the `nix develop .#notebooks` devshell (tracked as
     its own follow-up below, not part of the generator itself).
+    **Follow-up, same day, once item 27's own notebook surfaced a real
+    number:** the *ordinary* (non-guaranteed) chance was nowhere near
+    rare — 76.1% of runs saw a second cataclysm within 60 steps, ~14.5
+    per run on average. `tnCataclysmBaseWeight`/`tnCataclysmYearsPerWeight`/
+    `tnCataclysmCultsPerWeight`/`tnCataclysmMaxWeight` retuned
+    1/50/2/15 → 0/150/4/6 — zero baseline weight (a cataclysm shouldn't
+    compete for the pool at all until the world has genuinely aged or
+    diversified, not float a floor of 1 from the moment it's born) and a
+    much lower ceiling. Re-measured against a fresh 1000-seed batch: the
+    second-cataclysm rate dropped to 0.1% at 60 steps — and confirmed
+    *not* permanently dead, just genuinely rare, by re-checking a
+    100-seed batch at 300 steps, where 38% saw a second one, the
+    "reachable over a long history, not within one short run" shape
+    `rivalryRuleWeight`'s own tuning already established as this
+    project's norm for a rare event. One more witness-seed reseed needed:
+    `trialByCombatWitnessSeed` 574 → 652 (`coupWitnessSeed`'s 322
+    survived this one). `cabal test` held at 323 checks — a pure constant
+    retune, no new checks needed.
 27. ~~A `nix develop .#notebooks` devshell for exploratory Jupyter
     notebooks over rare-event distributions.~~ Done (2026-09-24, brought
     forward from "next week" at direct user request once token budget
@@ -850,14 +868,15 @@ unbuilt rule.
     claims, not exact depth instrumentation, since the wire format carries
     no depth tag). **A real empirical finding surfaced by the first
     run** (1000 seeds, 60 steps): the *ordinary* (non-guaranteed)
-    cataclysm chance is not rare in practice — 76.1% of runs see a second
-    cataclysm within 60 steps, and the per-run count averages ~14.5 (some
-    worlds hit on nearly every single step). Flagged, not acted on here —
-    a real candidate follow-up for retuning `tnCataclysmBaseWeight`/
-    `tnCataclysmYearsPerWeight`/`tnCataclysmCultsPerWeight`/
-    `tnCataclysmMaxWeight`, the same way `rivalryRuleWeight` was tuned
-    against a real distribution in Decision 41, but a separate decision
-    from building the notebook that found it.
+    cataclysm chance was not rare in practice — 76.1% of runs saw a second
+    cataclysm within 60 steps, and the per-run count averaged ~14.5 (some
+    worlds hit on nearly every single step). **Acted on the same day, at
+    direct user request** — see item 26's own follow-up entry for the
+    retune and the re-measured, much healthier numbers (0.1% at 60 steps,
+    confirmed still reachable over a longer 300-step horizon). This is
+    exactly the loop this notebook exists to close: find a real number,
+    retune against it, re-measure to confirm — not just a one-shot
+    "build the tooling and stop."
 
 ## Things not to do
 
