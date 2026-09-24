@@ -4,3 +4,9 @@ dist-newstyle/
 *.o
 result
 result-*
+
+# notebooks/data/: regenerated batch --json CLI output the notebooks
+# read (notebooks/generate_dataset.sh) — large, derived, and
+# regeneratable, so not checked in. See CLAUDE.md work queue item 27.
+notebooks/data/
+.ipynb_checkpoints/

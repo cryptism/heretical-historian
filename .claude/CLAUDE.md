@@ -830,21 +830,34 @@ unbuilt rule.
     boundary; a cataclysm-specific prophecy omen; population-aware
     survival scaling; the `nix develop .#notebooks` devshell (tracked as
     its own follow-up below, not part of the generator itself).
-27. A `nix develop .#notebooks` devshell for exploratory Jupyter
-    notebooks over rare-event distributions (cataclysm timing,
-    rivalry/trial-by-combat/coup frequency, prophecy fulfillment lag,
-    backfill recursion depth) — item 26's own plan §10, split out as its
-    own work-queue item since it's tooling, not a generator change.
-    Reads batch `--json` CLI runs rather than needing any new
-    Haskell-side export. **The devshell itself is built** (`flake.nix`,
-    `python3`/`jupyter`/`pandas`/`numpy`/`matplotlib`, evaluated but not
-    yet exercised with a full package build). **The actual notebooks are
-    not started** — no exploratory analysis of any of the four
-    distributions named above has been written yet. Deferred to next
-    week's work at the user's request (2026-09-24): not a feature, so it
-    loses out to whatever feature work is live in a given week's token
-    budget. Parked, not abandoned — pick it up when a new week starts or
-    the user asks what's next.
+27. ~~A `nix develop .#notebooks` devshell for exploratory Jupyter
+    notebooks over rare-event distributions.~~ Done (2026-09-24, brought
+    forward from "next week" at direct user request once token budget
+    allowed) — item 26's own plan §10. `notebooks/generate_dataset.sh`
+    (bash, not Nushell — same flake-script carve-out as
+    `wasm/patch-reactor.sh`) drives the `historian` CLI's `--json` output
+    across a wide seed range into `notebooks/data/runs.jsonl` (gitignored
+    — regeneratable, not source; 1000 seeds × 60 steps ≈ 80MB, default);
+    `notebooks/build_notebook.py` generates `notebooks/rare_events.ipynb`
+    from plain Python cell definitions, executed via `jupyter nbconvert
+    --execute` so the checked-in notebook already carries real output
+    (plots, stats), not just code. Covers all four distributions the plan
+    named: cataclysm timing (event index, days since genesis, and count
+    per run), trial-by-combat/coup incidence, prophecy fulfillment lag
+    (reconstructed from `Fulfilled`'s `REvent` object pointing back at the
+    prophecy's own event), and backfill recursion depth (a stated proxy —
+    connected-component size over `"backstory"`-attested `Venerates`
+    claims, not exact depth instrumentation, since the wire format carries
+    no depth tag). **A real empirical finding surfaced by the first
+    run** (1000 seeds, 60 steps): the *ordinary* (non-guaranteed)
+    cataclysm chance is not rare in practice — 76.1% of runs see a second
+    cataclysm within 60 steps, and the per-run count averages ~14.5 (some
+    worlds hit on nearly every single step). Flagged, not acted on here —
+    a real candidate follow-up for retuning `tnCataclysmBaseWeight`/
+    `tnCataclysmYearsPerWeight`/`tnCataclysmCultsPerWeight`/
+    `tnCataclysmMaxWeight`, the same way `rivalryRuleWeight` was tuned
+    against a real distribution in Decision 41, but a separate decision
+    from building the notebook that found it.
 
 ## Things not to do
 
