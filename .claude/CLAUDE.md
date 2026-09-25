@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (361 checks — seeds 4/2/6/42/5 for
+Builds and passes `cabal test` (370 checks — seeds 4/2/6/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -915,7 +915,17 @@ unbuilt rule.
     one) used to pass from history almost as soon as they appeared.
     `.claude/docs/EVENTS.md` has the existing sketch under Dissolution.
 29. Incremental working memory — a production rule system over a
-    derived-relation index. **Stage 1 done; its premise was wrong, and the
+    derived-relation index. **Stages 1 and 3 done; stage 2 dropped as poorly
+    motivated.** Stage 3 (`SlotFill`, .claude/docs/DESIGN.md Decision 51) is
+    what actually fixed it: a rule's precondition now lives in its slots
+    where the engine can read it, so `firesUnder` is "is the solution set
+    non-empty" and the speculative `rsFire` probe is gone. Native
+    `slotOptions` 12.9ms -> 0.3ms; through the wasm 1154.7ms -> 1.4ms per
+    rule once the export stopped shipping a full dossier per candidate
+    (~40 KiB and ~440ms each). Verified in both directions against
+    `assignmentsPermissive` plus a real probe; 370 checks, no witness seed
+    moved. **Stage 1 notes below kept because its premise being wrong is the
+    useful part of the record.** Stage 1 done; its premise was wrong, and the
     plan's own "Measured outcome" section records why.** The index exists
     (`Historian.Types.Derived`, maintained by `Historian.World.assertFacts`,
     with the old scans kept as `...ByScan` oracles and 12 equivalence checks

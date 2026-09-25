@@ -4544,3 +4544,90 @@ and after adding it cabal reconfigures without relinking, so the built
 `.wasm` silently keeps the old export table. Both new exports appeared to
 be missing for two full build cycles for that reason. Deleting the
 executable's `dist-newstyle` directory is what actually forces the relink.
+
+## Decision 51: `SlotFill` — a rule's precondition where the engine can read it, and the probe retired
+
+**Needed for:** work item 29 stage 3, and the end of the thread that started
+with the user reporting that INFLUENCE.SYS offered events which then didn't
+happen. Stage 1 (indexing the fact-log scans) was measured and did not touch
+the cost; the plan's "Measured outcome" section records why. This is the fix.
+
+**The missing state.** `Slot`'s fill was a `Bool` and could say two things:
+mint one if nothing qualifies, or may be left empty. Most rules need a third —
+*must be filled from what already exists, and if nothing qualifies the rule
+does not apply*. Lacking a way to say it, twenty-five slots across the rule set
+were marked not-required and each rule restated the real condition inside its
+own `rsFire` as a pattern match returning no outcomes:
+
+```haskell
+fire w assignment = case assignment of
+  [Just site, Just h] -> ...
+  _ -> pure []          -- the precondition, where nothing can read it
+```
+
+That single modelling gap caused both defects. `runnable` inspects only
+required slots, so `defileSpec` — every slot "optional" — read runnable in
+every world while its firing produced nothing. And `allAssignments` offered
+the all-empty assignment as a solution, so the only way to know whether a rule
+would fire was `firesUnder` running it speculatively under `evalState` and
+discarding the result (Decision 50).
+
+**`SlotFill = Mint | Optional | Demanded`.** With the distinction named, the
+assignment space contains only assignments that fire, so:
+
+```haskell
+firesUnder w rs hints = not (null (assignmentsUnder w rs hints))
+```
+
+No probe, no speculative minting. `allAssignments` became `assignmentsUnder w
+rs []` — one search rather than two that had drifted into offering different
+option sets for the same slot. Exactly five slots in the whole rule set are
+genuinely `Optional` (a schism's heresiarch, a battle's site, a sanctify's
+site, a miracle's saint and relic); the other twenty-five are `Demanded`.
+
+**Verified in both directions, not asserted.** `assignmentsPermissive` keeps
+the pre-stage-3 space as an oracle, and the suite proves that filtering *it* by
+a real `rsFire` probe reproduces `assignmentsUnder` exactly — soundness (every
+assignment yielded does fire; the direction that would restore the original
+bug) and completeness (every assignment that fires is yielded; the direction
+nothing else in the suite would notice, since over-constraining a rule only
+makes real histories quietly unreachable). Plus non-vacuity checks that the
+permissive space is strictly larger somewhere, and that some firing assignment
+still leaves a slot empty. `cabal test` 361 → 370.
+
+**Two checks were inverted rather than deleted.** Stage 1 had added assertions
+*documenting* the bug — that `defileSpec` reads runnable while its solution set
+is non-empty, and that its all-empty assignment fires nothing. Stage 3 made
+both false. They now assert the fixed behaviour and keep the history in their
+labels; the suite catching them is what confirms stage 3 changed the thing
+stage 1 described.
+
+**No witness seed moved, and the reason is worth knowing.** The plan predicted
+re-pinning. It wasn't needed, because `Historian.Rules.generate` (which almost
+every check uses) runs the legacy `step`/`Rule` path, not
+`intelligentStep`/`StepAny`. World fingerprints across 50–250 steps are
+byte-identical before and after. `stepAutonomous` — the wasm's
+`historian_step` — *did* change, and for the better: `StepAny` draws from
+`allAssignments`, so it can no longer pick an assignment that commits no
+outcomes. A silently wasted autonomous step is now impossible. That divergence
+is why wasm-side before/after timings are not directly comparable and had to be
+compared per candidate.
+
+**`runnable` was deliberately left alone.** It still means "every `Mint` slot
+has a candidate" and remains a cheap hint, not the left-hand side. Tightening
+it to consult `Demanded` slots would have to use the empty-context check, which
+is exactly the too-strict reading Decision 35's follow-up already rejected.
+Nothing depends on it for correctness now.
+
+**A second cost, found only because stage 3 exposed it.** With the search at a
+fraction of a millisecond, `historian_slot_options` was still over a second per
+call — and it was the wrapper, not the engine: it built a full `EntityDossier`
+per candidate, each carrying that entity's whole fact history, for every slot
+at once. Measured at roughly 40 KiB and 440ms of encoding *per candidate*, so
+one dropdown refresh moved ~100 KiB. Candidates are now `{id, name, kind}`;
+a host wanting one entity's history asks `historian_query` for that one.
+
+**Measured, same world, 250 steps.** Native `slotOptions` 12.9ms → 0.3ms.
+Through the wasm, per rule: 1154.7ms → 1.4ms, payload 97.4 KiB → 0.8 KiB. A
+30-cycle open/narrow/fire soak in `hh-site` went 39.6s → ~3.1s. And 120 casts
+across four random worlds still fire 30/30 with nothing declining.

@@ -21,7 +21,7 @@ import qualified Data.Aeson.Types as Aeson (Parser, parseMaybe)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
-import Historian.Engine (EntityDossier (..), PoolAmbiguity (..), RuleSpec (..), Slot (..), SlotHint (..), runnable)
+import Historian.Engine (EntityDossier (..), PoolAmbiguity (..), RuleSpec (..), Slot (..), SlotFill (..), SlotHint (..), runnable, slotRequired)
 import Historian.Types
 import Historian.World (dateOf, nameIn, propertyOf)
 
@@ -113,6 +113,7 @@ encodeRuleCatalogue w specs =
           .= [ object
               [ "kind" .= kindText (slotKind slot)
               , "required" .= slotRequired slot
+              , "fill" .= fillText (slotFill slot)
               ]
              | slot <- rsSlots rs
              ]
@@ -156,16 +157,26 @@ encodeNextSlotFromPool w = \case
 -- means this combination produces no event, so a host should refuse to
 -- submit it rather than let the engine decline silently. Each slot then
 -- carries every entity that could go *there* while still leaving the rule
--- firing, as a full 'dossierJson' so a picker has names and 'Kind's
--- without a second call per candidate — the same shape
--- 'encodeNextSlotFromPool' publishes its candidates in.
+-- firing.
+--
+-- Candidates are @{id, name, kind}@ and deliberately *not* full
+-- 'dossierJson' values, which is what this published at first and which
+-- made it unusably slow. A dossier carries the entity's whole fact history,
+-- and this call reports candidates for every slot at once: measured, that
+-- came to roughly 40 KiB and 440ms of encoding *per candidate*, so a single
+-- refresh of one dropdown shipped ~100 KiB and took over a second — while
+-- the search underneath it took a fraction of a millisecond. A picker needs
+-- a label and an id; a host that wants the history of one entity the user
+-- actually selected can ask @historian_query@ for that one. Distinct from
+-- 'encodeNextSlotFromPool', which reports a single slot and can afford
+-- dossiers.
 --
 -- Every slot is reported, including ones the caller has already pinned and
 -- ones before the slot just changed: narrowing runs in both directions
 -- here, unlike 'encodeNextSlotFromPool'\'s single next-open-slot answer,
 -- so there is no such thing as a slot whose domain a host can assume
 -- unchanged.
-encodeSlotOptions :: World -> Bool -> [(Int, Slot, [EntityDossier])] -> BSL.ByteString
+encodeSlotOptions :: World -> Bool -> [(Int, Slot, [EntityId])] -> BSL.ByteString
 encodeSlotOptions w fires slots =
   Aeson.encode $
     object
@@ -175,7 +186,8 @@ encodeSlotOptions w fires slots =
               [ "slotIndex" .= i
               , "slotKind" .= kindText (slotKind slot)
               , "required" .= slotRequired slot
-              , "candidates" .= map (dossierJson w) candidates
+              , "fill" .= fillText (slotFill slot)
+              , "candidates" .= map (candidateJson w) candidates
               ]
              | (i, slot, candidates) <- slots
              ]
@@ -220,6 +232,32 @@ decodeSlotHints bs = case Aeson.decode bs :: Maybe [Value] of
     toHint (Number n) = HintEntity (EntityId (round n))
     toHint (String "fresh") = HintFresh
     toHint _ = HintRandom
+
+-- | An entity as a picker needs it: enough to label an option and send the
+-- choice back, and nothing else. See 'encodeSlotOptions' for why this is not
+-- a 'dossierJson'.
+candidateJson :: World -> EntityId -> Value
+candidateJson w e =
+  object
+    [ "id" .= unEntityId e
+    , "name" .= nameIn w e
+    , "kind" .= fmap (kindText . entKind) (M.lookup e (wEntities w))
+    ]
+
+-- | 'Historian.Engine.SlotFill' on the wire.
+--
+-- Published alongside @required@ rather than replacing it: @required@ still
+-- answers the coarser "does this slot always end up filled", which is what a
+-- host greying out an optional dropdown wants, and every existing consumer
+-- already reads it. @fill@ is the finer distinction that host could not
+-- previously make — @"demanded"@ means the slot must be filled from what
+-- exists and the rule does not apply otherwise, which is exactly the
+-- condition that used to be buried in a rule's own firing function.
+fillText :: SlotFill -> Text
+fillText = \case
+  Mint -> "mint"
+  Optional -> "optional"
+  Demanded -> "demanded"
 
 entityJson :: World -> Entity -> Value
 entityJson w e =

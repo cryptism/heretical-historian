@@ -15,7 +15,7 @@ import qualified Data.Map.Strict as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Text (Text)
 import Historian.Corpus (allCultures, curseFramings, defaultFraming, disputedFramings, prophecyFramings, vaurethine)
-import Historian.Engine (RuleSpec (..), Slot (..), allAssignments)
+import Historian.Engine (RuleSpec (..), Slot (..), SlotFill (..), allAssignments)
 import Historian.Render
 import Historian.Types
 import Historian.World
@@ -251,8 +251,8 @@ schismSpec =
   RuleSpec
     { rsName = "schism"
     , rsSlots =
-        [ Slot Society (\w _ s -> s `elem` activeSocieties w && ageOf w s >= 1) True
-        , Slot Person heresiarchConstraint False
+        [ Slot Society (\w _ s -> s `elem` activeSocieties w && ageOf w s >= 1) Mint
+        , Slot Person heresiarchConstraint Optional
         ]
     , rsFire = fire
     }
@@ -307,9 +307,9 @@ battleSpec =
   RuleSpec
     { rsName = "battle"
     , rsSlots =
-        [ Slot Society (\w _ a -> a `elem` activeSocieties w) True
-        , Slot Society bConstraint False
-        , Slot Site (\_ _ _ -> True) False
+        [ Slot Society (\w _ a -> a `elem` activeSocieties w) Mint
+        , Slot Society bConstraint Demanded
+        , Slot Site (\_ _ _ -> True) Optional
         ]
     , rsFire = fire
     }
@@ -402,8 +402,8 @@ sanctifySpec =
   RuleSpec
     { rsName = "sanctify"
     , rsSlots =
-        [ Slot Society (\w _ s -> s `elem` activeSocieties w) True
-        , Slot Site (\w _ st -> not (isSanctified w st)) False
+        [ Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+        , Slot Site (\w _ st -> not (isSanctified w st)) Optional
         ]
     , rsFire = fire
     }
@@ -456,8 +456,8 @@ defileSpec =
   RuleSpec
     { rsName = "defile"
     , rsSlots =
-        [ Slot Site (\w _ site -> isJust (sanctifiedBy w site)) False
-        , Slot Society hConstraint False
+        [ Slot Site (\w _ site -> isJust (sanctifiedBy w site)) Demanded
+        , Slot Society hConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -613,8 +613,8 @@ fireMiracleOn w s site actor target = do
 -- 'miracleOnPersonSpec'\/'miracleOnItemSpec' rather than one spec.
 miracleBaseSlots :: [Slot]
 miracleBaseSlots =
-  [ Slot Society (\w _ s -> s `elem` activeSocieties w) True
-  , Slot Site siteConstraint False
+  [ Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+  , Slot Site siteConstraint Demanded
   ]
   where
     siteConstraint w resolved site = case resolved of
@@ -624,7 +624,7 @@ miracleBaseSlots =
 -- | An actor slot shared by 'miracleOnPersonSpec'\/'miracleOnItemSpec':
 -- a living or dead member of the officiating society (resolved slot 0).
 miracleActorSlot :: Slot
-miracleActorSlot = Slot Person actorConstraint False
+miracleActorSlot = Slot Person actorConstraint Demanded
   where
     actorConstraint w resolved actor = case resolved of
       (s : _) -> actor `elem` livingMembers w s ++ deadMembers w s
@@ -634,7 +634,7 @@ miracleSaintSpec :: RuleSpec
 miracleSaintSpec =
   RuleSpec
     { rsName = "miracle-saint"
-    , rsSlots = miracleBaseSlots ++ [Slot Person saintConstraint False]
+    , rsSlots = miracleBaseSlots ++ [Slot Person saintConstraint Optional]
     , rsFire = fire
     }
   where
@@ -649,7 +649,7 @@ miracleRelicSpec :: RuleSpec
 miracleRelicSpec =
   RuleSpec
     { rsName = "miracle-relic"
-    , rsSlots = miracleBaseSlots ++ [Slot Item (\w _ i -> i `elem` activeItems w) False]
+    , rsSlots = miracleBaseSlots ++ [Slot Item (\w _ i -> i `elem` activeItems w) Optional]
     , rsFire = fire
     }
   where
@@ -661,7 +661,7 @@ miracleOnPersonSpec :: RuleSpec
 miracleOnPersonSpec =
   RuleSpec
     { rsName = "miracle-on-person"
-    , rsSlots = miracleBaseSlots ++ [miracleActorSlot, Slot Person targetConstraint False]
+    , rsSlots = miracleBaseSlots ++ [miracleActorSlot, Slot Person targetConstraint Demanded]
     , rsFire = fire
     }
   where
@@ -676,7 +676,7 @@ miracleOnItemSpec :: RuleSpec
 miracleOnItemSpec =
   RuleSpec
     { rsName = "miracle-on-item"
-    , rsSlots = miracleBaseSlots ++ [miracleActorSlot, Slot Item (\w _ i -> i `elem` activeItems w) False]
+    , rsSlots = miracleBaseSlots ++ [miracleActorSlot, Slot Item (\w _ i -> i `elem` activeItems w) Demanded]
     , rsFire = fire
     }
   where
@@ -864,9 +864,9 @@ theftSpec =
   RuleSpec
     { rsName = "theft"
     , rsSlots =
-        [ Slot Item (\w _ item -> item `elem` activeItems w && any ((== Venerated) . snd) (currentRegardants w item)) False
-        , Slot Society kConstraint False
-        , Slot Society hConstraint False
+        [ Slot Item (\w _ item -> item `elem` activeItems w && any ((== Venerated) . snd) (currentRegardants w item)) Demanded
+        , Slot Society kConstraint Demanded
+        , Slot Society hConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -926,9 +926,9 @@ giftSpec =
   RuleSpec
     { rsName = "gift"
     , rsSlots =
-        [ Slot Item (\w _ item -> item `elem` activeItems w && not (null (currentRegardants w item))) False
-        , Slot Society gConstraint False
-        , Slot Society rConstraint False
+        [ Slot Item (\w _ item -> item `elem` activeItems w && not (null (currentRegardants w item))) Demanded
+        , Slot Society gConstraint Demanded
+        , Slot Society rConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -975,8 +975,8 @@ destroyRelicSpec =
   RuleSpec
     { rsName = "destroy-relic"
     , rsSlots =
-        [ Slot Item (\w _ item -> item `elem` activeItems w && any ((== Shunned) . snd) (currentRegardants w item)) False
-        , Slot Society kConstraint False
+        [ Slot Item (\w _ item -> item `elem` activeItems w && any ((== Shunned) . snd) (currentRegardants w item)) Demanded
+        , Slot Society kConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -1052,8 +1052,8 @@ coronationSpec =
   RuleSpec
     { rsName = "coronation"
     , rsSlots =
-        [ Slot Society (\w _ s -> s `elem` activeSocieties w) True
-        , Slot Person candidateConstraint False
+        [ Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+        , Slot Person candidateConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -1110,9 +1110,9 @@ trialByCombatSpec =
   RuleSpec
     { rsName = "trial-by-combat"
     , rsSlots =
-        [ Slot Society (\w _ s -> s `elem` activeSocieties w) True
-        , Slot Person aConstraint False
-        , Slot Person bConstraint False
+        [ Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+        , Slot Person aConstraint Demanded
+        , Slot Person bConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -1162,9 +1162,9 @@ coupSpec =
   RuleSpec
     { rsName = "coup"
     , rsSlots =
-        [ Slot Society (\w _ s -> s `elem` activeSocieties w) True
-        , Slot Person leaderConstraint False
-        , Slot Person usurperConstraint False
+        [ Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+        , Slot Person leaderConstraint Demanded
+        , Slot Person usurperConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -1228,9 +1228,9 @@ assassinateSpec =
         [ -- Was `\_ _ _ -> True`: with no active check at all this could
           -- pick a society that had already dissolved and stage an
           -- assassination inside it.
-          Slot Society (\w _ s -> s `elem` activeSocieties w) True
-        , Slot Person figureConstraint False
-        , Slot Society hConstraint False
+          Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+        , Slot Person figureConstraint Demanded
+        , Slot Society hConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -1319,8 +1319,8 @@ mergerSpec =
   RuleSpec
     { rsName = "merger"
     , rsSlots =
-        [ Slot Society (\w _ a -> a `elem` activeSocieties w) True
-        , Slot Society bConstraint False
+        [ Slot Society (\w _ a -> a `elem` activeSocieties w) Mint
+        , Slot Society bConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -1393,7 +1393,7 @@ dissolveSpec =
                   && not (isTerminated w s)
                   && not (alreadyMerged w s)
             )
-            False
+            Demanded
         ]
     , rsFire = fire
     }
@@ -1439,8 +1439,8 @@ reviveSpec =
   RuleSpec
     { rsName = "revive"
     , rsSlots =
-        [ Slot Society (\w _ s -> s `elem` activeSocieties w) True
-        , Slot Society defunctConstraint False
+        [ Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+        , Slot Society defunctConstraint Demanded
         ]
     , rsFire = fire
     }
@@ -1496,8 +1496,8 @@ prophesySpecFor kind tag =
   RuleSpec
     { rsName = "prophesy-" <> tag
     , rsSlots =
-        [ Slot Society (\w _ s -> s `elem` activeSocieties w) True
-        , Slot kind targetConstraint False
+        [ Slot Society (\w _ s -> s `elem` activeSocieties w) Mint
+        , Slot kind targetConstraint Demanded
         ]
     , rsFire = fire
     }

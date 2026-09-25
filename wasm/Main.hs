@@ -45,7 +45,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (find)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -379,9 +379,11 @@ historianSlotOptions sp ruleNameC bindingsJson = do
   bindings <- decodeSlotBindings . BSL.fromStrict <$> BS.packCString bindingsJson
   case find ((== ruleName) . rsName) influenceableSpecs of
     Nothing -> bsToCString (BSL.toStrict (encodeSlotOptions w False []))
-    Just rs ->
-      let dossiers = [(i, slot, mapMaybe (queryEntity w influenceableSpecs) es) | (i, slot, es) <- slotOptions w rs bindings]
-       in bsToCString (BSL.toStrict (encodeSlotOptions w (firesUnder w rs bindings) dossiers))
+    -- Candidate ids straight through: 'encodeSlotOptions' turns each into a
+    -- label, rather than this building a full dossier per candidate. That is
+    -- what it used to do, and it dominated the call completely — see that
+    -- encoder's own Haddock for the measurements.
+    Just rs -> bsToCString (BSL.toStrict (encodeSlotOptions w (firesUnder w rs bindings) (slotOptions w rs bindings)))
 
 foreign export ccall "historian_rules_admitting" historianRulesAdmitting :: Handle -> Int -> IO CString
 

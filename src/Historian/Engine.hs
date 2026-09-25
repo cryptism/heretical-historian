@@ -17,7 +17,7 @@
 -- keeps working unchanged.
 module Historian.Engine where
 
-import Control.Monad.State.Strict (evalState, execState, get)
+import Control.Monad.State.Strict (execState, get)
 import Data.List (delete, nub, nubBy)
 import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe, mapMaybe)
@@ -39,12 +39,68 @@ import Historian.World
 data Slot = Slot
   { slotKind :: Kind
   , slotConstraint :: World -> [EntityId] -> EntityId -> Bool
-  , slotRequired :: Bool
-  -- ^ 'True': the slot always ends up 'Just' — pick if something
-  -- qualifies, otherwise mint a fresh one via 'resolveSlot'. 'False': the
-  -- slot may end up 'Nothing' if nothing qualifies (never force-generates
-  -- an optional slot just because a required one nearby did).
+  , slotFill :: SlotFill
   }
+
+-- | What it means for a slot to go unfilled — the third state this engine
+-- spent its whole life missing.
+--
+-- Until work item 29 stage 3 this was a 'Bool', and the two states it could
+-- express were \"mint one if nothing qualifies\" and \"may be left empty\".
+-- Most rules needed neither: they need \"must be filled from what exists,
+-- and if nothing qualifies then this rule does not apply\". Lacking a way to
+-- say that, every such slot was marked not-required and each rule restated
+-- the real condition inside its own 'rsFire' as a pattern match that
+-- returned no outcomes — putting the precondition somewhere the engine
+-- could not read it.
+--
+-- That is the whole cause of two separate defects. 'runnable' inspects only
+-- required slots, so a rule whose slots were all \"optional\"
+-- ('Historian.Rules.defileSpec') read runnable in every world while its
+-- firing produced nothing; and 'allAssignments' offered the all-empty
+-- assignment as a solution, so the only way to learn whether a rule would
+-- actually fire was to run it speculatively and throw the result away
+-- (@firesUnder@'s probe, .claude/docs/DESIGN.md Decision 50).
+--
+-- With the distinction named, the assignment space contains only assignments
+-- that fire, and \"does this rule apply\" is answered by the match.
+data SlotFill
+  = -- | The slot always ends up 'Just': pick if something qualifies,
+    -- otherwise mint a fresh entity via 'resolveSlot'. The old 'True'.
+    Mint
+  | -- | The slot may end up 'Nothing', and the rule still fires — a genuinely
+    -- incidental participant (the site a battle *might* be remembered at).
+    -- Never force-filled just because a 'Mint' slot nearby was. Five slots
+    -- in the whole rule set are actually like this.
+    Optional
+  | -- | The slot must be filled from entities that already exist, and if
+    -- none qualifies the rule does not apply at all. Never minted: a fresh
+    -- entity here would invent the precondition rather than satisfy it —
+    -- 'Historian.Rules.defileSpec' cannot conjure a sanctified site or a
+    -- hostile society and still be a defilement.
+    Demanded
+  deriving stock (Eq, Show)
+
+-- | 'True' for a slot that always ends up filled. The old @slotRequired@
+-- field, kept as a derived function because several readers only ever want
+-- this coarser question — 'runnable' and the wire format among them.
+slotRequired :: Slot -> Bool
+slotRequired = (== Mint) . slotFill
+
+-- | Which values a slot may take in an assignment, given its candidates.
+-- The one place 'SlotFill' decides the shape of the search.
+--
+-- 'Mint' and 'Demanded' agree here and differ only later, at resolution:
+-- both must end up 'Just', but 'Mint' may invent an entity to get there
+-- while 'Demanded' may not. 'Optional' is the only one that admits
+-- 'Nothing', and it comes last rather than first — 'firesUnder' is lazy in
+-- this list and the empty option is the least likely to be what a caller is
+-- looking for.
+fillOptions :: SlotFill -> [EntityId] -> [Maybe EntityId]
+fillOptions fill candidates = case fill of
+  Mint -> map Just candidates
+  Demanded -> map Just candidates
+  Optional -> map Just candidates ++ [Nothing]
 
 -- | What a caller asks of one slot, positionally. Three states, not two:
 -- 'HintRandom' (the old 'Nothing') leaves it to 'resolveSlot'\'s ordinary
@@ -243,18 +299,11 @@ resolveAllWithClaims w slots posHints = go [] slots (posHints ++ repeat HintRand
 -- analogue of how 'Historian.Rules.step' pools every legacy
 -- 'Historian.Rules.Rule's candidate list — a rule self-weights by how
 -- many assignments it has, exactly as today.
+-- Since stage 3 this is exactly 'assignmentsUnder' with nothing pinned:
+-- one search, honouring 'SlotFill', rather than two that had drifted into
+-- offering different option sets for the same slot.
 allAssignments :: World -> RuleSpec -> [[Maybe EntityId]]
-allAssignments w rs = go [] (rsSlots rs)
-  where
-    go _ [] = [[]]
-    go resolved (slot : rest) =
-      [ opt : restAssignment
-      | opt <-
-          if slotRequired slot
-            then map Just (candidatesFor w resolved slot)
-            else Nothing : map Just (candidatesFor w resolved slot)
-      , restAssignment <- go (resolved ++ maybe [] pure opt) rest
-      ]
+allAssignments w rs = assignmentsUnder w rs []
 
 -- | 'allAssignments' narrowed to the assignments still consistent with a
 -- caller's positional choices: one 'Maybe' per slot in declaration order,
@@ -284,45 +333,59 @@ assignmentsUnder w rs hints0 = go [] (rsSlots rs) (hints0 ++ repeat Nothing)
       Just e
         | e `elem` candidatesFor w resolved slot -> [Just e]
         | otherwise -> []
-      Nothing
-        | slotRequired slot -> map Just (candidatesFor w resolved slot)
-        -- Real candidates before the empty option, which is the reverse of
-        -- 'allAssignments'\' own order and matters a great deal here.
-        -- 'firesUnder' is lazy in this list, and the assignment that leaves
-        -- an optional slot empty is precisely the one a rule like
-        -- 'Historian.Rules.defileSpec' refuses to fire on — leading with it
-        -- made every "can this fire" question walk the whole solution set
-        -- before finding the answer, and a host asking per candidate per
-        -- slot felt it (seconds, in a world of only forty entities).
-        --
-        -- Safe to reorder only because this function is new and has no
-        -- other callers: 'allAssignments' keeps 'Nothing' first, and must,
-        -- since 'StepAny' draws from its order and every pinned test seed
-        -- in this suite depends on that draw.
-        | otherwise -> map Just (candidatesFor w resolved slot) ++ [Nothing]
+      Nothing -> fillOptions (slotFill slot) (candidatesFor w resolved slot)
 
 -- | Will this rule, under these positional hints, actually produce an
 -- event?
 --
--- The question 'runnable' and 'allAssignments' both leave unanswered, and
--- the one a steering host actually needs. Neither of those consults
--- 'rsFire', and a rule's own firing is what ultimately declines: every
--- slot of 'Historian.Rules.defileSpec' is optional, so it is vacuously
--- 'runnable' in every world and @[Nothing, Nothing]@ is one of its
--- perfectly valid 'allAssignments' — but its 'rsFire' returns no outcomes
--- unless both bound, so a host that offered it on either of those answers
--- was offering an event that would then silently not happen.
+-- Since work item 29 stage 3 this is just \"is the solution set non-empty\",
+-- because 'SlotFill' made the solution set mean that. Every assignment
+-- 'assignmentsUnder' yields now fills every slot the rule's own firing
+-- requires, so there is nothing left to check and nothing to run.
 --
--- Answered by probing 'rsFire' itself under 'evalState', which is safe
--- precisely because firing is a 'Chronicle' computation: the probe's
--- minting, RNG advance and any other 'World' mutation are all discarded
--- with the state, so nothing observable happens and the caller's next real
--- step is unperturbed (invariant 8's discipline, reached a different way).
--- Lazy in 'assignmentsUnder', so a rule that can fire stops at the first
--- assignment that does rather than enumerating its whole solution set.
+-- What this replaced is worth remembering, because it is the shape of the
+-- mistake. Before the 'Demanded' state existed, the all-empty assignment was
+-- a member of a rule's solution set even for rules that refuse to fire on
+-- it, so this function could only answer by probing 'rsFire' itself under
+-- 'evalState' — speculatively firing the rule against every candidate
+-- assignment and discarding the result. It was correct and it was almost the
+-- entire cost of the steering queries: measured, the probe accounted for
+-- ~100% of 'slotOptions' time and grew x47 across a run where the assignment
+-- count grew x1.6, because a fire function mints, and minting means Markov
+-- name generation with collision retries. Indexing the fact-log scans (stage
+-- 1) did not touch it. Making the precondition declarative deletes it.
+--
+-- The test suite asserts the equivalence in both directions against
+-- 'assignmentsPermissive' plus a real 'rsFire' probe, rather than trusting
+-- that the annotations are right.
 firesUnder :: World -> RuleSpec -> [Maybe EntityId] -> Bool
-firesUnder w rs hints =
-  any (\a -> not (null (evalState (rsFire rs w a) w))) (assignmentsUnder w rs hints)
+firesUnder w rs hints = not (null (assignmentsUnder w rs hints))
+
+-- | The pre-stage-3 assignment space: every slot that is not 'Mint' may be
+-- left empty, which is what a 'Bool'-valued @slotRequired@ could express.
+--
+-- Exists only as the test oracle for 'assignmentsUnder' — the counterpart to
+-- 'Historian.World.isDeadByScan' and friends. The suite asserts that
+-- filtering this by an actual 'rsFire' probe reproduces 'assignmentsUnder'
+-- exactly, in both directions, which is what makes the 'SlotFill'
+-- annotations verified rather than asserted. Not used in anger anywhere.
+assignmentsPermissive :: World -> RuleSpec -> [Maybe EntityId] -> [[Maybe EntityId]]
+assignmentsPermissive w rs hints0 = go [] (rsSlots rs) (hints0 ++ repeat Nothing)
+  where
+    go _ [] _ = [[]]
+    go resolved (slot : rest) (h : hs) =
+      [ opt : restAssignment
+      | opt <- options resolved slot h
+      , restAssignment <- go (resolved ++ maybe [] pure opt) rest hs
+      ]
+    go _ (_ : _) [] = []
+    options resolved slot = \case
+      Just e
+        | e `elem` candidatesFor w resolved slot -> [Just e]
+        | otherwise -> []
+      Nothing
+        | slotRequired slot -> map Just (candidatesFor w resolved slot)
+        | otherwise -> map Just (candidatesFor w resolved slot) ++ [Nothing]
 
 -- | The live per-slot answer a steering host needs: for each slot, every
 -- entity that could still go there such that the rule as a whole *fires*,
@@ -335,14 +398,11 @@ firesUnder w rs hints =
 -- since narrowing runs both ways once 'firesUnder' rather than slot order
 -- is the test.
 --
--- Computed from one shared enumeration of the firing assignments rather
--- than by asking 'firesUnder' per candidate per slot. Both give the same
--- answer — an entity belongs in slot @i@\'s domain exactly when some
--- firing assignment consistent with the hints places it there — but the
--- per-candidate version re-walked the same search for every candidate, and
--- 'slotConstraint's are not cheap: several scan the whole fact log, so the
--- redundancy showed up as whole seconds in a world of forty-odd entities,
--- which is not a price an interactive form can pay on every change.
+-- Computed from one shared enumeration rather than by asking 'firesUnder'
+-- per candidate per slot. Both give the same answer — an entity belongs in
+-- slot @i@\'s domain exactly when some firing assignment consistent with the
+-- hints places it there — but the per-candidate version re-walked the same
+-- search for every candidate.
 slotOptions :: World -> RuleSpec -> [Maybe EntityId] -> [(Int, Slot, [EntityId])]
 slotOptions w rs hints =
   [ (i, slot, [e | e <- excludeMundane w (entitiesOf (slotKind slot) w), e `elem` placed])
@@ -351,7 +411,10 @@ slotOptions w rs hints =
   , let placed = nub [e | a <- firing, Just e <- take 1 (drop i a)]
   ]
   where
-    firing = [a | a <- assignmentsUnder w rs hints, not (null (evalState (rsFire rs w a) w))]
+    -- Since stage 3, every assignment here is one that fires, so this is the
+    -- solution set itself. It used to be that set filtered by a speculative
+    -- 'rsFire' probe, which was ~all of this function's cost.
+    firing = assignmentsUnder w rs hints
 
 -- | Every rule that could fire with this entity placed in one of its
 -- slots — the rule-level counterpart to 'slotOptions', and what a host

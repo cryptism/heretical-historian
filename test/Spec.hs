@@ -420,7 +420,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks ++ cataclysmChecks ++ derivedChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks ++ cataclysmChecks ++ derivedChecks ++ slotFillChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -484,7 +484,7 @@ engineChecks =
     , "Engine: resolveSlot picks the sole existing living member as heresiarch"
     )
   ,
-    ( case evalState (resolveSlot engineWorld vaurethine [engineSociety] HintRandom (Slot Person (\_ _ _ -> False) True)) engineWorld of
+    ( case evalState (resolveSlot engineWorld vaurethine [engineSociety] HintRandom (Slot Person (\_ _ _ -> False) Mint)) engineWorld of
         Just p -> not (M.member p (wEntities engineWorld))
         Nothing -> False
     , "Engine: resolveSlot mints a fresh entity when a required slot has no candidates"
@@ -688,8 +688,8 @@ matchingChecks =
     -- so every cheaper check passes in a world where its firing yields
     -- nothing.
 
-    ( runnable engineWorld defileSpec && not (null (assignmentsUnder engineWorld defileSpec []))
-    , "Engine: defileSpec reads runnable on a world with no sites at all, and still has assignments — both slots are optional, so neither check can see that it cannot fire (the bug firesUnder exists for)"
+    ( runnable engineWorld defileSpec && null (assignmentsUnder engineWorld defileSpec [])
+    , "Engine: defileSpec still reads runnable on a world with no sites — runnable only ever inspected Mint slots and remains a cheap hint — but its solution set is now empty, because its slots are Demanded (work item 29 stage 3 inverted this check, which previously asserted the bug)"
     )
   ,
     ( not (firesUnder engineWorld defileSpec [])
@@ -700,9 +700,10 @@ matchingChecks =
     , "Engine: firesUnder says defileSpec can fire on richWorld, where a sanctified site and a rival claimant both exist"
     )
   ,
-    ( [Nothing, Nothing] `elem` assignmentsUnder richWorld defileSpec []
+    ( [Nothing, Nothing] `elem` assignmentsPermissive richWorld defileSpec []
         && null (evalState (rsFire defileSpec richWorld [Nothing, Nothing]) richWorld)
-    , "Engine: the all-empty assignment is one of defileSpec's own valid assignmentsUnder yet fires nothing — exactly why firesUnder probes rsFire rather than counting assignments"
+        && [Nothing, Nothing] `notElem` assignmentsUnder richWorld defileSpec []
+    , "Engine: the all-empty assignment fires nothing and is still in the permissive space, but no longer in defileSpec's own solution set — the exact assignment that forced firesUnder to probe rsFire, and the reason it no longer has to (stage 3)"
     )
   ,
     ( assignmentsUnder richWorld defileSpec [Just rSt0] == assignmentsUnder richWorld defileSpec [Just rSt0, Nothing]
@@ -761,8 +762,8 @@ ambiguitySpec =
   RuleSpec
     { rsName = "ambiguity-test"
     , rsSlots =
-        [ Slot Person (\_ _ _ -> True) False
-        , Slot Person (\_ _ _ -> True) False
+        [ Slot Person (\_ _ _ -> True) Optional
+        , Slot Person (\_ _ _ -> True) Optional
         ]
     , rsFire = \_ _ -> pure []
     }
@@ -1513,11 +1514,11 @@ mundaneChecks =
     , "Direct: activeItems excludes a freshly-minted mundane item"
     )
   ,
-    ( mundanePersonId `notElem` candidatesFor mundanePersonWorld [] (Slot Person (\_ _ _ -> True) False)
+    ( mundanePersonId `notElem` candidatesFor mundanePersonWorld [] (Slot Person (\_ _ _ -> True) Optional)
     , "Direct: candidatesFor excludes a mundane person from an otherwise wide-open Person slot"
     )
   ,
-    ( ordinaryItemId `elem` candidatesFor ordinaryItemWorld [] (Slot Item (\_ _ _ -> True) False)
+    ( ordinaryItemId `elem` candidatesFor ordinaryItemWorld [] (Slot Item (\_ _ _ -> True) Optional)
     , "Direct: candidatesFor still finds an ordinary item in the same wide-open slot (sanity: the mundane exclusion isn't overzealous)"
     )
   ,
@@ -2228,6 +2229,88 @@ ttrpgExportChecks =
         [ maybe [] unWireWorldEntities (Aeson.decode (encodeWorld (generate s longSteps)))
         | s <- aggregateSeeds
         ]
+
+-- | Work item 29 stage 3: the 'SlotFill' annotations are correct, proved
+-- against a real 'rsFire' probe in both directions.
+--
+-- This is the check that makes stage 3 safe. The claim it rests on is that a
+-- rule's left-hand side is now complete — that 'assignmentsUnder' yields
+-- exactly the assignments the rule would actually fire on, so 'firesUnder'
+-- can be \"is the solution set non-empty\" with nothing run speculatively.
+-- That claim is one mis-annotated slot away from false in either direction,
+-- and each direction fails differently:
+--
+-- * Marking a genuinely 'Optional' slot 'Demanded' silently makes real
+--   histories unreachable (a battle that no longer needs a site remembered).
+--   Nothing else in the suite would necessarily notice. @completeness@ below
+--   is what catches it.
+-- * Marking a 'Demanded' slot 'Optional' leaves non-firing assignments in
+--   the space, which is the original bug. @soundness@ catches it.
+--
+-- 'Historian.Engine.assignmentsPermissive' is the oracle: the pre-stage-3
+-- space, where anything not 'Mint' may be empty. Filtering *that* by an
+-- actual probe must reproduce 'assignmentsUnder' exactly.
+--
+-- The probe is 'evalState' over 'rsFire', which is safe for the same reason
+-- the old 'firesUnder' was: firing is a 'Chronicle' computation, so the
+-- probe's minting and RNG advance are discarded with the state.
+slotFillChecks :: [(Bool, Text)]
+slotFillChecks =
+  [
+    ( all soundness slotFillCases
+    , "SlotFill: every assignment assignmentsUnder yields does fire — so firesUnder needs no probe (the direction that would restore the original bug)"
+    )
+  ,
+    ( all completeness slotFillCases
+    , "SlotFill: every assignment that fires is one assignmentsUnder yields — no rule was over-constrained into unreachability (the direction nothing else would catch)"
+    )
+  ,
+    ( all (\(_, rs, w) -> firesUnder w rs [] == any (fires w rs) (assignmentsPermissive w rs [])) slotFillCases
+    , "SlotFill: firesUnder's probe-free answer matches what probing every permissive assignment would have said, for every rule in every sampled world"
+    )
+  , -- Non-vacuity. The two directions above hold trivially on a rule whose
+    -- solution set is empty, and on a world where nothing has happened.
+    ( any (\(_, rs, w) -> not (null (assignmentsUnder w rs []))) slotFillCases
+    , "SlotFill: the sampled worlds actually admit firing assignments, so the equivalence above is not vacuous"
+    )
+  ,
+    ( any (\(_, rs, w) -> length (assignmentsPermissive w rs []) > length (assignmentsUnder w rs [])) slotFillCases
+    , "SlotFill: the permissive space is strictly larger somewhere — Demanded really does remove assignments, which is the whole point"
+    )
+  ,
+    ( any (\(_, rs, w) -> any (\a -> Nothing `elem` a) (assignmentsUnder w rs [])) slotFillCases
+    , "SlotFill: some firing assignment still leaves a slot empty, so Optional is a real state and not every slot was quietly Demanded"
+    )
+  , -- The rule that started all of this.
+    ( let dw = richWorld
+       in firesUnder dw defileSpec [] && not (firesUnder engineWorld defileSpec [])
+    , "SlotFill: defile fires on richWorld and not on a world with no sites — the case that used to read runnable in both and decline in one"
+    )
+  ,
+    ( [Nothing, Nothing] `notElem` assignmentsUnder richWorld defileSpec []
+    , "SlotFill: defile's all-empty assignment is gone from its solution set — it was a valid allAssignments member that fired nothing, which is what forced the probe to exist"
+    )
+  ,
+    ( all (\rs -> all (\sl -> slotFill sl /= Mint || slotRequired sl) (rsSlots rs)) influenceableSpecs
+        && all (\rs -> all (\sl -> slotRequired sl == (slotFill sl == Mint)) (rsSlots rs)) influenceableSpecs
+    , "SlotFill: the derived slotRequired still means exactly 'is Mint', so every reader that kept using the coarser question is unaffected"
+    )
+  ]
+  where
+    fires w rs a = not (null (evalState (rsFire rs w a) w))
+    soundness (_, rs, w) = all (fires w rs) (assignmentsUnder w rs [])
+    completeness (_, rs, w) =
+      let firedPermissive = filter (fires w rs) (assignmentsPermissive w rs [])
+       in all (`elem` assignmentsUnder w rs []) firedPermissive
+    -- Every rule against every sampled world. The hand-built worlds are
+    -- dense in specific preconditions; the generated ones reach states no
+    -- hand-built world does (a merged society, a restored corpse, a
+    -- transferred sanctity, a cursed relic).
+    slotFillCases =
+      [ (rsName rs, rs, w)
+      | w <- richWorld : engineWorld : matchWorld : [generate sd longSteps | sd <- take 12 aggregateSeeds]
+      , rs <- influenceableSpecs
+      ]
 
 -- | Work item 29 stage 1: 'Historian.Types.Derived' answers the same
 -- questions the log scans used to, for every entity and every pair, in

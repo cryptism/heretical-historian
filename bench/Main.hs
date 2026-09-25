@@ -71,6 +71,21 @@ main = do
     _ <- evaluate (sum [unEpoch (factEpoch f) + unEntityId (factSubject f) | f <- wFacts w])
     _ <- evaluate ents
 
+    -- A fingerprint of the generated history itself, not just its size.
+    -- StepAny draws uniformly from [(rule, assignment) | assignment <-
+    -- allAssignments ...], so any change to allAssignments changes which
+    -- rule fires and the whole history diverges. Entity and fact *counts*
+    -- are far too coarse to notice that; this is not.
+    let fingerprint =
+          sum
+            [ unEntityId (factSubject f) * 7
+              + length (show (factPred f)) * 13
+              + unEpoch (factEpoch f) * 17
+              + unEventId (factSource f) * 19
+            | f <- wFacts w
+            ]
+    putStrLn ("  world fingerprint at " ++ show steps ++ " steps: " ++ show fingerprint)
+
     -- EVERY rule with slots, not just the ones that fire. The first version
     -- of this filtered to firing rules and so measured the cheap half: a
     -- rule that *cannot* fire is the expensive case, because `firing`

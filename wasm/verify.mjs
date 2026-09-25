@@ -337,8 +337,20 @@ check(
   opts.slots.length === someRule.slots.length,
 );
 check(
-  "historian_slot_options' candidates are full dossiers, so a picker needs no second call",
+  "historian_slot_options' candidates carry id/name/kind — enough to label a picker option, and deliberately not a full dossier",
   opts.slots.every((sl) => sl.candidates.every((c) => typeof c.id === "number" && typeof c.name === "string" && typeof c.kind === "string")),
+);
+check(
+  "historian_slot_options' candidates carry no fact history — shipping one per candidate per slot was ~40 KiB and ~440ms each",
+  opts.slots.every((sl) => sl.candidates.every((c) => c.facts === undefined && c.satisfiesSlotOf === undefined)),
+);
+check(
+  "every rule's slots report a three-state `fill`, so a host can tell 'must be filled from what exists' from 'may be left empty'",
+  optRules.every((r) => r.slots.every((sl) => ["mint", "optional", "demanded"].includes(sl.fill))),
+);
+check(
+  "at least one slot is demanded and at least one is optional — the distinction is real, not uniformly applied",
+  optRules.some((r) => r.slots.some((sl) => sl.fill === "demanded")) && optRules.some((r) => r.slots.some((sl) => sl.fill === "optional")),
 );
 check(
   "historian_slot_options' slotKind agrees with the catalogue's own slot kinds",
