@@ -4443,3 +4443,104 @@ One further witness-seed reseed: `trialByCombatWitnessSeed` 574 → 652
 checks — a pure constant retune, no new assertions needed; the existing
 `cataclysmChecks` don't pin exact weight values, only behavior at forced
 0/100 edges, so none needed updating either.
+
+## Decision 50: `firesUnder` — a steering host asking the engine what will actually happen, not what looks possible
+
+**Needed for:** `hh-site`'s INFLUENCE.SYS offering events that then didn't
+occur. The user's report was blunt about it: willing an assassination
+produced "— the assassination you willed does not come to pass —", and
+their instruction was that such things should be *restricted* from being
+offered at all, by querying the wasm binary rather than by the frontend
+guessing.
+
+**Every existing query answered a weaker question than the host needed.**
+Three were tried by the frontend before this, and each is wrong in a
+different way:
+
+- `satisfiesSlotOf` (on `EntityDossier`) is the *empty-context* check.
+  Filtering on it left a perfectly ordinary society with one rule, because
+  a constraint reading earlier bindings answers `False` on `[]`.
+- `runnable` only looks at slots marked **required**, and a required slot
+  with no candidates is minted rather than failed. For a rule whose slots
+  are *all optional* it is therefore vacuously `True` in every world.
+  `defileSpec` is exactly that shape, and it was the rule that kept
+  declining — `historian_rules` had been dutifully refetched on every
+  dialog open specifically so `runnable` would be live, and then the
+  answer was never consulted, which was its own small comedy.
+- `rulesFor`/`bestPoolUse` scores whether an entity can be **bound**. That
+  is not the same claim as the resulting event happening.
+
+**What actually declines is `rsFire`.** `defileSpec`'s returns no outcomes
+unless both its site and its hostile society bound, though neither slot is
+required — and `[Nothing, Nothing]` is a perfectly valid member of its own
+`allAssignments`. Nothing derivable from `Slot` data can see this, because
+the condition lives in a rule's own firing function and nowhere else.
+
+So `firesUnder` asks it: enumerate the assignments consistent with the
+caller's positional hints (`assignmentsUnder`) and probe `rsFire` on each,
+stopping at the first that yields outcomes. The probe runs under
+`evalState` and throws the state away, which is safe *because* firing is a
+`Chronicle` computation — minting, RNG advance and every other mutation go
+with the discarded state, so nothing observable happens and the caller's
+next real step is unperturbed. Same discipline invariant 8 keeps for the
+calendar, reached a different way.
+
+**Positional hints, not a pool.** `nextSlotFromPool` has to report
+`PoolAmbiguity` precisely because an unordered pool cannot say *which*
+slot an entity is meant for; its own Haddock already advised falling back
+to `nextSlotCandidates` with positional hints, which had no FFI wrapper.
+`assignmentsUnder` is the positional counterpart, and a host that knows
+which slot it means never provokes the ambiguous answer at all.
+
+**`slotOptions` answers every slot at once, deliberately.**
+`nextSlotCandidates` reports only the first *open* slot, which is the right
+shape for filling a form front to back and the wrong shape for one being
+re-derived after a change. Once "does it fire" rather than slot order is
+the test, a later choice narrows an earlier slot exactly as much as the
+reverse, so there is no slot whose domain a host may assume unchanged.
+The candidate sweep starts from every non-mundane entity of the slot's
+`Kind` rather than from `candidatesFor`, since pre-filtering with a
+constraint that reads earlier bindings would wrongly empty any slot whose
+predecessors the caller hasn't pinned.
+
+**Rejected: computing it per candidate.** The first version asked
+`firesUnder` once per candidate per slot. Correct, and unusably slow —
+whole seconds in a world of forty-odd entities, because several
+`slotConstraint`s scan the entire fact log and the same search was walked
+again for every candidate. Replaced by one shared enumeration of the
+firing assignments, with each slot's domain read off it. Identical answers
+(an entity belongs in slot *i* exactly when some firing assignment places
+it there), roughly half the cost.
+
+**Also rejected: reordering `allAssignments`.** `assignmentsUnder` puts
+real candidates *before* the empty option, the reverse of
+`allAssignments`, because the leave-it-empty assignment is the one a rule
+like `defileSpec` refuses and leading with it made every question walk the
+whole solution set first. This is safe only because `assignmentsUnder` is
+new and has no other callers: `allAssignments` keeps `Nothing` first and
+must, since `StepAny` draws from its order and every pinned witness seed in
+the suite depends on that draw.
+
+**A null hint is not "pick one for me".** The last gap, found only by
+driving the real wasm: with the offer correctly gated, casts *still*
+declined occasionally, because an unhinted optional slot goes through
+`resolveSlot`'s pick/generate/**omit** weighting (`Tuning`'s
+`[existing, generate, omit]` triple) and can be rolled away. Gating the
+offer is not enough if the firing then discards a slot the rule needed.
+The host-side answer (`hh-site`, not this repo): resolve each "random"
+slot against its own live options before firing, in declaration order,
+re-querying so a later slot narrows to the earlier pick.
+
+**Surface:** `historian_slot_options(handle, rule, bindingsJson)` and
+`historian_rules_admitting(handle, entityId)`. Both read-only. Verified in
+`wasm/verify.mjs` the way every FFI addition here has been, including the
+property the whole thing exists for — every rule offered fires, and
+pinning any offered candidate leaves it firing. `cabal test` 339 → 349.
+
+One trap worth recording for whoever adds the next export: `wasm-ld`
+strips a `foreign export`ed symbol unless it is also listed as
+`-optl-Wl,--export=` in the cabal file (the file's own comment says so),
+and after adding it cabal reconfigures without relinking, so the built
+`.wasm` silently keeps the old export table. Both new exports appeared to
+be missing for two full build cycles for that reason. Deleting the
+executable's `dist-newstyle` directory is what actually forces the relink.

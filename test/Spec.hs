@@ -28,6 +28,9 @@ import Historian.Rules (
   apprenticeshipClaim,
   assassinateSpec,
   battleSpec,
+  fireMiracleOn,
+  foundSocietySpec,
+  influenceableSpecs,
   coronationSpec,
   coupSpec,
   defileSpec,
@@ -181,10 +184,13 @@ veryWideSeeds = [1 .. 1000]
 -- found via 'veryWideSeeds' own scan, not guessed. Re-pinned twice now:
 -- 182\/420 replaced with 574\/322 (work item 26's own guaranteed day-1
 -- cataclysm, Decision 49); 574 replaced with 652 (the same item's
--- cataclysm-weight retune right after — 322 survived that one).
+-- cataclysm-weight retune right after — 322 survived that one); and
+-- 652\/322 replaced with 278\/277 (genesis-only backfill plus a founder
+-- minted for every generated cult — both change how much RNG each mint
+-- consumes, so the whole cascade shifts).
 trialByCombatWitnessSeed, coupWitnessSeed :: Int
-trialByCombatWitnessSeed = 652
-coupWitnessSeed = 322
+trialByCombatWitnessSeed = 278
+coupWitnessSeed = 277
 
 steps :: Int
 steps = 14
@@ -473,12 +479,12 @@ engineChecks =
     , "Engine: schismSpec is runnable once a society has aged past zero"
     )
   ,
-    ( evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing personSlot) engineWorld
+    ( evalState (resolveSlot engineWorld vaurethine [engineSociety] HintRandom personSlot) engineWorld
         == Just engineFounder
     , "Engine: resolveSlot picks the sole existing living member as heresiarch"
     )
   ,
-    ( case evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing (Slot Person (\_ _ _ -> False) True)) engineWorld of
+    ( case evalState (resolveSlot engineWorld vaurethine [engineSociety] HintRandom (Slot Person (\_ _ _ -> False) True)) engineWorld of
         Just p -> not (M.member p (wEntities engineWorld))
         Nothing -> False
     , "Engine: resolveSlot mints a fresh entity when a required slot has no candidates"
@@ -515,7 +521,7 @@ engineChecks =
     , "Engine: sanctifySpec is runnable with no sites at all (its only required slot is the society)"
     )
   ,
-    ( isNothing (evalState (resolveSlot engineWorld vaurethine [engineSociety] Nothing siteSlot) engineWorld)
+    ( isNothing (evalState (resolveSlot engineWorld vaurethine [engineSociety] HintRandom siteSlot) engineWorld)
     , "Engine: resolveSlot omits an optional slot with no candidates rather than minting one"
     )
   ,
@@ -523,9 +529,61 @@ engineChecks =
     , "Engine: candidatesFor finds the one existing unsanctified site"
     )
   ,
-    ( evalState (resolveSlot engineWorldWithSite vaurethine [engineSociety] Nothing siteSlot) engineWorldWithSite
+    ( evalState (resolveSlot engineWorldWithSite vaurethine [engineSociety] HintRandom siteSlot) engineWorldWithSite
         == Just engineSite
     , "Engine: resolveSlot picks the existing unsanctified site over minting a fresh one"
+    )
+  , -- SlotHint's third state (work item: INFLUENCE.SYS). 'HintRandom'
+    -- above prefers an existing candidate, which is exactly why a caller
+    -- wanting a *new* entity had no way to say so before 'HintFresh'.
+
+    ( case evalState (resolveSlot engineWorldWithSite vaurethine [engineSociety] HintFresh siteSlot) engineWorldWithSite of
+        Just st -> st /= engineSite && not (M.member st (wEntities engineWorldWithSite))
+        Nothing -> False
+    , "Engine: resolveSlot HintFresh mints a new site even though an existing candidate was available"
+    )
+  ,
+    ( case evalState (resolveSlot engineWorld vaurethine [engineSociety] HintFresh siteSlot) engineWorld of
+        Just _ -> True
+        Nothing -> False
+    , "Engine: resolveSlot HintFresh fills an optional slot that HintRandom would have omitted"
+    )
+  ,
+    ( evalState (resolveSlot engineWorld vaurethine [engineSociety] (HintEntity engineFounder) personSlot) engineWorld
+        == Just engineFounder
+    , "Engine: resolveSlot HintEntity binds the named entity outright"
+    )
+  ,
+    ( let w' = execState (intelligentStep [] engineWorld (StepRuleHinted sanctifySpec [HintEntity engineSociety, HintFresh])) engineWorld
+          fresh = [e | e <- M.keys (wEntities w'), not (M.member e (wEntities engineWorld))]
+       in any ((== Sanctified) . factPred) (wFacts w') && not (null fresh)
+    , "Engine: StepRuleHinted honours HintFresh through a whole rule firing"
+    )
+  ,
+    ( let w' = influenceStep sanctifySpec [HintEntity engineSociety] engineWorld
+       in wEpoch w' > wEpoch engineWorld && any ((== Sanctified) . factPred) (wFacts w')
+    , "Engine: influenceStep advances the epoch, unlike StepRuleHinted on its own"
+    )
+  ,
+    ( let w' = execState (intelligentStep [] engineWorld (StepRuleHinted sanctifySpec [HintEntity engineSociety])) engineWorld
+       in wEpoch w' == wEpoch engineWorld
+    , "Engine: StepRuleHinted itself leaves the epoch alone, same as StepRule always has"
+    )
+  ,
+    ( notElem "found-society" (map rsName ruleSpecs)
+        && elem "found-society" (map rsName influenceableSpecs)
+    , "Rules: found-society is nameable by a host but never drawn by autonomous stepping"
+    )
+  ,
+    ( let w' = execState (intelligentStep [] engineWorld (StepRuleHinted foundSocietySpec [])) engineWorld
+          fresh = [e | e <- M.keys (wEntities w'), not (M.member e (wEntities engineWorld))]
+       in any ((== Embodies) . factPred) (wFacts w') && length fresh >= 2
+    , "Rules: foundSocietySpec fires through the ordinary spec path, minting a society with its patron claims"
+    )
+  ,
+    ( let freshSoc = execState (intelligentStep [] engineWorld (StepRuleHinted battleSpec [HintFresh, HintFresh])) engineWorld
+       in any ((== Embodies) . factPred) (wFacts freshSoc)
+    , "Engine: a HintFresh-minted Society records the patronClaims generateForKind used to drop"
     )
   ,
     ( let w' = execState (intelligentStep [sanctifySpec] engineWorld (StepRule sanctifySpec [Just engineSociety, Nothing])) engineWorld
@@ -623,6 +681,59 @@ matchingChecks =
             _ -> False
     , "Engine: StepEntities/resolveAllExact fires battleSpec between matchA and matchB, never matchC, using the exact pool binding poolAssignments found"
     )
+  , -- 'assignmentsUnder'\/'firesUnder'\/'slotOptions'\/'rulesAdmitting': the
+    -- positional steering surface, added because a host filtering on
+    -- 'runnable' or 'rulesFor' was offering events that then didn't happen.
+    -- 'defileSpec' is the witness throughout: both its slots are optional,
+    -- so every cheaper check passes in a world where its firing yields
+    -- nothing.
+
+    ( runnable engineWorld defileSpec && not (null (assignmentsUnder engineWorld defileSpec []))
+    , "Engine: defileSpec reads runnable on a world with no sites at all, and still has assignments — both slots are optional, so neither check can see that it cannot fire (the bug firesUnder exists for)"
+    )
+  ,
+    ( not (firesUnder engineWorld defileSpec [])
+    , "Engine: firesUnder correctly says defileSpec cannot fire on a world with no sites, where runnable and assignmentsUnder both say it can"
+    )
+  ,
+    ( firesUnder richWorld defileSpec []
+    , "Engine: firesUnder says defileSpec can fire on richWorld, where a sanctified site and a rival claimant both exist"
+    )
+  ,
+    ( [Nothing, Nothing] `elem` assignmentsUnder richWorld defileSpec []
+        && null (evalState (rsFire defileSpec richWorld [Nothing, Nothing]) richWorld)
+    , "Engine: the all-empty assignment is one of defileSpec's own valid assignmentsUnder yet fires nothing — exactly why firesUnder probes rsFire rather than counting assignments"
+    )
+  ,
+    ( assignmentsUnder richWorld defileSpec [Just rSt0] == assignmentsUnder richWorld defileSpec [Just rSt0, Nothing]
+    , "Engine: assignmentsUnder pads a short hint list with Nothing rather than truncating the rule"
+    )
+  ,
+    ( null (assignmentsUnder richWorld defileSpec [Just rS1])
+    , "Engine: assignmentsUnder yields nothing for a pin that cannot hold — a Society pinned into defileSpec's Site slot is rejected, not silently rebound to the slot it would fit"
+    )
+  ,
+    ( case slotOptions richWorld defileSpec [Just rSt0] of
+        [(0, _, sites), (1, _, rivals)] -> rSt0 `elem` sites && rS1 `elem` rivals && rS2 `elem` rivals
+        _ -> False
+    , "Engine: slotOptions reports every slot at once — the pinned site among its own options, and both of that site's claimant's rivals for the society slot"
+    )
+  ,
+    ( case slotOptions richWorld defileSpec [Nothing, Just rS1] of
+        [(0, _, sites), _] -> rSt0 `elem` sites
+        _ -> False
+    , "Engine: slotOptions narrows backwards too — pinning the hostile society still reports the site slot's options, which no next-open-slot walk could answer"
+    )
+  ,
+    ( all null [es | (_, _, es) <- slotOptions engineWorld defileSpec []]
+    , "Engine: slotOptions leaves every slot empty where the rule cannot fire at all, rather than offering candidates that would decline"
+    )
+  ,
+    ( "defile" `elem` map rsName (rulesAdmitting richWorld [defileSpec, sanctifySpec] rSt0)
+        && "defile" `notElem` map rsName (rulesAdmitting engineWorld [defileSpec, sanctifySpec] engineSociety)
+    , "Engine: rulesAdmitting offers defile for richWorld's sanctified site but not for engineWorld's society, where rulesFor and runnable would both still list it"
+    )
+
   ]
 
 -- | A fourth, minimal hand-built world purely for 'nextSlotFromPool's
@@ -1272,8 +1383,18 @@ idiosyncrasyChecks =
 -- freshly-generated Ward can rarely compound further (its own
 -- 'backfillWard' call firing) without changing which of the three
 -- branches actually happened.
+-- Pinned to the seeding epoch: backfill is genesis-only now, so exercising
+-- its three branches has to happen where it actually runs. 'richWorld' is
+-- otherwise well past genesis.
 patronTrial :: Int -> (Int, Int)
 patronTrial i =
+  let w0 = richWorld {wGen = mkStdGen i, wEpoch = Epoch backstoryHeadroomDays}
+      (_, w1) = runState (newSociety vaurethine) w0
+   in (M.size (wEntities w1) - M.size (wEntities richWorld), M.size (wEvents w1) - M.size (wEvents richWorld))
+
+-- The same trial run *after* genesis, where backfill must stay silent.
+patronTrialAfterGenesis :: Int -> (Int, Int)
+patronTrialAfterGenesis i =
   let w0 = richWorld {wGen = mkStdGen i}
       (_, w1) = runState (newSociety vaurethine) w0
    in (M.size (wEntities w1) - M.size (wEntities richWorld), M.size (wEvents w1) - M.size (wEvents richWorld))
@@ -1294,6 +1415,68 @@ patronChecks =
   ,
     ( any (\(e, _) -> e > 2) patronTrials
     , "Direct: newSociety's backfillPatron sometimes generates a fresh Ward (at least one extra entity)"
+    )
+  ,
+    ( all (\(e, ev) -> ev == 0 && e <= 2) (map patronTrialAfterGenesis [1 .. 200])
+    , "Direct: backfillPatron is silent once the world is past genesis — no backstory event, and never a generated Ward (the patron Concept may be deduped, so 1 or 2 new entities)"
+    )
+  ,
+    ( let (cult, w') = runState (generateCultFor rSt0) (richWorld {wEpoch = Epoch backstoryHeadroomDays})
+       in not (null (livingMembers w' cult))
+    , "Direct: generateCultFor mints a founder, so a backfilled cult isn't instantly dissolvable for having no living members"
+    )
+  ,
+    ( let w1 = execState (record "test" "slain" [Claim rP1 Slain Nothing Nothing Nothing]) richWorld
+          w2 = execState (record "test" "restored" [Claim rP1 Restored Nothing Nothing Nothing]) w1
+          w3 = execState (record "test" "slain again" [Claim rP1 Slain Nothing Nothing Nothing]) w2
+       in isDead w1 rP1 && not (isDead w2 rP1) && isDead w3 rP1
+    , "Direct: isDead is latest-wins across Slain/Restored — a restored person lives, and can die again"
+    )
+  ,
+    ( let w = execState (record "test" "slain" [Claim rP1 Slain Nothing Nothing Nothing]) richWorld
+          outcomes = evalState (fireMiracleOn w rS0 rSt0 rP2 rP1) w
+       in any
+            ( \o -> case o of
+                MiracleOn mo -> any (\c -> clSubject c == rP1 && clPred c == Restored) (moExtraClaims mo)
+                _ -> False
+            )
+            outcomes
+    , "Direct: a miracle worked upon a dead person records a Restored claim — the resurrection the narration always described"
+    )
+  ,
+    ( let w = execState (record "test" "not dead" []) richWorld
+          outcomes = evalState (fireMiracleOn w rS0 rSt0 rP2 rP1) w
+       in not
+            ( any
+                ( \o -> case o of
+                    MiracleOn mo -> any ((== Restored) . clPred) (moExtraClaims mo)
+                    _ -> False
+                )
+                outcomes
+            )
+    , "Direct: a miracle upon a living person records no Restored claim"
+    )
+  ,
+    ( let w =
+            execState
+              ( record
+                  "test"
+                  "setup"
+                  [ Claim rS1 Grievance (Just (ROf rS0)) (Just rS1) Nothing
+                  , Claim rS1 Venerates (Just (ROf rP0)) (Just rS1) Nothing
+                  ]
+              )
+              richWorld
+          instigatorSlot = rsSlots assassinateSpec !! 2
+       in slotConstraint instigatorSlot w [rS0] rS1
+            && not (slotConstraint instigatorSlot w [rS0, rP0] rS1)
+    , "Direct: a cult holding a grievance can be the hand behind an assassination, but not against someone it venerates"
+    )
+  ,
+    ( case rsSlots assassinateSpec of
+        (societySlot : _) -> not (slotConstraint societySlot richWorld [] rDeadSoc)
+        [] -> False
+    , "Direct: assassinateSpec won't stage a killing inside a society that has already passed from history"
     )
   ]
 

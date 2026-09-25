@@ -933,13 +933,38 @@ newSocietyAt c epoch = do
 -- are dated to "now" (`Nothing` for 'clEpoch') — not backdated; see
 -- 'newPersonAt'\/'newSocietyAt' for the separate, standalone backdated-
 -- minting capability this doesn't touch.
+-- | Whether the world is still being seeded, rather than unfolding.
+--
+-- A fresh world starts at 'backstoryHeadroomDays' (not 0 — 'emptyWorldWith'
+-- leaves room beneath the start for backdated events), and every step
+-- advances the epoch *before* it fires
+-- ('Historian.Engine.intelligentStep'), by a gap of at least one day. So
+-- the starting epoch is reached only during genesis, which makes it a
+-- sufficient test with no new state to carry.
+--
+-- Used to scope backfill to genesis. Backfill gives a freshly-minted
+-- entity a weighted chance to already be entangled with something — a
+-- ward the world has always venerated, a cult that has always venerated
+-- it. As scaffolding for the world's opening that is the point; running
+-- on every later mint it meant every new entity dragged an unexplained
+-- extra layer in behind it, and the chronicle filled with backstory
+-- nobody had asked for. Born dates are unaffected: those come from
+-- 'mint', not from here.
+isSeeding :: World -> Bool
+isSeeding w = unEpoch (wEpoch w) <= backstoryHeadroomDays
+
 backfillWard :: Tuning -> Int -> EntityId -> Chronicle ()
 backfillWard cfg depth ward
   | depth <= 0 = pure ()
   | otherwise = do
       w <- get
-      let candidates = entitiesOf Society w
-      resolution <- weightedResolve candidates (tnBackfillWeights cfg) (generateCultFor ward)
+      -- `activeSocieties`, not `entitiesOf Society`: a dissolved cult
+      -- taking up a new veneration is not backstory, it's a contradiction.
+      let candidates = activeSocieties w
+      resolution <-
+        if isSeeding w
+          then weightedResolve candidates (tnBackfillWeights cfg) (generateCultFor ward)
+          else pure Unbound
       case resolution of
         Unbound -> pure ()
         Bound cult -> do
@@ -954,8 +979,8 @@ backfillWard cfg depth ward
           if venerates w' cult ward
             then pure ()
             else do
-              let text = nameIn w' cult <> " comes to venerate " <> nameIn w' ward <> "."
-              record "backstory" text [Claim cult Venerates (Just (ROf ward)) (Just cult) Nothing]
+              let text = mentionText cult (nameIn w' cult) <> " comes to venerate " <> mentionText ward (nameIn w' ward) <> "."
+              recordA "backstory" text [Claim cult Venerates (Just (ROf ward)) (Just cult) Nothing]
 
 -- | Every Ward currently in the world (Person\/Site\/Item combined) — the
 -- candidate pool 'backfillPatron' picks an existing veneration target
@@ -989,9 +1014,9 @@ generateWardFor c = do
       -- would always come back empty here regardless.
       (item, concept) <- newItem c Nothing
       w <- get
-      record
+      recordA
         "backstory"
-        (nameIn w item <> " takes shape, bound to " <> nameIn w concept <> ".")
+        (mentionText item (nameIn w item) <> " takes shape, bound to " <> mentionText concept (nameIn w concept) <> ".")
         [Claim item Embodies (Just (ROf concept)) Nothing Nothing]
       pure item
 
@@ -1021,7 +1046,10 @@ generateWardFor c = do
 backfillPatron :: Tuning -> EntityId -> Chronicle ()
 backfillPatron cfg cult = do
   w <- get
-  resolution <- weightedResolve (wardsOf w) (tnBackfillWeights cfg) (generateWardFor (cultureOf w cult))
+  resolution <-
+    if isSeeding w
+      then weightedResolve (wardsOf w) (tnBackfillWeights cfg) (generateWardFor (cultureOf w cult))
+      else pure Unbound
   case resolution of
     Unbound -> pure ()
     Bound ward -> do
@@ -1034,8 +1062,8 @@ backfillPatron cfg cult = do
       if venerates w' cult ward
         then pure ()
         else do
-          let text = nameIn w' cult <> " comes to venerate " <> nameIn w' ward <> "."
-          record "backstory" text [Claim cult Venerates (Just (ROf ward)) (Just cult) Nothing]
+          let text = mentionText cult (nameIn w' cult) <> " comes to venerate " <> mentionText ward (nameIn w' ward) <> "."
+          recordA "backstory" text [Claim cult Venerates (Just (ROf ward)) (Just cult) Nothing]
 
 -- | 'newSociety', but also records the patron-concept claims itself
 -- ('Historian.Rules.patronClaims' does the same thing for every other
@@ -1054,12 +1082,20 @@ generateCultFor ward = do
   -- is exactly the "second culture enters the world" case this exists for.
   cultureChoice <- driftCulture (wTuning w) (cultureOf w ward)
   (cult, concept) <- newSociety cultureChoice
+  -- A founder, for the same reason 'Historian.Rules.addSociety' mints one:
+  -- a memberless society can't be coronated, sainted or drawn into a trial
+  -- by combat — and, worse, it satisfies 'Historian.Rules.dissolveSpec'
+  -- ("no living members") the instant it is a day old, so every cult
+  -- conjured here used to pass from history almost as soon as it arrived.
+  founder <- newPerson cultureChoice
   w' <- get
-  record
+  recordA
     "backstory"
-    (nameIn w' cult <> " takes shape, bound to " <> nameIn w' concept <> ".")
+    (mentionText cult (nameIn w' cult) <> " takes shape, bound to " <> mentionText concept (nameIn w' concept) <> ".")
     [ Claim cult Embodies (Just (ROf concept)) Nothing Nothing
     , Claim cult Venerates (Just (ROf concept)) (Just cult) Nothing
+    , Claim founder LeaderOf (Just (ROf cult)) (Just cult) Nothing
+    , Claim founder Leads (Just (ROf cult)) (Just cult) Nothing
     ]
   pure cult
 
@@ -1336,11 +1372,25 @@ backdatedEpoch = do
 -- Haddock) — for a fired rule's own 'Outcome', 'Historian.Render.
 -- commitOutcomes' calls 'recordOutcome' instead.
 record :: Text -> Text -> [Claim] -> Chronicle ()
-record kind txt claims = do
+record kind txt = recordA kind (lit txt)
+
+-- | 'record', for text that knows which entities it names.
+--
+-- 'record' wraps its argument in 'lit', which attaches no 'Mention's at
+-- all — so every event recorded through it reached a host as a sentence
+-- with entity names embedded as bare text and no markers, and a host
+-- consuming 'atMentions' (the whole point of Decision 47) could not make
+-- a single name in it clickable. That was invisible while these events
+-- were rare backstory, and obvious the moment anything rendered them
+-- beside properly-marked ones.
+--
+-- 'record' stays as the convenience form for genuinely name-free text.
+recordA :: Text -> AText -> [Claim] -> Chronicle ()
+recordA kind atxt claims = do
   w <- get
   let eid = EventId (wNextEvent w)
       ep = wEpoch w
-      ev = Event eid ep kind Nothing Nothing (lit txt) (lit txt)
+      ev = Event eid ep kind Nothing Nothing atxt atxt
       fs = [Fact (clSubject c) (clPred c) (clObject c) (fromMaybe ep (clEpoch c)) eid (clAttestedBy c) | c <- claims]
   put
     w
@@ -1442,8 +1492,23 @@ allegiances w =
     , Just (ROf o) <- [factObject f]
     ]
 
+-- | Whether this person is currently dead — latest-fact-wins across the
+-- closed set {'Slain', 'Restored'}, the same shape
+-- 'Historian.World.regardOf' reads for regard and 'holdsGrievance' for
+-- grievances.
+--
+-- Was @any Slain@, which made death permanent and unrepresentable
+-- otherwise: a miracle on a dead person has always *narrated* a
+-- resurrection ('Historian.Render.render' says "calls back from among the
+-- dead") while the person stayed dead to every query that mattered, so a
+-- restored saint still couldn't lead, be coronated, or keep their society
+-- from dissolving out from under them. 'wFacts' is newest-first (see
+-- 'record'), so the first match is the latest.
 isDead :: World -> EntityId -> Bool
-isDead w i = any (\f -> factPred f == Slain && factSubject f == i) (wFacts w)
+isDead w i =
+  case [factPred f | f <- wFacts w, factSubject f == i, factPred f `elem` [Slain, Restored]] of
+    (Slain : _) -> True
+    _ -> False
 
 livingMembers :: World -> EntityId -> [EntityId]
 livingMembers w s = [p | (p, s') <- allegiances w, s' == s, not (isDead w p)]
@@ -1481,6 +1546,27 @@ venerates w subject obj =
 regardClaim :: EntityId -> EntityId -> Regard -> Claim
 regardClaim cult thing Venerated = Claim cult Venerates (Just (ROf thing)) (Just cult) Nothing
 regardClaim cult thing Shunned = Claim cult Shuns (Just (ROf thing)) (Just cult) Nothing
+
+-- | Every society's two intrinsic patron-concept claims — 'Embodies'
+-- (unattested, like a fresh item's own) and an initial 'Venerates' (self-
+-- attested), the starting regard a later leadership change can flip. Every
+-- society-minting call site (genesis, schism, merger's new-society branch)
+-- adds these alongside its own claims. See Decision 19 in .claude/docs/DESIGN.md.
+--
+-- Lives here rather than in 'Historian.Rules' (where it started) because
+-- 'Historian.Engine.generateForKind' needs it too, and 'Historian.Engine'
+-- sits *below* 'Historian.Rules' — this is the shared layer both can see.
+patronClaims :: EntityId -> EntityId -> [Claim]
+patronClaims society concept =
+  [ Claim society Embodies (Just (ROf concept)) Nothing Nothing
+  , Claim society Venerates (Just (ROf concept)) (Just society) Nothing
+  ]
+
+-- | A freshly-minted 'Item''s single intrinsic claim — the item half of
+-- what 'patronClaims' does for a society. Unattested: an item embodying
+-- an idea is structural, not anyone's opinion of it.
+itemEmbodiesClaim :: EntityId -> EntityId -> Claim
+itemEmbodiesClaim item concept = Claim item Embodies (Just (ROf concept)) Nothing Nothing
 
 regardOf :: World -> EntityId -> EntityId -> Maybe Regard
 regardOf w subject thing =

@@ -38,15 +38,16 @@
 -- See @.claude/docs/DESIGN.md@ Decision 7.
 module Main (main, generateJson, historianNew, historianNewTuned, historianDefaultTuning, historianAddSociety, historianAddPerson, historianGenerateWord, historianGenerateName, historianPracticeText, historianStep, historianQuery, historianRulesFor, historianNextSlot, historianAlloc, historianDealloc, historianFree) where
 
-import Control.Monad.State.Strict (runState)
+import Control.Monad.State.Strict (execState, runState)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Types as Aeson (parseMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (find)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)
@@ -56,12 +57,14 @@ import Foreign.Ptr (castPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (poke)
 import Historian.Corpus (allCultures)
-import Historian.Engine (RuleSpec (rsName), nextSlotFromPool, queryEntity, rulesFor, stepAutonomous)
-import Historian.Json (decodeTuningOverride, encodeNextSlotFromPool, encodeQueryResult, encodeRulesFor, encodeStepResult, encodeTuning, encodeWorld)
+import Data.Version (showVersion)
+import qualified Paths_heretical_historian as Paths
+import Historian.Engine (RuleSpec (rsName), firesUnder, influenceStep, nextSlotFromPool, queryEntity, rulesAdmitting, rulesFor, slotOptions, stepAutonomous)
+import Historian.Json (decodeSlotBindings, decodeSlotHints, decodeTuningOverride, encodeNextSlotFromPool, encodeQueryResult, encodeRuleCatalogue, encodeRulesFor, encodeSlotOptions, encodeStepResult, encodeTuning, encodeWorld)
 import Historian.Render (commitOutcomes)
-import Historian.Rules (addPerson, addSociety, generate, genesisWorld, genesisWorldWith, ruleSpecs)
+import Historian.Rules (addPerson, addSociety, foundSocietySpec, generate, genesisWorld, genesisWorldWith, influenceableSpecs, ruleSpecs)
 import Historian.Types (Culture (..), EntityId (..), FoundingOutcome (fdSociety), Outcome (Founding), Regard (..), VoiceRegister (..), World, defaultTuning)
-import Historian.World (generateNameSeeded, generateWordSeeded, practiceTextSeeded)
+import Historian.World (advanceEpoch, generateNameSeeded, generateWordSeeded, practiceTextSeeded)
 
 foreign export ccall "generateJson" generateJson :: Int -> Int -> IO CString
 
@@ -346,6 +349,64 @@ historianNextSlot sp ruleNameC poolJson = do
     (rs : _) -> bsToCString (BSL.toStrict (encodeNextSlotFromPool w (nextSlotFromPool w ruleSpecs rs pool)))
     [] -> bsToCString (BSL.toStrict (encodeNextSlotFromPool w (Right Nothing)))
 
+foreign export ccall "historian_slot_options" historianSlotOptions :: Handle -> CString -> CString -> IO CString
+
+-- | Every slot of the named rule and, for each, every entity that could
+-- still fill it while leaving the rule actually firing, given the
+-- positional bindings in @bindingsJson@ (one entity id or @null@ per slot
+-- — see 'Historian.Json.decodeSlotBindings') — plus whether it fires under
+-- those bindings as they stand. See
+-- 'Historian.Engine.slotOptions'\/'encodeSlotOptions'.
+--
+-- The steering counterpart to @historian_next_slot@, and the one a host
+-- rebuilding a whole form after a single change should call. Two
+-- differences, both deliberate: bindings here are *positional*, so a
+-- caller that knows which slot it means never provokes the
+-- @"ambiguous"@ answer an unordered pool has to; and every slot is
+-- answered at once rather than only the next open one, because once
+-- "does it fire" rather than slot order is the test, a later choice
+-- narrows an earlier slot exactly as much as the reverse.
+--
+-- An unrecognised @ruleName@ comes back as @fires: false@ with no slots
+-- rather than trapping, the same not-found-is-just-empty discipline
+-- @historian_next_slot@ keeps. Read-only: 'Historian.Engine.firesUnder'
+-- probes each rule's own firing under 'evalState' and discards it, so
+-- this never perturbs the handle's next step.
+historianSlotOptions :: Handle -> CString -> CString -> IO CString
+historianSlotOptions sp ruleNameC bindingsJson = do
+  w <- readIORef =<< deRefStablePtr sp
+  ruleName <- cstringToText ruleNameC
+  bindings <- decodeSlotBindings . BSL.fromStrict <$> BS.packCString bindingsJson
+  case find ((== ruleName) . rsName) influenceableSpecs of
+    Nothing -> bsToCString (BSL.toStrict (encodeSlotOptions w False []))
+    Just rs ->
+      let dossiers = [(i, slot, mapMaybe (queryEntity w influenceableSpecs) es) | (i, slot, es) <- slotOptions w rs bindings]
+       in bsToCString (BSL.toStrict (encodeSlotOptions w (firesUnder w rs bindings) dossiers))
+
+foreign export ccall "historian_rules_admitting" historianRulesAdmitting :: Handle -> Int -> IO CString
+
+-- | The rules that could fire with the given entity in one of their slots,
+-- in the same catalogue shape @historian_rules@ returns — see
+-- 'Historian.Engine.rulesAdmitting'.
+--
+-- What a host populating "events this entity could take part in" wants,
+-- and a strictly stronger answer than @historian_rules_for@: that scores
+-- whether the entity can be *bound* to a slot, which does not imply the
+-- resulting event happens. 'Historian.Rules.defileSpec' is the case that
+-- separates them — both its slots are optional, so it scores and reads
+-- @runnable@ in worlds where its own firing yields nothing.
+--
+-- A negative @entityId@, or one naming no entity, answers with the rules
+-- that can fire with nothing pinned at all — the honest reading of "no
+-- subject", and what an unsubjected caller should see.
+historianRulesAdmitting :: Handle -> Int -> IO CString
+historianRulesAdmitting sp eid = do
+  w <- readIORef =<< deRefStablePtr sp
+  let admitting
+        | eid < 0 = [rs | rs <- influenceableSpecs, firesUnder w rs []]
+        | otherwise = rulesAdmitting w influenceableSpecs (EntityId eid)
+  bsToCString (BSL.toStrict (encodeRuleCatalogue w admitting))
+
 -- | Like 'Foreign.C.String.peekCString', but decoded as UTF-8 rather than
 -- byte-by-byte as Latin-1 — the input-side mirror of 'bsToCString's own
 -- care on the way out.
@@ -359,6 +420,79 @@ decodePool :: CString -> IO [EntityId]
 decodePool poolJson = do
   bs <- BS.packCString poolJson
   pure (maybe [] (map EntityId) (Aeson.decode (BSL.fromStrict bs)))
+
+foreign export ccall "historian_rules" historianRules :: Handle -> IO CString
+
+-- | The whole rule catalogue: every rule a host may name, its slots in
+-- declaration order, and whether it could fire against the handle's
+-- current 'World' right now — see 'encodeRuleCatalogue'.
+--
+-- Distinct from 'historianRulesFor', which ranks rules by how much use
+-- they could make of a *given* entity pool and drops everything scoring
+-- zero. That makes it useless for enumeration: an empty pool ranks
+-- nothing, so before this existed a host had no way to ask what events
+-- exist at all. Read-only.
+--
+-- Runs over 'influenceableSpecs', so 'Historian.Rules.foundSocietySpec'
+-- is listed alongside the ordinary rules even though autonomous stepping
+-- never draws it. @ruleCataclysm@ is absent for free: it is a plain
+-- 'Historian.Rules.Rule' and never a 'RuleSpec', so it appears in no
+-- spec list anywhere.
+historianRules :: Handle -> IO CString
+historianRules sp = do
+  w <- readIORef =<< deRefStablePtr sp
+  bsToCString (BSL.toStrict (encodeRuleCatalogue w influenceableSpecs))
+
+foreign export ccall "historian_influence" historianInfluence :: Handle -> CString -> CString -> IO CString
+
+-- | Advances the handle's 'World' by one *steered* step: the rule named
+-- by @ruleName@, fired against the positional slot hints in @hintsJson@
+-- (see 'decodeSlotHints' — an entity id, @"fresh"@, or @null@ per slot).
+-- Returns the same 'encodeStepResult' delta 'historianStep' does, so a
+-- host can feed both through one code path.
+--
+-- Advances the epoch, exactly as 'historianStep' does — see
+-- 'Historian.Engine.influenceStep' for why that lives there rather than
+-- in 'StepRuleHinted' itself.
+--
+-- @found-society@ is the one rule that takes more than slots: its name
+-- and culture are neither of them entity ids, so they ride in
+-- @hintsJson@ as an *object* (@{"name":…,"culture":…}@) instead of an
+-- array, and reach 'Historian.Rules.addSociety' directly. An array (or
+-- anything malformed) is the fully auto-rolled founding, which is
+-- precisely what 'foundSocietySpec's own 'rsFire' does — the two paths
+-- agree by construction rather than by coincidence.
+--
+-- An unrecognised @ruleName@ is a no-op returning an empty delta, the
+-- same never-trap discipline 'historianNextSlot' keeps for the same case.
+historianInfluence :: Handle -> CString -> CString -> IO CString
+historianInfluence sp ruleNameC hintsJson = do
+  ref <- deRefStablePtr sp
+  before <- readIORef ref
+  ruleName <- cstringToText ruleNameC
+  hintsBs <- BS.packCString hintsJson
+  let hintsLbs = BSL.fromStrict hintsBs
+      after = case find ((== ruleName) . rsName) influenceableSpecs of
+        Nothing -> before
+        Just rs
+          | rsName rs == rsName foundSocietySpec ->
+              let opts = decodeAddSocietyOptions hintsLbs
+               in execState
+                    (advanceEpoch >> addSociety (asoName opts) (asoCulture opts) Nothing Nothing >>= commitOutcomes)
+                    before
+          | otherwise -> influenceStep rs (decodeSlotHints hintsLbs) before
+  writeIORef ref after
+  bsToCString (BSL.toStrict (encodeStepResult before after))
+
+foreign export ccall "historian_version" historianVersion :: IO CString
+
+-- | This package's own version, as a bare string (@"0.1.0.0"@) — not
+-- JSON, same as 'historianGenerateWord'\/'historianGenerateName'. Read
+-- from Cabal's generated 'Paths.version' rather than a constant here, so
+-- it cannot drift from the @version:@ field the release tag is cut
+-- against. Handle-free: it describes the module, not any world.
+historianVersion :: IO CString
+historianVersion = bsToCString (TE.encodeUtf8 (T.pack (showVersion Paths.version)))
 
 foreign export ccall "historian_alloc" historianAlloc :: Int -> IO CString
 

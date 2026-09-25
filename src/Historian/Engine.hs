@@ -17,14 +17,13 @@
 -- keeps working unchanged.
 module Historian.Engine where
 
-import Control.Applicative ((<|>))
-import Control.Monad.State.Strict (execState, get)
-import Data.List (delete, nubBy)
+import Control.Monad.State.Strict (evalState, execState, get)
+import Data.List (delete, nub, nubBy)
 import qualified Data.Map.Strict as M
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Historian.Corpus (vaurethine)
-import Historian.Render (commitOutcomes)
+import Historian.Render (commitOutcomes, commitOutcomesWith)
 import Historian.Types
 import Historian.World
 
@@ -46,6 +45,29 @@ data Slot = Slot
   -- slot may end up 'Nothing' if nothing qualifies (never force-generates
   -- an optional slot just because a required one nearby did).
   }
+
+-- | What a caller asks of one slot, positionally. Three states, not two:
+-- 'HintRandom' (the old 'Nothing') leaves it to 'resolveSlot'\'s ordinary
+-- pick-existing-then-maybe-mint, which meant a caller had no way to say
+-- "a *new* entity here" — an existing candidate always won when one was
+-- available. 'HintFresh' is that missing third state, and the only way
+-- 'generateForKind' is reachable for a slot that *does* have candidates.
+data SlotHint
+  = -- | Bind this exact entity. The old @'Just' e@.
+    HintEntity EntityId
+  | -- | Mint a fresh entity of the slot's own 'slotKind', ignoring every
+    -- existing candidate. Honoured for an optional slot too: an explicit
+    -- request isn't the "don't force-generate an optional slot just
+    -- because a required one nearby did" default 'slotRequired' governs.
+    HintFresh
+  | -- | Leave it to the engine. The old @'Nothing'@.
+    HintRandom
+
+-- | The old positional-hint shape, widened — lets every existing
+-- @['Maybe' 'EntityId']@ caller ('StepRule', 'resolveAllExact', and every
+-- hand-built test world) keep its exact meaning without being rewritten.
+hintsFromMaybes :: [Maybe EntityId] -> [SlotHint]
+hintsFromMaybes = map (maybe HintRandom HintEntity)
 
 -- | A rule's declarative shape — a small CSP over the rule's free
 -- variables, one 'Slot' apiece — what 'Historian.Rules.ruleSchism' (etc.)
@@ -104,13 +126,34 @@ runnableRuleSpecs w = filter (runnable w)
 -- drops that second half rather than guessing at it. No current
 -- 'RuleSpec' generates either 'Kind', so this is unexercised; settle the
 -- shape in code once one does, not here.
-generateForKind :: Culture -> Kind -> Chronicle EntityId
+generateForKind :: Culture -> Kind -> Chronicle (EntityId, [Claim])
 generateForKind cult k = case k of
-  Person -> newPerson cult
-  Site -> newSite cult
-  Society -> fst <$> newSociety cult
-  Item -> fst <$> newItem cult Nothing
-  Concept -> conceptNamed cult "the Unnamed"
+  Person -> noClaims (newPerson cult)
+  Site -> noClaims (newSite cult)
+  -- 'newSociety'\/'newItem' hand back a patron\/embodied 'Concept' and
+  -- expect the caller to assert the link; that second half used to be
+  -- dropped here. The claims ride out to 'intelligentStep', which hands
+  -- them to the firing rule's own event — the same place every
+  -- hand-written call site records them.
+  Society -> do
+    (s, concept) <- newSociety cult
+    -- A founder, same reason 'Historian.World.generateCultFor' and
+    -- 'Historian.Rules.addSociety' mint one: a memberless society
+    -- satisfies 'Historian.Rules.dissolveSpec' the day after it exists.
+    founder <- newPerson cult
+    pure
+      ( s
+      , patronClaims s concept
+          ++ [ Claim founder LeaderOf (Just (ROf s)) (Just s) Nothing
+             , Claim founder Leads (Just (ROf s)) (Just s) Nothing
+             ]
+      )
+  Item -> do
+    (i, concept) <- newItem cult Nothing
+    pure (i, [itemEmbodiesClaim i concept])
+  Concept -> noClaims (conceptNamed cult "the Unnamed")
+  where
+    noClaims = fmap (\e -> (e, []))
 
 -- | Resolve one slot: a caller-supplied hint wins outright; otherwise pick
 -- an existing candidate; otherwise, if required, mint a fresh one;
@@ -119,16 +162,31 @@ generateForKind cult k = case k of
 -- a curse target) is deliberately left to the caller — passing no hint
 -- here always means "try," keeping 'Slot' itself plain data with no
 -- probability baked in.
-resolveSlot :: World -> Culture -> [EntityId] -> Maybe EntityId -> Slot -> Chronicle (Maybe EntityId)
-resolveSlot w cult resolved hint slot = case hint of
-  Just e -> pure (Just e)
-  Nothing -> do
+resolveSlot :: World -> Culture -> [EntityId] -> SlotHint -> Slot -> Chronicle (Maybe EntityId)
+resolveSlot w cult resolved hint slot = fst <$> resolveSlotWithClaims w cult resolved hint slot
+
+-- | 'resolveSlot', also handing back whatever intrinsic claims minting a
+-- fresh entity incurred (see 'generateForKind'). Picking an existing
+-- candidate never yields any.
+resolveSlotWithClaims :: World -> Culture -> [EntityId] -> SlotHint -> Slot -> Chronicle (Maybe EntityId, [Claim])
+resolveSlotWithClaims w cult resolved hint slot = case hint of
+  HintEntity e -> pure (Just e, [])
+  -- Unconditional, and deliberately ahead of the candidate pick: asking
+  -- for a fresh entity is the whole point of this hint, so an available
+  -- existing candidate must not pre-empt it the way it does for
+  -- 'HintRandom'.
+  HintFresh -> minted
+  HintRandom -> do
     picked <- pick (candidatesFor w resolved slot)
     case picked of
-      Just e -> pure (Just e)
+      Just e -> pure (Just e, [])
       Nothing
-        | slotRequired slot -> Just <$> generateForKind cult (slotKind slot)
-        | otherwise -> pure Nothing
+        | slotRequired slot -> minted
+        | otherwise -> pure (Nothing, [])
+  where
+    minted = do
+      (e, cs) <- generateForKind cult (slotKind slot)
+      pure (Just e, cs)
 
 -- | Resolve every slot of a rule in order. Two ways a slot can arrive
 -- pre-bound: an explicit positional hint (from 'StepRule'), or — when a
@@ -140,28 +198,41 @@ resolveSlot w cult resolved hint slot = case hint of
 -- whichever entity resolved first (mirroring how every existing @fireX@
 -- computes its own @cult = cultureOf w s@ once and reuses it), falling
 -- back to 'vaurethine' only if nothing has resolved yet.
-resolveAll :: World -> [Slot] -> [Maybe EntityId] -> [EntityId] -> Chronicle [Maybe EntityId]
-resolveAll w slots posHints = go [] slots (posHints ++ repeat Nothing)
+resolveAll :: World -> [Slot] -> [SlotHint] -> [EntityId] -> Chronicle [Maybe EntityId]
+resolveAll w slots posHints pool = fst <$> resolveAllWithClaims w slots posHints pool
+
+-- | 'resolveAll', also accumulating the intrinsic claims of every slot
+-- that ended up minting a fresh entity, in slot order. 'intelligentStep'
+-- hands these to the firing rule's own event so a generated society or
+-- item is no less complete than a hand-written rule's would be.
+resolveAllWithClaims :: World -> [Slot] -> [SlotHint] -> [EntityId] -> Chronicle ([Maybe EntityId], [Claim])
+resolveAllWithClaims w slots posHints = go [] slots (posHints ++ repeat HintRandom)
   where
-    go _ [] _ _ = pure []
+    go _ [] _ _ = pure ([], [])
     go resolved (slot : slots') (posHint : posHints') remainingPool = do
       let cult = case resolved of
             (e : _) -> cultureOf w e
             [] -> vaurethine
+          -- Only 'HintRandom' leaves room for the pool to fill a slot
+          -- implicitly: 'HintEntity' already names one, and 'HintFresh'
+          -- is an explicit request for a *new* entity that a pool match
+          -- would silently defeat.
           implicitHint = case posHint of
-            Just _ -> Nothing
-            Nothing -> listToMaybe [e | e <- remainingPool, matchesSlot resolved e]
+            HintRandom -> listToMaybe [e | e <- remainingPool, matchesSlot resolved e]
+            _ -> Nothing
           matchesSlot ctx e = case M.lookup e (wEntities w) of
             Just ent -> entKind ent == slotKind slot && slotConstraint slot w ctx e
             Nothing -> False
-      m <- resolveSlot w cult resolved (posHint <|> implicitHint) slot
-      let usedImplicit = case (posHint, implicitHint) of
-            (Nothing, Just e) -> Just e
-            _ -> Nothing
+          effectiveHint = case implicitHint of
+            Just e -> HintEntity e
+            Nothing -> posHint
+      (m, cs) <- resolveSlotWithClaims w cult resolved effectiveHint slot
+      let usedImplicit = implicitHint
           remainingPool' = maybe remainingPool (\e -> filter (/= e) remainingPool) usedImplicit
           resolved' = resolved ++ maybe [] pure m
-      (m :) <$> go resolved' slots' posHints' remainingPool'
-    go _ _ _ _ = pure []
+      (ms, cs') <- go resolved' slots' posHints' remainingPool'
+      pure (m : ms, cs ++ cs')
+    go _ _ _ _ = pure ([], [])
 
 -- | The rule's full solution set — every satisfying assignment, the
 -- Cartesian product across its slots (an optional slot's own contribution
@@ -185,6 +256,117 @@ allAssignments w rs = go [] (rsSlots rs)
       , restAssignment <- go (resolved ++ maybe [] pure opt) rest
       ]
 
+-- | 'allAssignments' narrowed to the assignments still consistent with a
+-- caller's positional choices: one 'Maybe' per slot in declaration order,
+-- 'Just' pinning that slot, 'Nothing' leaving it to the search. Hints
+-- shorter than the rule are padded with 'Nothing', longer ones ignored
+-- past the end — the same never-fail padding discipline 'StepRule' keeps.
+--
+-- A pinned entity is still checked against its own 'slotConstraint' in
+-- the context the search built for it, so an impossible pin yields no
+-- assignments rather than a wrong one. This is deliberately the
+-- *positional* counterpart to 'poolAssignments': a caller steering one
+-- slot at a time knows which slot it means, and collapsing that into an
+-- unordered pool is what makes 'nextSlotFromPool' have to report
+-- 'PoolAmbiguity' at all.
+assignmentsUnder :: World -> RuleSpec -> [Maybe EntityId] -> [[Maybe EntityId]]
+assignmentsUnder w rs hints0 = go [] (rsSlots rs) (hints0 ++ repeat Nothing)
+  where
+    go _ [] _ = [[]]
+    go resolved (slot : rest) (h : hs) =
+      [ opt : restAssignment
+      | opt <- options resolved slot h
+      , restAssignment <- go (resolved ++ maybe [] pure opt) rest hs
+      ]
+    -- Unreachable: the hint list is infinite by construction above.
+    go _ (_ : _) [] = []
+    options resolved slot = \case
+      Just e
+        | e `elem` candidatesFor w resolved slot -> [Just e]
+        | otherwise -> []
+      Nothing
+        | slotRequired slot -> map Just (candidatesFor w resolved slot)
+        -- Real candidates before the empty option, which is the reverse of
+        -- 'allAssignments'\' own order and matters a great deal here.
+        -- 'firesUnder' is lazy in this list, and the assignment that leaves
+        -- an optional slot empty is precisely the one a rule like
+        -- 'Historian.Rules.defileSpec' refuses to fire on — leading with it
+        -- made every "can this fire" question walk the whole solution set
+        -- before finding the answer, and a host asking per candidate per
+        -- slot felt it (seconds, in a world of only forty entities).
+        --
+        -- Safe to reorder only because this function is new and has no
+        -- other callers: 'allAssignments' keeps 'Nothing' first, and must,
+        -- since 'StepAny' draws from its order and every pinned test seed
+        -- in this suite depends on that draw.
+        | otherwise -> map Just (candidatesFor w resolved slot) ++ [Nothing]
+
+-- | Will this rule, under these positional hints, actually produce an
+-- event?
+--
+-- The question 'runnable' and 'allAssignments' both leave unanswered, and
+-- the one a steering host actually needs. Neither of those consults
+-- 'rsFire', and a rule's own firing is what ultimately declines: every
+-- slot of 'Historian.Rules.defileSpec' is optional, so it is vacuously
+-- 'runnable' in every world and @[Nothing, Nothing]@ is one of its
+-- perfectly valid 'allAssignments' — but its 'rsFire' returns no outcomes
+-- unless both bound, so a host that offered it on either of those answers
+-- was offering an event that would then silently not happen.
+--
+-- Answered by probing 'rsFire' itself under 'evalState', which is safe
+-- precisely because firing is a 'Chronicle' computation: the probe's
+-- minting, RNG advance and any other 'World' mutation are all discarded
+-- with the state, so nothing observable happens and the caller's next real
+-- step is unperturbed (invariant 8's discipline, reached a different way).
+-- Lazy in 'assignmentsUnder', so a rule that can fire stops at the first
+-- assignment that does rather than enumerating its whole solution set.
+firesUnder :: World -> RuleSpec -> [Maybe EntityId] -> Bool
+firesUnder w rs hints =
+  any (\a -> not (null (evalState (rsFire rs w a) w))) (assignmentsUnder w rs hints)
+
+-- | The live per-slot answer a steering host needs: for each slot, every
+-- entity that could still go there such that the rule as a whole *fires*,
+-- given everything already chosen for the other slots.
+--
+-- This is the "change one entry, see what is still possible everywhere
+-- else" query. Deliberately not a walk that stops at the first open slot
+-- ('nextSlotCandidates'): a host rebuilding a whole form needs every
+-- slot's domain at once, including slots *before* the one just changed,
+-- since narrowing runs both ways once 'firesUnder' rather than slot order
+-- is the test.
+--
+-- Computed from one shared enumeration of the firing assignments rather
+-- than by asking 'firesUnder' per candidate per slot. Both give the same
+-- answer — an entity belongs in slot @i@\'s domain exactly when some
+-- firing assignment consistent with the hints places it there — but the
+-- per-candidate version re-walked the same search for every candidate, and
+-- 'slotConstraint's are not cheap: several scan the whole fact log, so the
+-- redundancy showed up as whole seconds in a world of forty-odd entities,
+-- which is not a price an interactive form can pay on every change.
+slotOptions :: World -> RuleSpec -> [Maybe EntityId] -> [(Int, Slot, [EntityId])]
+slotOptions w rs hints =
+  [ (i, slot, [e | e <- excludeMundane w (entitiesOf (slotKind slot) w), e `elem` placed])
+  | (i, slot) <- zip [0 ..] (rsSlots rs)
+  -- One pass per slot over the shared solution set, not per candidate.
+  , let placed = nub [e | a <- firing, Just e <- take 1 (drop i a)]
+  ]
+  where
+    firing = [a | a <- assignmentsUnder w rs hints, not (null (evalState (rsFire rs w a) w))]
+
+-- | Every rule that could fire with this entity placed in one of its
+-- slots — the rule-level counterpart to 'slotOptions', and what a host
+-- populating an "events this entity could take part in" list should ask
+-- instead of 'rulesFor'. 'rulesFor' scores whether the entity can be
+-- *bound*, which is a weaker claim than whether the resulting event
+-- happens.
+rulesAdmitting :: World -> [RuleSpec] -> EntityId -> [RuleSpec]
+rulesAdmitting w specs e =
+  [ rs
+  | rs <- specs
+  , let n = length (rsSlots rs)
+  , or [firesUnder w rs [if j == i then Just e else Nothing | j <- [0 .. n - 1]] | i <- [0 .. n - 1]]
+  ]
+
 -- | What a caller can ask 'intelligentStep' to do.
 data StepRequest
   = -- | Today's autonomous behavior, unchanged in spirit — every given
@@ -196,6 +378,14 @@ data StepRequest
     -- doesn't match — never a failure), or 'Nothing' to let the engine
     -- resolve it.
     StepRule RuleSpec [Maybe EntityId]
+  | -- | 'StepRule' over the full three-state 'SlotHint' — the shape an
+    -- external caller (the wasm boundary's @historian_influence@) needs,
+    -- since only this one can express "mint a fresh entity for this
+    -- slot". 'StepRule' stays exactly as it was: every hand-built test
+    -- world manages its own epoch through it, and its two-state hint is
+    -- still the right shape when a caller has nothing to say about
+    -- freshness.
+    StepRuleHinted RuleSpec [SlotHint]
   | -- | No rule specified — pick a runnable\/useful 'RuleSpec' weighted
     -- toward how many of these entities a single consistent binding can
     -- actually, jointly use ('bestPoolUse'), then fire it against one of
@@ -250,10 +440,10 @@ intelligentStep specs _ StepAny = do
     (p : ps) -> do
       (rs, assignment) <- pickOr p (p : ps)
       rsFire rs w assignment >>= commitOutcomes
-intelligentStep _ w (StepRule rs hints) = do
-  let hints' = take (length (rsSlots rs)) (hints ++ repeat Nothing)
-  resolved <- resolveAll w (rsSlots rs) hints' []
-  rsFire rs w resolved >>= commitOutcomes
+intelligentStep _ w (StepRule rs hints) =
+  fireHinted w rs (hintsFromMaybes (take (length (rsSlots rs)) (hints ++ repeat Nothing)))
+intelligentStep _ w (StepRuleHinted rs hints) =
+  fireHinted w rs (take (length (rsSlots rs)) (hints ++ repeat HintRandom))
 intelligentStep specs _ (StepEntities es) = do
   advanceEpoch
   w <- get
@@ -263,8 +453,17 @@ intelligentStep specs _ (StepEntities es) = do
     [] -> pure ()
     _ -> do
       rs <- weighted [(1 + usefulness rs', rs') | rs' <- candidates]
-      resolved <- resolveAllExact w (rsSlots rs) es
-      rsFire rs w resolved >>= commitOutcomes
+      (resolved, minted) <- resolveAllExactWithClaims w (rsSlots rs) es
+      rsFire rs w resolved >>= commitOutcomesWith minted
+
+-- | Resolve a named rule's slots under positional hints and fire it,
+-- carrying any minting claims onto the resulting event. The shared body
+-- of 'StepRule' and 'StepRuleHinted' — neither advances the epoch (see
+-- 'intelligentStep's own Haddock for why).
+fireHinted :: World -> RuleSpec -> [SlotHint] -> Chronicle ()
+fireHinted w rs hints = do
+  (resolved, minted) <- resolveAllWithClaims w (rsSlots rs) hints []
+  rsFire rs w resolved >>= commitOutcomesWith minted
 
 -- | 'intelligentStep' run once, autonomously, and applied directly — the
 -- plain @World -> World@ shape a host-facing caller (wasm's
@@ -272,6 +471,28 @@ intelligentStep specs _ (StepEntities es) = do
 -- 'Chronicle'\/@mtl@ itself.
 stepAutonomous :: [RuleSpec] -> World -> World
 stepAutonomous specs w = execState (intelligentStep specs w StepAny) w
+
+-- | One named rule fired under explicit per-slot hints, applied directly
+-- — the @World -> World@ counterpart to 'stepAutonomous' for a *steered*
+-- step, and what the wasm boundary's @historian_influence@ runs.
+--
+-- Advances the epoch first, which 'StepRuleHinted' itself pointedly does
+-- not. The two are not in conflict: 'StepRuleHinted' is the precise
+-- construction tool (a test world placing an event in an epoch it
+-- controls), while this is a host asking history to move forward in a
+-- direction of its choosing — the same forward-progress contract
+-- 'historian_step' has, just with the rule and its cast chosen rather
+-- than rolled. Keeping the advance here rather than in 'intelligentStep'
+-- leaves every existing hand-built caller untouched.
+--
+-- The rule is fired against the *post-advance* world, so any age-gated
+-- 'slotConstraint' sees the same epoch the resulting event is stamped with.
+influenceStep :: RuleSpec -> [SlotHint] -> World -> World
+influenceStep rs hints =
+  execState $ do
+    advanceEpoch
+    w <- get
+    intelligentStep [] w (StepRuleHinted rs hints)
 
 -- | A structured, queryable view of one entity — the "query on any
 -- existing world state indexed by any entity id" half of this feature.
@@ -403,9 +624,14 @@ pickPoolShape w slots pool = case maximalPoolAssignments w slots pool of
 -- 'resolveAll'\'s ordinary world-wide pick\/generate\/omit resolution,
 -- exactly as 'StepEntities' already relied on before this existed.
 resolveAllExact :: World -> [Slot] -> [EntityId] -> Chronicle [Maybe EntityId]
-resolveAllExact w slots pool = do
+resolveAllExact w slots pool = fst <$> resolveAllExactWithClaims w slots pool
+
+-- | 'resolveAllExact', keeping the minting claims — 'resolveAllWithClaims'
+-- is to 'resolveAll' as this is to 'resolveAllExact'.
+resolveAllExactWithClaims :: World -> [Slot] -> [EntityId] -> Chronicle ([Maybe EntityId], [Claim])
+resolveAllExactWithClaims w slots pool = do
   shape <- pickPoolShape w slots pool
-  resolveAll w slots shape []
+  resolveAllWithClaims w slots (hintsFromMaybes shape) []
 
 -- | The other direction: given a rule and the slots already chosen
 -- ('StepRule'\'s own hint shape — positional, 'Nothing' for "not yet

@@ -82,6 +82,42 @@ ruleSpecs =
   , coupSpec
   ]
 
+-- | Founding, as a 'RuleSpec' — so a host driving the engine by rule name
+-- ('Historian.Engine.StepRuleHinted', the wasm boundary's
+-- @historian_influence@) can ask for a new society through exactly the
+-- same door as every other event, rather than a second bespoke entry
+-- point beside it.
+--
+-- Zero slots, deliberately. The two things a founding actually takes — a
+-- name and a 'Culture' — are neither of them an 'EntityId', so neither
+-- can be a 'Slot'; they ride as call options instead. ('addSociety's
+-- third parameter, an initial regard toward a Ward, *would* suit a slot,
+-- but a Ward is any of Person\/Item\/Site and 'slotKind' is a single
+-- 'Kind' — there is no union slot to express it with.) Firing it with no
+-- options is the fully auto-rolled founding, which is exactly what
+-- 'rsFire' does here; a caller supplying a name or culture reaches the
+-- same 'addSociety' with those arguments filled in.
+foundSocietySpec :: RuleSpec
+foundSocietySpec =
+  RuleSpec
+    { rsName = "found-society"
+    , rsSlots = []
+    , rsFire = \_ _ -> addSociety Nothing Nothing Nothing Nothing
+    }
+
+-- | Every rule a *host* may ask for by name, which is 'ruleSpecs' plus
+-- 'foundSocietySpec'.
+--
+-- 'foundSocietySpec' is kept out of 'ruleSpecs' itself on purpose: a
+-- zero-slot rule has exactly one satisfying assignment and is therefore
+-- always runnable, so adding it there would put a spontaneous founding
+-- into the uniform pool 'Historian.Engine.StepAny' draws from and have
+-- societies appear out of nothing on ordinary autonomous steps. Founding
+-- stays caller-driven, as it has always been; this list only widens what
+-- a caller is allowed to *name*.
+influenceableSpecs :: [RuleSpec]
+influenceableSpecs = ruleSpecs ++ [foundSocietySpec]
+
 -- Genesis --------------------------------------------------------------
 
 genesis :: Chronicle [Outcome]
@@ -157,25 +193,14 @@ addPerson societyId mName = do
     then do
       p <- newPersonNamed (cultureOf w societyId) mName
       w' <- get
-      record
+      recordA
         "joining"
-        (nameIn w' p <> " joins " <> nameIn w' societyId <> " as a founding member.")
+        (mentionText p (nameIn w' p) <> " joins " <> mentionText societyId (nameIn w' societyId) <> " as a founding member.")
         [ Claim p LeaderOf (Just (ROf societyId)) (Just societyId) Nothing
         , Claim p Leads (Just (ROf societyId)) (Just societyId) Nothing
         ]
       pure (Just p)
     else pure Nothing
-
--- | Every society's two intrinsic patron-concept claims — 'Embodies'
--- (unattested, like a fresh item's own) and an initial 'Venerates' (self-
--- attested), the starting regard a later leadership change can flip. Every
--- society-minting call site (genesis, schism, merger's new-society branch)
--- adds these alongside its own claims. See Decision 19 in .claude/docs/DESIGN.md.
-patronClaims :: EntityId -> EntityId -> [Claim]
-patronClaims society concept =
-  [ Claim society Embodies (Just (ROf concept)) Nothing Nothing
-  , Claim society Venerates (Just (ROf concept)) (Just society) Nothing
-  ]
 
 -- Schism ---------------------------------------------------------------
 
@@ -567,10 +592,18 @@ fireMiracleRelic cfg w s site mrelic = do
   disputes <- maybeDispute s
   pure (MiracleRelic outcome : disputes)
 
+-- | A miracle worked upon a person or an item. When the target is a dead
+-- person this *is* the resurrection rule: 'Historian.Render.render' has
+-- always narrated this case as "calls back from among the dead", and the
+-- 'Restored' claim added here finally makes that true of the world as
+-- well as of the sentence. Any active cult can do it, which is the whole
+-- appeal — being called back by your rivals is a better story than being
+-- called back by your own.
 fireMiracleOn :: World -> EntityId -> EntityId -> EntityId -> EntityId -> Chronicle [Outcome]
-fireMiracleOn _w s site actor target = do
+fireMiracleOn w s site actor target = do
   reactions <- regardReactions s [site, actor, target]
-  let outcome = MiracleOnOutcome s site actor target reactions
+  let restoration = [Claim target Restored (Just (ROf s)) (Just s) Nothing | isDead w target]
+      outcome = MiracleOnOutcome s site actor target (restoration ++ reactions)
   disputes <- maybeDispute s
   pure (MiracleOn outcome : disputes)
 
@@ -1192,7 +1225,10 @@ assassinateSpec =
   RuleSpec
     { rsName = "assassinate"
     , rsSlots =
-        [ Slot Society (\_ _ _ -> True) True
+        [ -- Was `\_ _ _ -> True`: with no active check at all this could
+          -- pick a society that had already dissolved and stage an
+          -- assassination inside it.
+          Slot Society (\w _ s -> s `elem` activeSocieties w) True
         , Slot Person figureConstraint False
         , Slot Society hConstraint False
         ]
@@ -1202,8 +1238,18 @@ assassinateSpec =
     figureConstraint w resolved figure = case resolved of
       (s : _) -> figure `elem` livingMembers w s
       [] -> False
+    -- `rest` is the victim, when the optional figure slot resolved to
+    -- one. A cult does not murder someone it venerates: it had been
+    -- possible for a cult to record a Venerates claim toward a figure and
+    -- have them knifed in the same breath, which reads as a
+    -- contradiction rather than as a twist. A *rival's* venerated saint
+    -- stays a target, which is the interesting case.
     hConstraint w resolved h = case resolved of
-      (s : _) -> h `elem` activeSocieties w && h /= s && holdsGrievance w h s
+      (s : rest) ->
+        h `elem` activeSocieties w
+          && h /= s
+          && holdsGrievance w h s
+          && not (any (venerates w h) rest)
       [] -> False
     fire _ assignment = case assignment of
       [Just s, Just figure, Just h] -> fireAssassinate figure s h

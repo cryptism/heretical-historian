@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (323 checks — seeds 4/2/6/42/5 for
+Builds and passes `cabal test` (349 checks — seeds 4/2/6/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -209,6 +209,27 @@ Decision 45. `cabal test` 284 → 296. **Tier 3 (the 3×d10 hook table, the
 interactive roller, fact-file assembly) is explicitly `hh-site`-side work
 for later, not started here.** Plan:
 `.claude/docs/plans/24-ttrpg-cult-export.md`.
+
+A steering-surface round, at user report: **INFLUENCE.SYS was offering
+events that then didn't happen** ("— the assassination you willed does not
+come to pass —"). Every query a host had could only answer a weaker
+question than "will this actually produce an event" — `runnable` ignores
+optional slots entirely, so a rule whose slots are all optional
+(`defileSpec`) reads runnable in every world while its own `rsFire`
+declines; `rulesFor` scores whether an entity can be *bound*, which is a
+different claim. **`firesUnder` probes `rsFire` itself** under `evalState`
+(read-only — the probe's minting and RNG advance go with the discarded
+state), over `assignmentsUnder`: `allAssignments` narrowed to a caller's
+*positional* hints, which is what `nextSlotFromPool` needed and could not
+express. `slotOptions` reads every slot's live domain off one shared
+enumeration of the firing assignments — every slot at once, because once
+firing rather than slot order is the test, narrowing runs backwards too.
+Two new read-only exports, `historian_slot_options` and
+`historian_rules_admitting`, verified in `wasm/verify.mjs` including the
+property the surface exists for (every rule offered fires; pinning any
+offered candidate leaves it firing). `.claude/docs/DESIGN.md` Decision 50,
+which also records the `wasm-ld` export-table trap that made both exports
+look absent for two build cycles. `cabal test` 339 → 349.
 
 **`.claude/docs/HISTORY.md` has the full build-by-build account** — what was
 asked for, what was rejected, and how each feature was verified against
@@ -877,6 +898,22 @@ unbuilt rule.
     exactly the loop this notebook exists to close: find a real number,
     retune against it, re-measure to confirm — not just a one-shot
     "build the tooling and stop."
+
+28. Dissolution that a living membership can survive. `dissolveSpec`'s
+    only precondition is `null (livingMembers w s)` — a society ends
+    precisely when the last member dies, and never otherwise. That is one
+    way for a cult to end and currently the only one, which makes every
+    dissolution read the same and leaves the more interesting endings
+    unreachable: a schism that takes everyone with it, a cult that
+    renounces itself, one that dwindles below some threshold of
+    plausibility, one whose patron Concept is disavowed by its own
+    leadership. Wanted: at least one route to dissolution that works
+    while members are still alive, and a reason in the narration for
+    which route was taken. Note the ordering trap this replaced — a
+    memberless cult qualified the day after it was minted, which is how
+    backfill-generated cults (no founder until `generateCultFor` gained
+    one) used to pass from history almost as soon as they appeared.
+    `.claude/docs/EVENTS.md` has the existing sketch under Dissolution.
 
 ## Things not to do
 

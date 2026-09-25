@@ -58,6 +58,7 @@ verbFor = \case
   SplitFrom -> "split from"
   Grievance -> "holds a grievance against"
   Slain -> "was slain by"
+  Restored -> "was called back from among the dead by"
   BattledAt -> "gave battle at"
   Disputes -> "disputes the account of"
   Reconciled -> "no longer holds a grievance against"
@@ -835,9 +836,19 @@ outcomeClaims w = \case
 -- against this same 'World' snapshot — never recomputed later (see
 -- 'Historian.Types.Event's own Haddock for why that matters).
 commitOutcomes :: [Outcome] -> Chronicle ()
-commitOutcomes outcomes = do
+commitOutcomes = commitOutcomesWith []
+
+-- | 'commitOutcomes', plus extra claims to fold into the *first* outcome's
+-- event. That's where 'Historian.Engine.resolveAllWithClaims's minting
+-- claims belong: an entity generated to fill a slot came into being as
+-- part of this rule firing, so its intrinsic 'Embodies'\/'Venerates' links
+-- should be attested by the same event rather than a synthetic one of
+-- their own. Empty extras make this exactly 'commitOutcomes'.
+commitOutcomesWith :: [Claim] -> [Outcome] -> Chronicle ()
+commitOutcomesWith extras outcomes = do
   w <- get
-  forM_ outcomes $ \o -> do
+  forM_ (zip [0 :: Int ..] outcomes) $ \(i, o) -> do
+    let extrasHere = if i == 0 then extras else []
     narrator <- pickNarrator (wTuning w) w o
     let claims = outcomeClaims w o
         neutral = render w Nothing o
@@ -847,4 +858,4 @@ commitOutcomes outcomes = do
       -- stays the permanent, unmangled "generic log" (.claude/docs/DESIGN.md
       -- Decision 29), same as before this existed.
       Just sid -> applyIdiosyncrasies (wTuning w) (render w (Just sid) o)
-    recordOutcome (outcomeKind o) o narrator narrated neutral (claims ++ fulfillProphecies w claims)
+    recordOutcome (outcomeKind o) o narrator narrated neutral (extrasHere ++ claims ++ fulfillProphecies w claims)

@@ -207,6 +207,21 @@ data Predicate
     -- being chosen, the same candidate-list-replication idiom
     -- 'Historian.World.cultureBoost' already uses. See Decision 39.
     TrainedBy
+  | -- | The counterpart to 'Slain': a person called back from among the
+    -- dead, subject the restored person and object the cult credited with
+    -- it. Needed because 'Slain' is cumulative and 'Historian.World.isDead'
+    -- read it as "any Slain fact ever" — there was no way to express that
+    -- someone is no longer dead, so a miracle could *narrate* a
+    -- resurrection ("calls back from among the dead",
+    -- 'Historian.Render.render') while the person stayed mechanically dead
+    -- forever. Together with 'Slain' these are two predicates for one
+    -- relationship's two states, read latest-fact-wins, exactly as
+    -- 'Grievance'\/'Reconciled' are and as 'Venerates'\/'Shuns'\/'Disavows'
+    -- are for regard.
+    --
+    -- Appended rather than placed next to 'Slain' so the derived 'Ord' on
+    -- every constructor before it is left undisturbed.
+    Restored
   deriving stock (Eq, Ord, Show)
 
 -- | What a fact's object slot points at. Almost always another entity; a

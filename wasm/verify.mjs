@@ -202,6 +202,204 @@ instance.exports.historian_dealloc(unknownRulePtr);
 instance.exports.historian_dealloc(emptyPoolPtr2);
 check("historian_next_slot with an unrecognised rule name comes back 'done', not a trap", unknownRuleResult && unknownRuleResult.status === "done");
 
+// --- historian_rules / historian_influence / historian_version: the
+// steered-step surface INFLUENCE.SYS needs. historian_rules_for above
+// deliberately cannot enumerate (it drops every zero-scoring rule), which
+// is the whole reason historian_rules exists. ---
+const catalogue = readJson(instance.exports.historian_rules(handle2));
+check(
+  "historian_rules returns a non-empty catalogue of {rule, runnable, slots}",
+  Array.isArray(catalogue) &&
+    catalogue.length > 0 &&
+    catalogue.every(
+      (r) =>
+        typeof r.rule === "string" &&
+        typeof r.runnable === "boolean" &&
+        Array.isArray(r.slots) &&
+        r.slots.every((sl) => typeof sl.kind === "string" && typeof sl.required === "boolean"),
+    ),
+);
+check("historian_rules lists more rules than historian_rules_for([]) ever could", catalogue.length > emptyRulesFor.length);
+check("historian_rules includes found-society", catalogue.some((r) => r.rule === "found-society"));
+check("historian_rules excludes cataclysm (never a RuleSpec)", !catalogue.some((r) => r.rule.includes("cataclysm")));
+check(
+  "found-society is declared with no slots",
+  catalogue.find((r) => r.rule === "found-society").slots.length === 0,
+);
+
+// A steered step against a rule taken straight from the catalogue.
+const sanctifyPtr = writeCString("sanctify");
+const sanctifyHintsPtr = writeCString(JSON.stringify([poolEntityId, null]));
+const influenced = readJson(instance.exports.historian_influence(handle2, sanctifyPtr, sanctifyHintsPtr));
+instance.exports.historian_dealloc(sanctifyPtr);
+instance.exports.historian_dealloc(sanctifyHintsPtr);
+check(
+  "historian_influence returns the same delta shape historian_step does",
+  influenced &&
+    typeof influenced.fired === "boolean" &&
+    Array.isArray(influenced.newEntities) &&
+    Array.isArray(influenced.newEvents) &&
+    Array.isArray(influenced.newFacts),
+);
+check("historian_influence('sanctify', [society, null]) actually fired an event", influenced.newEvents.length > 0);
+// The hint must actually *bind*, not merely be accepted — a rule firing
+// against some other society would look identical from the delta's shape
+// alone. Display names drift (societies rename themselves via `Named`),
+// so this checks the entity id, which never does.
+check(
+  "historian_influence bound the hinted society, not an arbitrary one",
+  influenced.newFacts.some((f) => f.subject === poolEntityId || f.object?.entity === poolEntityId),
+);
+
+// "fresh" is the hint historian_next_slot has no way to express.
+const sanctifyPtr2 = writeCString("sanctify");
+const freshHintsPtr = writeCString(JSON.stringify([poolEntityId, "fresh"]));
+const freshResult = readJson(instance.exports.historian_influence(handle2, sanctifyPtr2, freshHintsPtr));
+instance.exports.historian_dealloc(sanctifyPtr2);
+instance.exports.historian_dealloc(freshHintsPtr);
+check('historian_influence honours a "fresh" hint by minting a new entity', freshResult.newEntities.length > 0);
+
+// found-society carries name/culture as an object rather than a hint array.
+const foundPtr = writeCString("found-society");
+const foundOptsPtr = writeCString(JSON.stringify({ name: "The Influenced Choir", culture: "Ghenzai" }));
+const founded = readJson(instance.exports.historian_influence(handle2, foundPtr, foundOptsPtr));
+instance.exports.historian_dealloc(foundPtr);
+instance.exports.historian_dealloc(foundOptsPtr);
+check(
+  "historian_influence('found-society', {name, culture}) founds that exact society",
+  founded.newEntities.some((e) => e.name === "The Influenced Choir" && e.culture === "Ghenzai"),
+);
+
+const foundPtr2 = writeCString("found-society");
+const autoOptsPtr = writeCString("[]");
+const autoFounded = readJson(instance.exports.historian_influence(handle2, foundPtr2, autoOptsPtr));
+instance.exports.historian_dealloc(foundPtr2);
+instance.exports.historian_dealloc(autoOptsPtr);
+check(
+  "historian_influence('found-society', []) auto-rolls a society rather than trapping",
+  autoFounded.newEntities.some((e) => e.kind === "Society"),
+);
+
+const badRulePtr = writeCString("not-a-real-rule");
+const badHintsPtr = writeCString("[]");
+const badInfluence = readJson(instance.exports.historian_influence(handle2, badRulePtr, badHintsPtr));
+instance.exports.historian_dealloc(badRulePtr);
+instance.exports.historian_dealloc(badHintsPtr);
+check(
+  "historian_influence with an unrecognised rule is an empty no-op, not a trap",
+  badInfluence.newEvents.length === 0 && badInfluence.newEntities.length === 0,
+);
+
+const malformedHintsPtr = writeCString("not json");
+const sanctifyPtr3 = writeCString("sanctify");
+const malformedInfluence = readJson(instance.exports.historian_influence(handle2, sanctifyPtr3, malformedHintsPtr));
+instance.exports.historian_dealloc(malformedHintsPtr);
+instance.exports.historian_dealloc(sanctifyPtr3);
+check("historian_influence with malformed hints falls back to auto-resolution rather than trapping", malformedInfluence !== null);
+
+const version = readCString(instance.exports.historian_version());
+check("historian_version returns a dotted version string", /^\d+(\.\d+)+$/.test(version));
+
+// --- historian_slot_options / historian_rules_admitting: the positional
+// steering surface. historian_next_slot above answers one open slot from an
+// *unordered* pool, which cannot express "this entity is in slot 2" and so
+// has to report "ambiguous"; and neither it nor historian_rules consults a
+// rule's own firing, which is what actually declines. These two do both. ---
+const optRules = readJson(instance.exports.historian_rules(handle2));
+
+function slotOptionsFor(rule, bindings) {
+  const rulePtr = writeCString(rule);
+  const bindingsPtr = writeCString(JSON.stringify(bindings));
+  const out = readJson(instance.exports.historian_slot_options(handle2, rulePtr, bindingsPtr));
+  instance.exports.historian_dealloc(rulePtr);
+  instance.exports.historian_dealloc(bindingsPtr);
+  return out;
+}
+
+const someRule = optRules.find((r) => r.slots.length > 0);
+const opts = slotOptionsFor(someRule.rule, someRule.slots.map(() => null));
+check(
+  "historian_slot_options returns {fires, slots:[{slotIndex, slotKind, required, candidates}]}",
+  opts &&
+    typeof opts.fires === "boolean" &&
+    Array.isArray(opts.slots) &&
+    opts.slots.length === someRule.slots.length &&
+    opts.slots.every(
+      (sl, i) =>
+        sl.slotIndex === i &&
+        typeof sl.slotKind === "string" &&
+        typeof sl.required === "boolean" &&
+        Array.isArray(sl.candidates),
+    ),
+);
+check(
+  "historian_slot_options reports every slot, not just the next open one (the difference from historian_next_slot)",
+  opts.slots.length === someRule.slots.length,
+);
+check(
+  "historian_slot_options' candidates are full dossiers, so a picker needs no second call",
+  opts.slots.every((sl) => sl.candidates.every((c) => typeof c.id === "number" && typeof c.name === "string" && typeof c.kind === "string")),
+);
+check(
+  "historian_slot_options' slotKind agrees with the catalogue's own slot kinds",
+  opts.slots.every((sl, i) => sl.slotKind === someRule.slots[i].kind),
+);
+check(
+  "every candidate historian_slot_options offers is of its own slot's kind",
+  opts.slots.every((sl) => sl.candidates.every((c) => c.kind === sl.slotKind)),
+);
+
+// The property the whole surface exists for: an offered candidate, pinned,
+// leaves the rule still firing. A host can therefore trust the list.
+const firstFiring = optRules
+  .filter((r) => r.slots.length > 0)
+  .map((r) => ({ rule: r.rule, opts: slotOptionsFor(r.rule, r.slots.map(() => null)) }))
+  .find((x) => x.opts.fires && x.opts.slots.some((sl) => sl.candidates.length > 0));
+check("at least one catalogue rule fires with candidates to offer", firstFiring !== undefined);
+if (firstFiring) {
+  const slot = firstFiring.opts.slots.find((sl) => sl.candidates.length > 0);
+  const pinned = firstFiring.opts.slots.map((sl) => (sl.slotIndex === slot.slotIndex ? slot.candidates[0].id : null));
+  const after = slotOptionsFor(firstFiring.rule, pinned);
+  check(
+    `pinning an offered candidate keeps ${firstFiring.rule} firing — nothing offered can decline`,
+    after.fires === true,
+  );
+  check(
+    "the pinned entity is still among its own slot's options after pinning",
+    after.slots[slot.slotIndex].candidates.some((c) => c.id === slot.candidates[0].id),
+  );
+}
+
+const unknownOpts = slotOptionsFor("not-a-real-rule", []);
+check(
+  "historian_slot_options with an unrecognised rule name comes back {fires:false, slots:[]}, not a trap",
+  unknownOpts && unknownOpts.fires === false && unknownOpts.slots.length === 0,
+);
+
+const admittingNone = readJson(instance.exports.historian_rules_admitting(handle2, -1));
+check(
+  "historian_rules_admitting(-1) returns a catalogue-shaped list for 'no subject'",
+  Array.isArray(admittingNone) && admittingNone.every((r) => typeof r.rule === "string" && Array.isArray(r.slots)),
+);
+check(
+  "historian_rules_admitting never offers more than the full catalogue",
+  admittingNone.length <= optRules.length,
+);
+const admittingSubject = readJson(instance.exports.historian_rules_admitting(handle2, poolEntityId));
+check(
+  "historian_rules_admitting(entity) is catalogue-shaped too",
+  Array.isArray(admittingSubject) && admittingSubject.every((r) => typeof r.rule === "string"),
+);
+check(
+  "every rule historian_rules_admitting offers actually fires (its own promise, and what historian_rules' `runnable` could not tell a host)",
+  admittingSubject.every((r) => slotOptionsFor(r.rule, r.slots.map(() => null)).fires),
+);
+const admittingMissing = readJson(instance.exports.historian_rules_admitting(handle2, 999999));
+check(
+  "historian_rules_admitting on a nonexistent id answers with an array rather than trapping",
+  Array.isArray(admittingMissing),
+);
+
 instance.exports.historian_free(handle2);
 
 // --- historian_default_tuning / historian_new_tuned (Decision 42) ---
@@ -216,13 +414,30 @@ const tunedHandle = instance.exports.historian_new_tuned(7, overridePtr);
 instance.exports.historian_dealloc(overridePtr);
 check("historian_new_tuned returned a non-null handle", tunedHandle !== 0);
 
+// Scanned rather than pinned to one seed x 40 steps: a mundane entity
+// only appears when a miracle actually fires, so a single seed's budget
+// is really a bet on that seed's rule draws. Genesis-only backfill
+// changed the cascade and seed 7 stopped paying out — the override was
+// fine, the witness wasn't. Same "re-pin the witness, don't widen the
+// claim" discipline test/Spec.hs keeps, but cheap enough to just scan.
 let sawMundane = false;
+const isMundaneName = (e) => e.name && (e.name.startsWith("a ") || e.name.startsWith("an "));
 for (let i = 0; i < 40 && !sawMundane; i++) {
   const r = readJson(instance.exports.historian_step(tunedHandle));
-  if (r.newEntities.some((e) => e.name && (e.name.startsWith("a ") || e.name.startsWith("an ")))) sawMundane = true;
+  if (r.newEntities.some(isMundaneName)) sawMundane = true;
 }
-check("historian_new_tuned actually applies the override (tnMundaneMiracleChance 100 -> a mundane entity shows up within 40 steps)", sawMundane);
 instance.exports.historian_free(tunedHandle);
+for (let seed = 1; seed <= 12 && !sawMundane; seed++) {
+  const p = writeCString(JSON.stringify({ tnMundaneMiracleChance: 100 }));
+  const h = instance.exports.historian_new_tuned(seed, p);
+  instance.exports.historian_dealloc(p);
+  for (let i = 0; i < 40 && !sawMundane; i++) {
+    const r = readJson(instance.exports.historian_step(h));
+    if (r.newEntities.some(isMundaneName)) sawMundane = true;
+  }
+  instance.exports.historian_free(h);
+}
+check("historian_new_tuned actually applies the override (tnMundaneMiracleChance 100 -> a mundane entity appears)", sawMundane);
 
 const malformedTuningPtr = writeCString("not json");
 const fallbackHandle = instance.exports.historian_new_tuned(1, malformedTuningPtr);
@@ -359,6 +574,41 @@ for (let seed = 1; seed <= 20 && !sawRealVoicing; seed++) {
   instance.exports.historian_free(h);
 }
 check("a narrated event actually differs from its neutral reading within 20 seeds x 30 steps", sawRealVoicing);
+
+// --- record-based events carry their mentions too ---
+//
+// `record` used to wrap its text in `lit`, which attaches no mentions at
+// all. Every "backstory"/"joining" event therefore reached a host as a
+// sentence with entity names embedded as bare, unmarkable text — and
+// since it had no mentions *either*, nothing downstream could tell the
+// difference between "names nobody" and "names people it never told you
+// about". Both of these events always name two entities, so an empty
+// mentions list on one is the bug, exactly.
+//
+// Read from generateJson (the whole world) rather than historian_step
+// deltas: backfill is genesis-only, so these events are already in the
+// world before a host takes its first step and never show up in a delta.
+let markerlessRecord = null;
+let recordEventCount = 0;
+const RECORD_KINDS = new Set(["backstory", "joining"]);
+for (let seed = 1; seed <= 20 && markerlessRecord === null; seed++) {
+  const world = readJson(instance.exports.generateJson(seed, 25));
+  for (const e of world.events) {
+    if (!RECORD_KINDS.has(e.kind)) continue;
+    recordEventCount += 1;
+    if (e.textMentions.length === 0 || !e.text.includes("\uE000")) {
+      markerlessRecord = { kind: e.kind, text: e.text, mentions: e.textMentions.length };
+      break;
+    }
+  }
+}
+check("20 seeds produced at least one record-based event to check", recordEventCount > 0);
+check(
+  `every backstory/joining event carries markers and mentions for the entities it names${
+    markerlessRecord ? ` (got ${markerlessRecord.kind}, ${markerlessRecord.mentions} mentions: "${markerlessRecord.text}")` : ""
+  }`,
+  markerlessRecord === null,
+);
 
 console.log(failures === 0 ? "\nALL PASSED" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

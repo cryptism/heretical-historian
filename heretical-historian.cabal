@@ -71,6 +71,12 @@ executable historian-wasm
   import:         shared
   hs-source-dirs: wasm
   main-is:        Main.hs
+
+  -- Cabal's generated version module, so historian_version can report the
+  -- package version above rather than a hand-maintained copy of it that
+  -- would drift the first time the two disagreed.
+  other-modules:  Paths_heretical_historian
+  autogen-modules: Paths_heretical_historian
   build-depends:
     , aeson
     , base
@@ -115,7 +121,12 @@ executable historian-wasm
       -optl-Wl,--export=historian_step
       -optl-Wl,--export=historian_query
       -optl-Wl,--export=historian_rules_for
+      -optl-Wl,--export=historian_rules
       -optl-Wl,--export=historian_next_slot
+      -optl-Wl,--export=historian_slot_options
+      -optl-Wl,--export=historian_rules_admitting
+      -optl-Wl,--export=historian_influence
+      -optl-Wl,--export=historian_version
       -optl-Wl,--export=historian_alloc
       -optl-Wl,--export=historian_dealloc
       -optl-Wl,--export=historian_free

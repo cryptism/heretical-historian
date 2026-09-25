@@ -13,7 +13,7 @@
 -- chains, which are generator-internal bookkeeping with no business
 -- leaving Haskell. Only entities, events, and facts — the queryable
 -- output — cross the boundary.
-module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult, encodeRulesFor, encodeNextSlotFromPool, encodeTuning, decodeTuningOverride) where
+module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult, encodeRulesFor, encodeRuleCatalogue, encodeNextSlotFromPool, encodeSlotOptions, encodeTuning, decodeTuningOverride, decodeSlotHints, decodeSlotBindings) where
 
 import Data.Aeson (Value (..), object, (.:?), (.=))
 import qualified Data.Aeson as Aeson
@@ -21,7 +21,7 @@ import qualified Data.Aeson.Types as Aeson (Parser, parseMaybe)
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Map.Strict as M
 import Data.Text (Text)
-import Historian.Engine (EntityDossier (..), PoolAmbiguity (..), RuleSpec (..), Slot (..))
+import Historian.Engine (EntityDossier (..), PoolAmbiguity (..), RuleSpec (..), Slot (..), SlotHint (..), runnable)
 import Historian.Types
 import Historian.World (dateOf, nameIn, propertyOf)
 
@@ -89,6 +89,37 @@ encodeRulesFor ranked =
   Aeson.encode
     [object ["rule" .= rsName rs, "score" .= n] | (rs, n) <- ranked]
 
+-- | The full rule catalogue — what @historian_rules@ returns. Needed
+-- because 'encodeRulesFor' cannot double as one: 'Historian.Engine.rulesFor'
+-- filters to @score > 0@, so an empty pool ranks nothing and a host has no
+-- way to ask "what events exist at all?".
+--
+-- Each rule carries its slots in declaration order, which is the order a
+-- host must supply positional hints in, plus whether the rule could fire
+-- right now against the current world ('Historian.Engine.runnable') so a
+-- caller can grey out the ones that can't. Slots expose 'slotKind' and
+-- 'slotRequired' only — the same two fields 'encodeNextSlotFromPool'
+-- already publishes, and the only two that aren't a live closure.
+-- Deliberately no display text: 'rsName' is a stable wire value and
+-- naming things for a human is the consumer's business, not this
+-- encoder's.
+encodeRuleCatalogue :: World -> [RuleSpec] -> BSL.ByteString
+encodeRuleCatalogue w specs =
+  Aeson.encode
+    [ object
+      [ "rule" .= rsName rs
+      , "runnable" .= runnable w rs
+      , "slots"
+          .= [ object
+              [ "kind" .= kindText (slotKind slot)
+              , "required" .= slotRequired slot
+              ]
+             | slot <- rsSlots rs
+             ]
+      ]
+    | rs <- specs
+    ]
+
 -- | 'Historian.Engine.nextSlotFromPool's own wire shape. Three distinct
 -- outcomes, matched to three JSON shapes rather than one loosely-typed
 -- object, so a host can dispatch without probing which fields are
@@ -115,6 +146,80 @@ encodeNextSlotFromPool w = \case
         , "slotKind" .= kindText (slotKind slot)
         , "candidates" .= map (dossierJson w) candidates
         ]
+
+-- | 'Historian.Engine.slotOptions' plus 'Historian.Engine.firesUnder' for
+-- the same hints — the wire shape behind @historian_slot_options@, and the
+-- whole answer a host rebuilding a steering form needs after any one entry
+-- changes.
+--
+-- @fires@ is the rule-level verdict under the hints as given: 'False'
+-- means this combination produces no event, so a host should refuse to
+-- submit it rather than let the engine decline silently. Each slot then
+-- carries every entity that could go *there* while still leaving the rule
+-- firing, as a full 'dossierJson' so a picker has names and 'Kind's
+-- without a second call per candidate — the same shape
+-- 'encodeNextSlotFromPool' publishes its candidates in.
+--
+-- Every slot is reported, including ones the caller has already pinned and
+-- ones before the slot just changed: narrowing runs in both directions
+-- here, unlike 'encodeNextSlotFromPool'\'s single next-open-slot answer,
+-- so there is no such thing as a slot whose domain a host can assume
+-- unchanged.
+encodeSlotOptions :: World -> Bool -> [(Int, Slot, [EntityDossier])] -> BSL.ByteString
+encodeSlotOptions w fires slots =
+  Aeson.encode $
+    object
+      [ "fires" .= fires
+      , "slots"
+          .= [ object
+              [ "slotIndex" .= i
+              , "slotKind" .= kindText (slotKind slot)
+              , "required" .= slotRequired slot
+              , "candidates" .= map (dossierJson w) candidates
+              ]
+             | (i, slot, candidates) <- slots
+             ]
+      ]
+
+-- | @hintsJson@ decoded as positional *bindings* rather than
+-- 'SlotHint's: one element per slot, an integer entity id or @null@.
+--
+-- Deliberately a second decoder rather than 'decodeSlotHints' plus a
+-- conversion. The two answer different questions and @"fresh"@ is exactly
+-- where they part: for firing it is a real third state ("mint one here"),
+-- but for *asking what is possible* a not-yet-existing entity constrains
+-- nothing, so it can only mean 'Nothing' — and silently collapsing it
+-- inside 'decodeSlotHints' would make that lossy conversion invisible at
+-- both call sites. Same never-fail discipline: anything unrecognised
+-- becomes 'Nothing', which 'Historian.Engine.assignmentsUnder' reads as
+-- "leave this slot to the search".
+decodeSlotBindings :: BSL.ByteString -> [Maybe EntityId]
+decodeSlotBindings bs = case Aeson.decode bs :: Maybe [Value] of
+  Nothing -> []
+  Just vs -> map toBinding vs
+  where
+    toBinding (Number n) = Just (EntityId (round n))
+    toBinding _ = Nothing
+
+-- | @hintsJson@ decoded into positional slot hints: a JSON array with one
+-- element per slot in the rule's own declaration order — an integer
+-- entity id ('HintEntity'), the string @"fresh"@ ('HintFresh'), or
+-- @null@ ('HintRandom').
+--
+-- Never fails outward, the same discipline every other decoder at this
+-- boundary keeps: an unrecognised element becomes 'HintRandom' and a
+-- malformed document becomes no hints at all, both of which
+-- 'Historian.Engine.resolveAll' already handles by padding with
+-- 'HintRandom'. A host that sends nonsense gets a fully auto-resolved
+-- firing, not a trap.
+decodeSlotHints :: BSL.ByteString -> [SlotHint]
+decodeSlotHints bs = case Aeson.decode bs :: Maybe [Value] of
+  Nothing -> []
+  Just vs -> map toHint vs
+  where
+    toHint (Number n) = HintEntity (EntityId (round n))
+    toHint (String "fresh") = HintFresh
+    toHint _ = HintRandom
 
 entityJson :: World -> Entity -> Value
 entityJson w e =
@@ -217,6 +322,8 @@ significanceOf = \case
   Terminated -> 5
   MergedInto -> 5
   Slain -> 5
+  -- As load-bearing as the death it reverses.
+  Restored -> 5
   BattledAt -> 4
   Heretic -> 4
   Sanctified -> 4
@@ -246,6 +353,7 @@ predicateText = \case
   SplitFrom -> "SplitFrom"
   Grievance -> "Grievance"
   Slain -> "Slain"
+  Restored -> "Restored"
   BattledAt -> "BattledAt"
   Disputes -> "Disputes"
   Reconciled -> "Reconciled"
