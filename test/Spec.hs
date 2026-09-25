@@ -681,7 +681,42 @@ matchingChecks =
             _ -> False
     , "Engine: StepEntities/resolveAllExact fires battleSpec between matchA and matchB, never matchC, using the exact pool binding poolAssignments found"
     )
-  , -- 'assignmentsUnder'\/'firesUnder'\/'slotOptions'\/'rulesAdmitting': the
+  , -- Steered firing must honour what the caller already pinned. `fireHinted`
+    -- resolved slots greedily in declaration order and bound a HintEntity
+    -- without checking its own constraint, so pinning a heresiarch and
+    -- leaving the society slot open let the society resolve first, from the
+    -- whole world, in ignorance of the person pinned after it — and since
+    -- that slot is Mint, it could mint a brand-new parent for someone who
+    -- already belonged to a cult.
+
+    ( let ownSociety = firstOrErr "schism pin: rP1 belongs to no society" [s | s <- entitiesOf Society richWorld, rP1 `elem` livingMembers richWorld s]
+          w' = execState (intelligentStep [schismSpec] richWorld (StepRuleHinted schismSpec [HintRandom, HintEntity rP1])) richWorld
+          -- Only the event this step added: richWorld is built with a schism
+          -- of its own, so every schism in the world is the wrong set to look
+          -- at. M.difference is exactly the same delta encodeStepResult takes.
+          fresh = M.elems (M.difference (wEvents w') (wEvents richWorld))
+          schisms = [so | ev <- fresh, Just (Schism so) <- [evOutcome ev]]
+       in case schisms of
+            [so] -> scHeresiarch so == rP1 && scParent so == ownSociety && not (scFresh so)
+            _ -> False
+    , "Engine: a schism pinned to an existing heresiarch draws that heresiarch's own society as parent — never a different one, and never a freshly minted one"
+    )
+  ,
+    ( let ownSociety = firstOrErr "schism pin: rP1 belongs to no society" [s | s <- entitiesOf Society richWorld, rP1 `elem` livingMembers richWorld s]
+          before = length (entitiesOf Society richWorld)
+          w' = execState (intelligentStep [schismSpec] richWorld (StepRuleHinted schismSpec [HintRandom, HintEntity rP1])) richWorld
+          after = length (entitiesOf Society w')
+       in after == before + 1 && ownSociety `elem` entitiesOf Society w'
+    , "Engine: that same pinned schism mints exactly one new society — the splinter — rather than a splinter plus an invented parent"
+    )
+  ,
+    ( let pins = [Nothing, Just rP1]
+          admitted = [a | a <- assignmentsUnder richWorld schismSpec pins]
+          ownSociety = firstOrErr "schism pin: rP1 belongs to no society" [s | s <- entitiesOf Society richWorld, rP1 `elem` livingMembers richWorld s]
+       in not (null admitted) && all (\a -> take 1 a == [Just ownSociety]) admitted
+    , "Engine: assignmentsUnder already knew the answer — every assignment admitting rP1 as heresiarch binds rP1's own society, which is why fireHinted asking it first is the whole fix"
+    )
+    , -- 'assignmentsUnder'\/'firesUnder'\/'slotOptions'\/'rulesAdmitting': the
     -- positional steering surface, added because a host filtering on
     -- 'runnable' or 'rulesFor' was offering events that then didn't happen.
     -- 'defileSpec' is the witness throughout: both its slots are optional,

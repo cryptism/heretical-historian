@@ -523,10 +523,60 @@ intelligentStep specs _ (StepEntities es) = do
 -- carrying any minting claims onto the resulting event. The shared body
 -- of 'StepRule' and 'StepRuleHinted' — neither advances the epoch (see
 -- 'intelligentStep's own Haddock for why).
+--
+-- Picks a *complete consistent assignment* before resolving, rather than
+-- resolving slot by slot and hoping. 'resolveAll' is greedy and one-pass:
+-- it takes each slot in declaration order, and for a 'HintEntity' it binds
+-- the given entity without ever checking that entity's own
+-- 'slotConstraint'. Both together are a real bug, not a theoretical one.
+-- Pin a heresiarch to a schism and leave its society slot to the engine,
+-- and the society was resolved *first*, from the whole world, with no
+-- knowledge of the person already pinned after it — so the parent could be
+-- a society the heresiarch has nothing to do with, or, since that slot is
+-- 'Mint', a brand-new society minted on the spot for someone who already
+-- belongs to a cult.
+--
+-- 'assignmentsUnder' already answers this correctly: it checks every pinned
+-- entity against its own constraint in the context the search built for it,
+-- and fills the unpinned slots from real candidates only. So the fix is to
+-- ask it first and resolve against its answer. A schism pinned to a
+-- heresiarch now draws that heresiarch's *own* society, because
+-- @heresiarchConstraint@ admits no other.
+--
+-- Minting still happens, for the slots that genuinely need it: an explicit
+-- 'HintFresh' is honoured untouched, and a 'Mint' slot with no candidate
+-- at all still mints via 'resolveSlot'. What no longer happens is minting
+-- in preference to an existing entity the caller had already named.
 fireHinted :: World -> RuleSpec -> [SlotHint] -> Chronicle ()
 fireHinted w rs hints = do
-  (resolved, minted) <- resolveAllWithClaims w (rsSlots rs) hints []
+  chosen <- case assignmentsUnder w rs (map pinOf padded) of
+    -- No consistent assignment honours these hints. Resolve anyway and let
+    -- the rule's own firing decline: a caller who pinned something
+    -- impossible should get the same nothing-happened answer as before,
+    -- not a different event chosen on its behalf.
+    [] -> pure (map pinOf padded)
+    -- Exactly one: take it without a draw. Deliberate — a fully pinned
+    -- firing (every test's 'StepRule', and any host that specified a
+    -- complete cast) consumed no RNG for slot resolution before this
+    -- change, and must keep consuming none, or every pinned witness seed
+    -- in the suite shifts for no reason.
+    [a] -> pure a
+    (a : as) -> pickOr a (a : as)
+  (resolved, minted) <- resolveAllWithClaims w (rsSlots rs) (zipWith reconcile padded chosen) []
   rsFire rs w resolved >>= commitOutcomesWith minted
+  where
+    padded = take (length (rsSlots rs)) (hints ++ repeat HintRandom)
+    pinOf = \case
+      HintEntity e -> Just e
+      -- A slot the caller wants freshly minted has no existing entity to
+      -- constrain the search with, so it goes in unpinned.
+      _ -> Nothing
+    -- An explicit "mint one" survives the assignment; anything the search
+    -- bound becomes an exact pin; a slot it legitimately left empty keeps
+    -- whatever the caller asked for.
+    reconcile HintFresh _ = HintFresh
+    reconcile _ (Just e) = HintEntity e
+    reconcile h Nothing = h
 
 -- | 'intelligentStep' run once, autonomously, and applied directly — the
 -- plain @World -> World@ shape a host-facing caller (wasm's
