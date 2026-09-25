@@ -1482,6 +1482,66 @@ recordBackdated kind factEp claims = do
 nameOf :: EntityId -> Chronicle Text
 nameOf i = gets (`nameIn` i)
 
+-- Relationship graph ---------------------------------------------------
+
+-- | One edge of the world's current relationship graph: who, to whom, and
+-- what the tie is. Deliberately thin — a host drawing a graph needs a shape,
+-- not a dossier per node (see 'Historian.Json.encodeSlotOptions' for what
+-- happens when a query ships more than its caller needs).
+data Relation = Relation
+  { relFrom :: EntityId
+  , relTo :: EntityId
+  , relKind :: Text
+  }
+  deriving stock (Eq, Show)
+
+-- | The relationships that hold *now*, which is a different question from
+-- what the fact log says happened.
+--
+-- The log is not the right source for this and reading it directly would be
+-- a bug: several predicates supersede each other, so a raw scan shows a
+-- society still bearing a grievance it has since reconciled, and a cult
+-- still venerating a ward it has since disavowed. 'Derived' already resolves
+-- exactly those latest-wins questions, which makes it the correct source
+-- here — the first consumer for which it is not merely an optimisation.
+--
+-- Lineage is the other half, and comes from the log on purpose: 'SplitFrom',
+-- 'MergedInto', 'Embodies' and 'TrainedBy' record something that *happened*
+-- and is never revised, so they stay true however the world moves on. A
+-- splinter's parent is permanent even after both have dissolved.
+currentRelations :: World -> [Relation]
+currentRelations w =
+  concat
+    [ -- Membership is the one current-state relation that is *not* in the
+      -- index: 'allegiances' returns a list, and a list's order is observable
+      -- through the engine's own candidate draws, so indexing it would
+      -- perturb every pinned seed. It is already latest-wins by list
+      -- position, which is what this needs.
+      [Relation p s "member" | (p, s) <- allegiances w]
+    , -- Keyed by society in the index (that is the question callers ask), so
+      -- it is flipped back to point the way the fact reads: the leader leads
+      -- the society.
+      [Relation p s "leads" | (s, p) <- M.toList (dvLeaderOf d)]
+    , [Relation st s "sanctified" | (st, s) <- M.toList (dvSanctifiedBy d)]
+    , [Relation a b "grievance" | ((a, b), pr) <- M.toList (dvGrievance d), pr == Grievance]
+    , [Relation a b lbl | ((a, b), pr) <- M.toList (dvRegard d), Just lbl <- [regardEdge pr]]
+    , [Relation (factSubject f) o lbl | f <- wFacts w, Just lbl <- [lineageEdge (factPred f)], Just (ROf o) <- [factObject f]]
+    ]
+  where
+    d = wDerived w
+    -- 'Disavows' is a real latest-wins entry with no current stance to draw,
+    -- which is why the index stores it rather than deleting the key.
+    regardEdge = \case
+      Venerates -> Just "venerates"
+      Shuns -> Just "shuns"
+      _ -> Nothing
+    lineageEdge = \case
+      SplitFrom -> Just "splitFrom"
+      MergedInto -> Just "mergedInto"
+      Embodies -> Just "embodies"
+      TrainedBy -> Just "trainedBy"
+      _ -> Nothing
+
 -- Pure queries ---------------------------------------------------------
 
 -- | An entity's *current* name — checks for a 'Named' fact (latest-fact-

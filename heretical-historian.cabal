@@ -140,6 +140,7 @@ executable historian-wasm
       -optl-Wl,--export=historian_next_slot
       -optl-Wl,--export=historian_slot_options
       -optl-Wl,--export=historian_rules_admitting
+      -optl-Wl,--export=historian_graph
       -optl-Wl,--export=historian_influence
       -optl-Wl,--export=historian_version
       -optl-Wl,--export=historian_alloc

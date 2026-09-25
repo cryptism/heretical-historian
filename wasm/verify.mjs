@@ -412,6 +412,49 @@ check(
   Array.isArray(admittingMissing),
 );
 
+// --- historian_graph: the whole world as a relationship graph, for Explore.
+// Distinct from generateJson, which also returns a world but is the batch
+// entry point and ships every event with both rendered readings. ---
+const graph = readJson(instance.exports.historian_graph(handle2));
+check(
+  "historian_graph returns {nodes, edges}",
+  graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges),
+);
+check(
+  "every graph node has id/kind/name plus the inactive and mundane flags a renderer needs",
+  graph.nodes.length > 0 &&
+    graph.nodes.every(
+      (n) =>
+        typeof n.id === "number" &&
+        typeof n.kind === "string" &&
+        typeof n.name === "string" &&
+        typeof n.inactive === "boolean" &&
+        typeof n.mundane === "boolean",
+    ),
+);
+check(
+  "graph nodes carry no fact history — this is a shape to draw, not a dossier per node",
+  graph.nodes.every((n) => n.facts === undefined && n.satisfiesSlotOf === undefined),
+);
+check(
+  "every graph edge names a kind and two endpoints that exist as nodes",
+  graph.edges.every((e) => {
+    const ids = new Set(graph.nodes.map((n) => n.id));
+    return typeof e.kind === "string" && ids.has(e.from) && ids.has(e.to);
+  }),
+);
+check("historian_graph found real relationships to draw", graph.edges.length > 0);
+check(
+  "graph edge kinds are drawn from the known set",
+  graph.edges.every((e) =>
+    ["member", "leads", "sanctified", "grievance", "venerates", "shuns", "splitFrom", "mergedInto", "embodies", "trainedBy"].includes(e.kind),
+  ),
+);
+check(
+  "a Society node's voice is one of the three registers, and every other kind has none",
+  graph.nodes.every((n) => (n.kind === "Society" ? ["Plain", "Fervent", "Grim"].includes(n.voice) : n.voice === null)),
+);
+
 instance.exports.historian_free(handle2);
 
 // --- historian_default_tuning / historian_new_tuned (Decision 42) ---

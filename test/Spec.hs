@@ -13,6 +13,7 @@ import Data.Bifunctor (first)
 import Data.List (nub)
 import qualified Data.List.NonEmpty as NE
 import qualified Data.Map.Strict as M
+import qualified Data.Set as S
 import Data.Maybe (catMaybes, isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -420,7 +421,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks ++ cataclysmChecks ++ derivedChecks ++ slotFillChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks ++ cataclysmChecks ++ derivedChecks ++ slotFillChecks ++ graphChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -2346,6 +2347,78 @@ slotFillChecks =
       | w <- richWorld : engineWorld : matchWorld : [generate sd longSteps | sd <- take 12 aggregateSeeds]
       , rs <- influenceableSpecs
       ]
+
+-- | 'Historian.World.currentRelations': the relationship graph behind
+-- @historian_graph@ and the Explore view.
+--
+-- The property that matters, and the one a naive implementation gets wrong,
+-- is that this reports what holds *now*. Reading the fact log directly would
+-- show a society still bearing a grievance it has since reconciled and a
+-- cult still venerating a ward it has since disavowed — both facts are in
+-- the log, and both have been superseded. These check the superseding cases
+-- explicitly rather than trusting that 'Derived' was consulted.
+graphChecks :: [(Bool, Text)]
+graphChecks =
+  [
+    ( all
+        ( \w ->
+            let reconciled = [(a, b) | ((a, b), pr) <- M.toList (dvGrievance (wDerived w)), pr == Reconciled]
+             in all (\(a, b) -> Relation a b "grievance" `notElem` currentRelations w) reconciled
+        )
+        graphWorlds
+    , "Graph: a reconciled pair has no grievance edge — the Grievance fact is still in the log, and reading the log instead of Derived would draw it"
+    )
+  ,
+    ( all
+        ( \w ->
+            let disavowed = [(a, b) | ((a, b), pr) <- M.toList (dvRegard (wDerived w)), pr == Disavows]
+             in all (\(a, b) -> Relation a b "venerates" `notElem` currentRelations w && Relation a b "shuns" `notElem` currentRelations w) disavowed
+        )
+        graphWorlds
+    , "Graph: a disavowed ward has neither a venerates nor a shuns edge, though the earlier stance is still on record"
+    )
+  ,
+    ( all (\w -> all (\(p, s) -> Relation p s "member" `elem` currentRelations w) (allegiances w)) graphWorlds
+    , "Graph: every current allegiance is a member edge"
+    )
+  ,
+    ( all
+        ( \w ->
+            let ids = M.keysSet (wEntities w)
+             in all (\r -> S.member (relFrom r) ids && S.member (relTo r) ids) (currentRelations w)
+        )
+        graphWorlds
+    , "Graph: every edge's endpoints resolve to real entities — nothing points at an id the world never minted"
+    )
+  ,
+    ( all
+        ( \w ->
+            all
+              (\(st, soc) -> Relation st soc "sanctified" `elem` currentRelations w)
+              (M.toList (dvSanctifiedBy (wDerived w)))
+        )
+        graphWorlds
+    , "Graph: a site's current claimant is an edge, and a transferred sanctity therefore names only the current holder"
+    )
+  , -- Non-vacuity: the three above hold trivially on a world where nothing
+    -- was ever superseded, and on a graph with no edges at all.
+    ( any (\w -> length (currentRelations w) > 8) graphWorlds
+    , "Graph: the sampled worlds produce real graphs, so the checks above are not vacuous"
+    )
+  ,
+    ( any
+        (\w -> any (\((_, _), pr) -> pr == Reconciled) (M.toList (dvGrievance (wDerived w))))
+        graphWorlds
+        && any (\w -> any (\r -> relKind r == "grievance") (currentRelations w)) graphWorlds
+    , "Graph: the sample contains both a reconciled pair and a still-held grievance, so the superseding check distinguishes them"
+    )
+  ,
+    ( any (\w -> any (\r -> relKind r `elem` ["splitFrom", "mergedInto", "embodies", "trainedBy"]) (currentRelations w)) graphWorlds
+    , "Graph: lineage edges appear — these come from the log rather than the index, because they record something that happened and is never revised"
+    )
+  ]
+  where
+    graphWorlds = richWorld : engineWorld : matchWorld : [generate sd longSteps | sd <- take 12 aggregateSeeds]
 
 -- | Work item 29 stage 1: 'Historian.Types.Derived' answers the same
 -- questions the log scans used to, for every entity and every pair, in

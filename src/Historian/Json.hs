@@ -13,7 +13,7 @@
 -- chains, which are generator-internal bookkeeping with no business
 -- leaving Haskell. Only entities, events, and facts — the queryable
 -- output — cross the boundary.
-module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult, encodeRulesFor, encodeRuleCatalogue, encodeNextSlotFromPool, encodeSlotOptions, encodeTuning, decodeTuningOverride, decodeSlotHints, decodeSlotBindings) where
+module Historian.Json (encodeWorld, encodeStepResult, encodeQueryResult, encodeRulesFor, encodeRuleCatalogue, encodeNextSlotFromPool, encodeSlotOptions, encodeGraph, encodeTuning, decodeTuningOverride, decodeSlotHints, decodeSlotBindings) where
 
 import Data.Aeson (Value (..), object, (.:?), (.=))
 import qualified Data.Aeson as Aeson
@@ -23,7 +23,7 @@ import qualified Data.Map.Strict as M
 import Data.Text (Text)
 import Historian.Engine (EntityDossier (..), PoolAmbiguity (..), RuleSpec (..), Slot (..), SlotFill (..), SlotHint (..), runnable, slotRequired)
 import Historian.Types
-import Historian.World (dateOf, nameIn, propertyOf)
+import Historian.World (Relation (..), currentRelations, dateOf, isDead, isDefunct, isTerminated, nameIn, propertyOf)
 
 encodeWorld :: World -> BSL.ByteString
 encodeWorld w =
@@ -243,6 +243,59 @@ candidateJson w e =
     , "name" .= nameIn w e
     , "kind" .= fmap (kindText . entKind) (M.lookup e (wEntities w))
     ]
+
+-- | The world as a relationship graph: every entity as a node, every
+-- currently-holding tie as an edge. Behind @historian_graph@.
+--
+-- Deliberately not 'encodeWorld'. That ships every event with both of its
+-- rendered readings, which for a graph is almost all payload and no
+-- information — and this project has already learned once what an
+-- over-generous query costs (see 'encodeSlotOptions'). A node here is what a
+-- graph needs to draw and label one: identity, kind, name, and the two flags
+-- that change how it should look.
+--
+-- @inactive@ folds three per-'Kind' endings into the one question a renderer
+-- actually asks. A 'Society' is inactive once dissolved or merged away, a
+-- 'Person' once dead and not since restored, anything else once
+-- 'Terminated'. They are genuinely different states in the engine — a
+-- person's death has nothing to do with 'Terminated' (see
+-- 'Historian.World.isDead') — but "draw this one faded" is a single
+-- question, so it is answered once here rather than three times in a host.
+--
+-- @mundane@ is reported rather than filtered: background-dressing entities
+-- are a dead end for rules, but whether a graph wants to show them is the
+-- host's call. Same "score, don't curate" split 'dossierJson' already draws
+-- for @edSatisfiesSlotOf@.
+encodeGraph :: World -> BSL.ByteString
+encodeGraph w =
+  Aeson.encode $
+    object
+      [ "nodes"
+          .= [ object
+              [ "id" .= unEntityId (entId e)
+              , "kind" .= kindText (entKind e)
+              , "name" .= nameIn w (entId e)
+              , "culture" .= unCulture (entCulture e)
+              , "voice" .= fmap (voiceRegisterText . voiceRegister) (entVoice e)
+              , "inactive" .= inactive e
+              , "mundane" .= entMundane e
+              ]
+             | e <- M.elems (wEntities w)
+             ]
+      , "edges"
+          .= [ object
+              [ "from" .= unEntityId (relFrom r)
+              , "to" .= unEntityId (relTo r)
+              , "kind" .= relKind r
+              ]
+             | r <- currentRelations w
+             ]
+      ]
+  where
+    inactive e = case entKind e of
+      Society -> isDefunct w (entId e)
+      Person -> isDead w (entId e)
+      _ -> isTerminated w (entId e)
 
 -- | 'Historian.Engine.SlotFill' on the wire.
 --

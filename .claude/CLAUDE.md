@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (370 checks — seeds 4/2/6/42/5 for
+Builds and passes `cabal test` (381 checks — seeds 4/2/6/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -1005,6 +1005,18 @@ unbuilt rule.
     Worth offering as a published artifact (several linked pages) as well
     as in-repo Markdown, since the point is for the user to read and keep
     it — ask which they want before writing.
+
+31. ~~A relationship-graph query for the site's Explore view.~~ Done —
+    `Historian.World.currentRelations` plus `historian_graph`. Reports the
+    ties that hold *now*, which is a different question from what the log
+    says happened: `Derived` resolves the superseding predicates, so a
+    reconciled grievance and a disavowed veneration are absent even though
+    both facts are still on record. This is the first consumer for which
+    that index is not merely an optimisation. Lineage (`SplitFrom`,
+    `MergedInto`, `Embodies`, `TrainedBy`) still comes from the log, because
+    it records something that happened and is never revised. Membership is
+    the one current-state relation not in the index — `allegiances` returns
+    a list whose order the engine's own draws observe.
 
 ## Things not to do
 

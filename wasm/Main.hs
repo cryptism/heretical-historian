@@ -60,7 +60,7 @@ import Historian.Corpus (allCultures)
 import Data.Version (showVersion)
 import qualified Paths_heretical_historian as Paths
 import Historian.Engine (RuleSpec (rsName), firesUnder, influenceStep, nextSlotFromPool, queryEntity, rulesAdmitting, rulesFor, slotOptions, stepAutonomous)
-import Historian.Json (decodeSlotBindings, decodeSlotHints, decodeTuningOverride, encodeNextSlotFromPool, encodeQueryResult, encodeRuleCatalogue, encodeRulesFor, encodeSlotOptions, encodeStepResult, encodeTuning, encodeWorld)
+import Historian.Json (decodeSlotBindings, decodeSlotHints, decodeTuningOverride, encodeGraph, encodeNextSlotFromPool, encodeQueryResult, encodeRuleCatalogue, encodeRulesFor, encodeSlotOptions, encodeStepResult, encodeTuning, encodeWorld)
 import Historian.Render (commitOutcomes)
 import Historian.Rules (addPerson, addSociety, foundSocietySpec, generate, genesisWorld, genesisWorldWith, influenceableSpecs, ruleSpecs)
 import Historian.Types (Culture (..), EntityId (..), FoundingOutcome (fdSociety), Outcome (Founding), Regard (..), VoiceRegister (..), World, defaultTuning)
@@ -408,6 +408,25 @@ historianRulesAdmitting sp eid = do
         | eid < 0 = [rs | rs <- influenceableSpecs, firesUnder w rs []]
         | otherwise = rulesAdmitting w influenceableSpecs (EntityId eid)
   bsToCString (BSL.toStrict (encodeRuleCatalogue w admitting))
+
+foreign export ccall "historian_graph" historianGraph :: Handle -> IO CString
+
+-- | The handle's current 'World' as a relationship graph — every entity as a
+-- node, every tie that holds *now* as an edge. See
+-- 'Historian.World.currentRelations'\/'encodeGraph'.
+--
+-- Read-only, and the whole world in one call rather than a walk: a host
+-- drawing a graph needs every node and edge at once, and asking per entity
+-- would be a query per node plus a fact scan inside each.
+--
+-- Distinct from @generateJson@, which also returns a whole world but is the
+-- batch entry point (a seed and a step count, no handle) and ships every
+-- event with both rendered readings. This answers about the live handle and
+-- carries no prose at all.
+historianGraph :: Handle -> IO CString
+historianGraph sp = do
+  w <- readIORef =<< deRefStablePtr sp
+  bsToCString (BSL.toStrict (encodeGraph w))
 
 -- | Like 'Foreign.C.String.peekCString', but decoded as UTF-8 rather than
 -- byte-by-byte as Latin-1 — the input-side mirror of 'bsToCString's own
