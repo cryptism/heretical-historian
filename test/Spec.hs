@@ -420,7 +420,7 @@ main = do
           , "backfillWard fires for real during ordinary generate — at least one backstory event occurs (aggregateSeeds, longSteps)"
           )
         ]
-      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks ++ cataclysmChecks
+      results = perSeed ++ aggregate ++ engineChecks ++ matchingChecks ++ batchEngineChecks ++ adapterChecks ++ directRuleChecks ++ backdatedChecks ++ voiceChecks ++ idiosyncrasyChecks ++ patronChecks ++ engineStepChecks ++ mundaneChecks ++ cultureChecks ++ backstoryChecks ++ tuningChecks ++ addSocietyChecks ++ ttrpgExportChecks ++ cataclysmChecks ++ derivedChecks
       failures = [m | (False, m) <- results]
   mapM_ TIO.putStrLn failures
   unless (null failures) exitFailure
@@ -2228,6 +2228,104 @@ ttrpgExportChecks =
         [ maybe [] unWireWorldEntities (Aeson.decode (encodeWorld (generate s longSteps)))
         | s <- aggregateSeeds
         ]
+
+-- | Work item 29 stage 1: 'Historian.Types.Derived' answers the same
+-- questions the log scans used to, for every entity and every pair, in
+-- every world these checks can reach.
+--
+-- The index is not a source of truth — it is an index over 'wFacts', and
+-- the scanning implementations it replaced are still there as
+-- @...ByScan@ precisely so that claim can be asserted rather than trusted.
+-- These are equivalence checks against those oracles, which is a stronger
+-- statement than "the suite still passes": the rest of the suite would only
+-- notice a divergence that happened to change a rule's outcome, while these
+-- compare the two answers directly, exhaustively, on pairs the generator
+-- never actually asserted anything about as well as ones it did.
+--
+-- Run over 'richWorld' (hand-built, dense in exactly the predicates that
+-- matter) and over 'aggregateSeeds' worlds (long, and reaching states no
+-- hand-built world does — a merged society, a restored corpse, a
+-- transferred sanctity). Pair checks are quadratic in entity count, so
+-- they run on the smaller worlds and the single-entity checks carry the
+-- long ones.
+derivedChecks :: [(Bool, Text)]
+derivedChecks =
+  [
+    ( all (\w -> all (\i -> isDead w i == isDeadByScan w i) (allIds w)) derivedWorlds
+    , "Derived: isDead agrees with a log scan for every entity, in every sampled world"
+    )
+  ,
+    ( all (\w -> all (\i -> isTerminated w i == isTerminatedByScan w i) (allIds w)) derivedWorlds
+    , "Derived: isTerminated agrees with a log scan for every entity"
+    )
+  ,
+    ( all (\w -> all (\i -> alreadyMerged w i == alreadyMergedByScan w i) (allIds w)) derivedWorlds
+    , "Derived: alreadyMerged agrees with a log scan for every entity"
+    )
+  ,
+    ( all (\w -> all (\i -> sanctifiedBy w i == sanctifiedByByScan w i) (allIds w)) derivedWorlds
+    , "Derived: sanctifiedBy agrees with a log scan for every entity — including the transfer case, where a later Sanctified fact supersedes an earlier one"
+    )
+  ,
+    ( all (\w -> all (\i -> currentLeader w i == currentLeaderByScan w i) (allIds w)) derivedWorlds
+    , "Derived: currentLeader agrees with a log scan for every entity, keyed by society though Leads names the leader as subject"
+    )
+  ,
+    ( all (\w -> all (\(a, b) -> holdsGrievance w a b == holdsGrievanceByScan w a b) (allPairs w)) derivedPairWorlds
+    , "Derived: holdsGrievance agrees with a log scan for every ordered pair — Reconciled superseding Grievance included"
+    )
+  ,
+    ( all (\w -> all (\(a, b) -> venerates w a b == veneratesByScan w a b) (allPairs w)) derivedPairWorlds
+    , "Derived: venerates agrees with a log scan for every ordered pair"
+    )
+  ,
+    ( all (\w -> all (\(a, b) -> regardOf w a b == regardOfByScan w a b) (allPairs w)) derivedPairWorlds
+    , "Derived: regardOf agrees with a log scan for every ordered pair — a Disavows must beat an earlier Venerates, which is why the index stores the losing predicate rather than deleting the key"
+    )
+  , -- The checks above would all pass on a world where nothing interesting
+    -- ever happened. These assert the sampled worlds actually exercise the
+    -- superseding cases, so the equivalence above is not vacuous.
+    ( any (\w -> any (\i -> M.member i (dvDeath (wDerived w)) && not (isDead w i)) (allIds w)) derivedWorlds
+    , "Derived: at least one sampled world has a person who died and was restored — the case that distinguishes 'no entry' from 'entry that is not Slain'"
+    )
+  ,
+    ( any (\w -> any (\(a, b) -> M.lookup (a, b) (dvGrievance (wDerived w)) == Just Reconciled) (allPairs w)) derivedPairWorlds
+    , "Derived: at least one sampled pair has been reconciled, so holdsGrievance's superseding path is actually covered"
+    )
+  ,
+    ( any (\w -> any (\(a, b) -> venerates w a b && regardOf w a b /= Just Venerated) (allPairs w)) derivedPairWorlds
+    , "Derived: at least one pair was venerated and then shunned or disavowed — the case where the ever-happened set and the current-stance map must disagree"
+    )
+  ,
+    ( all (\w -> wDerived w `agreesWith` wFacts w) derivedWorlds
+    , "Derived: the whole index equals what folding the log from scratch produces — no drift between the incremental path and a rebuild"
+    )
+  ]
+  where
+    -- Deliberately includes ids past the end: every one of these queries is
+    -- total for an id that resolves to nothing, and an index that quietly
+    -- stopped being total would be a real regression.
+    allIds w = map EntityId [1 .. wNextEntity w + 2]
+    allPairs w = [(a, b) | a <- allIds w, b <- allIds w]
+    derivedWorlds = richWorld : engineWorld : matchWorld : [generate s longSteps | s <- aggregateSeeds]
+    -- Quadratic, so the pair checks take the hand-built worlds plus a few
+    -- generated ones rather than all forty.
+    derivedPairWorlds = richWorld : engineWorld : matchWorld : [generate s longSteps | s <- take 6 aggregateSeeds]
+    -- A rebuild from the whole log, compared field by field. `foldr` over a
+    -- newest-first list applies the oldest fact first and the newest last,
+    -- which is exactly the order the incremental path built it in — the same
+    -- reason assertFacts uses foldr per batch. No `reverse`: that would
+    -- invert every latest-wins field and make this check assert the bug.
+    agreesWith d fs =
+      let rebuilt = foldr deriveFact emptyDerived fs
+       in dvDeath d == dvDeath rebuilt
+            && dvSanctifiedBy d == dvSanctifiedBy rebuilt
+            && dvLeaderOf d == dvLeaderOf rebuilt
+            && dvGrievance d == dvGrievance rebuilt
+            && dvRegard d == dvRegard rebuilt
+            && dvVeneratedEver d == dvVeneratedEver rebuilt
+            && dvTerminated d == dvTerminated rebuilt
+            && dvMergedAway d == dvMergedAway rebuilt
 
 -- | Work queue item 15's wasm stateful-handle follow-up (.claude/docs/DESIGN.md
 -- Decision 33): 'Historian.Engine.intelligentStep's 'StepAny'\/

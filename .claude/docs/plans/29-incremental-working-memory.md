@@ -269,3 +269,106 @@ both did, and check the retuned behaviour is still *reachable* rather than
 merely different — a separate wide-seed batch confirming the affected
 rules still fire at comparable rates, as `rivalryRuleWeight`'s tuning
 established as this project's norm.
+
+---
+
+## Measured outcome of stage 1 — and a corrected diagnosis
+
+Stage 1 is built (`Historian.Types.Derived`, maintained by
+`Historian.World.assertFacts`). It did what it was designed to do and **it
+did not fix the problem**, because the diagnosis above was wrong about where
+the cost is. Recording that here rather than quietly re-scoping.
+
+### What stage 1 achieved
+
+Verified exactly as the Verification section demanded: `cabal test` 349 →
+361 with **no seed re-pinning at all**, the 12 new checks being direct
+equivalence assertions against the old scanning implementations (kept as
+`...ByScan` oracles), plus a whole-index rebuild comparison and three
+non-vacuity checks confirming the superseding cases genuinely occur in the
+sampled worlds. `wasm/verify.mjs` unchanged and passing.
+
+Native, seed 4, `cabal run historian-bench`:
+
+| query | 200 steps before | after | change |
+|---|---:|---:|---|
+| `rulesAdmitting` (Event list, per dialog open) | 11.5ms | 5.8ms | ~2× |
+| candidate dossiers (`queryEntity` per candidate) | 0.4ms | 0.1ms | ~4× |
+| `slotOptions` (per dropdown change) | 17.2ms | 12.9ms | ~1.3× |
+
+And end-to-end through the wasm, which is what a user actually feels:
+**158 / 440 / 814ms at 50 / 150 / 250 steps, against 161 / 432 / 804ms
+before. Unchanged.**
+
+### Why — the cost is the `rsFire` probe, not the log scans
+
+The benchmark was extended until it stopped being a guess. Three hypotheses
+died in order:
+
+1. *The indexed predicates.* Indexed; `slotOptions` barely moved.
+2. *The predicates stage 1 deliberately deferred* (`allegiances` with its
+   quadratic `nubBy`, `currentRegardants`). Measured at **0.0ms** — they are
+   not the cost, and the order-preservation risk that made them look scary
+   was risk taken for nothing.
+3. *Combinatorial growth of the solution set.* Assignment counts grow
+   **×1.4–1.6** across the range, tracking entity count, while cost grows
+   ×24–46. Not it either.
+
+What does explain it, exactly:
+
+| steps | `slotOptions` growth | `rsFire` probe growth |
+|---|---:|---:|
+| 150 | ×12.16 | ×11.79 |
+| 200 | ×46.04 | ×47.42 |
+| 250 | ×24.74 | ×24.56 |
+
+`slotOptions` is essentially *all* speculative-probe time. `firesUnder`
+probes `rsFire` on every assignment in the solution set, and a fire function
+does real work — minting in particular, which means Markov name generation
+with collision retries against `wNameSubstrings`. Per-probe cost therefore
+grows with world size, which is why total cost grows far faster than the
+assignment count does. The engine is not re-checking the workspace so much
+as **speculatively executing every rule against every candidate binding and
+throwing the results away.**
+
+### What this means for the staging
+
+The order in this plan was wrong. Corrected:
+
+- **Stage 3 is the fix, and should be next.** A complete declarative
+  left-hand side means "will this fire" is answered by the match, so the
+  probe stops existing rather than getting faster. It was ranked last for
+  being the largest job; it is also the only one that addresses the measured
+  cost. Its cost estimate stands, including that it will move the pinned
+  witness seeds.
+- **Stage 2 (incremental join memories) is now poorly motivated.** It would
+  avoid re-walking the search, but the search is ~nothing; the probes
+  attached to it are everything. Deferred indefinitely, not merely deferred.
+- **Stage 1 is kept, on narrower grounds than it was proposed on.** It is
+  behaviour-preserving, exhaustively verified, and does make the Event-list
+  query — the one that runs on every dialog open — about twice as fast while
+  removing its growth with history length. That is a real if modest win, and
+  the equivalence-oracle scaffolding is reusable. It is *not* what makes
+  INFLUENCE.SYS feel responsive, and nothing here should be read as claiming
+  it is.
+- **A cheaper interim option, now worth considering before stage 3:** make
+  the probe itself cheap rather than removing it. If `rsFire`'s minting is
+  the expensive part, a probe-mode resolution that stubs minting (a rule
+  only needs to know *whether* outcomes result, not what the minted entity
+  is called) would cut most of it without touching any rule's structure.
+  Unmeasured, and it trades a clean story for a special case — but it is
+  days rather than weeks, and it should be measured before stage 3 is
+  committed to.
+
+### A note on the earlier numbers
+
+The table in this plan's Context was taken through the wasm and attributed
+all cost to the engine's log scanning. The wasm boundary itself is
+innocent — `readCString` plus `JSON.parse` of a 68 KiB payload is **0.2ms**,
+measured — but the attribution to scanning was wrong, and the shape of that
+first table (cost tracking fact count) was read off a five-point sample
+dominated by two rules. The `historian-bench` numbers supersede it. The
+lesson worth keeping: that table was produced by a script that timed a lazy
+`generate` thunk and charged the first query for building the entire
+history, and it took three wrong hypotheses after that before the benchmark
+measured the right thing.

@@ -59,6 +59,21 @@ executable historian
     , heretical-historian
     , text
 
+-- | Work item 29's measurement gate: what `slotOptions` costs, and whether
+-- that cost tracks the size of the world or the length of its history. Runs
+-- against the library directly rather than through the wasm boundary, so it
+-- reports engine cost and not host overhead. Deterministic by construction
+-- (fixed seed, no wall-clock RNG) so a before/after ratio is meaningful.
+-- See .claude/docs/plans/29-incremental-working-memory.md.
+executable historian-bench
+  import:         shared
+  hs-source-dirs: bench
+  main-is:        Main.hs
+  build-depends:
+    , base
+    , heretical-historian
+    , mtl
+
 -- | The wasm boundary, per .claude/docs/DESIGN.md Decision 7 and its stateful-
 -- handle follow-up: generateJson (batch, one shot) plus the
 -- historian_new/step/query/free family (a World kept resident behind an

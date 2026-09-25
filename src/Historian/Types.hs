@@ -11,7 +11,9 @@
 module Historian.Types where
 
 import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.Set (Set)
+import qualified Data.Set as S
 import Data.String (IsString (fromString))
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -948,10 +950,86 @@ defaultTuning =
     , tnCataclysmSplitChance = 15
     }
 
+-- | Derived state, maintained as facts are asserted rather than recomputed
+-- from 'wFacts' on every question.
+--
+-- 'wFacts' is the record; this is an index over it, exactly as
+-- 'wNameSubstrings' is an index over entity names (Decision 40, same
+-- pattern and the same reason — a linear scan on every call, replaced by
+-- something maintained once per write). Nothing here is a source of truth:
+-- every field could be recomputed from 'wFacts' at any time, and the test
+-- suite asserts precisely that by keeping the old scanning implementations
+-- as oracles.
+--
+-- Only predicates whose answer is order-free live here — a 'Bool' or a
+-- 'Maybe'. The list-returning queries ('Historian.World.allegiances',
+-- 'currentRegardants', 'grievancePairs', 'rivalPairs') deliberately keep
+-- scanning: their results feed candidate list comprehensions that
+-- 'Historian.Engine.allAssignments' draws from, so their *order* is
+-- observable through @weighted@\/@pickOr@ and reconstructing it from a
+-- 'Map' would perturb every pinned witness seed in the suite. Indexing
+-- those needs its own increment, with the order question answered first.
+--
+-- Two subtleties, both load-bearing:
+--
+-- * \"Latest wins\" here means latest by *list position*, not by 'factEpoch'.
+--   Every reader takes the head match of a newest-first list, and
+--   'Historian.World.recordBackdated' asserts facts with an earlier
+--   'factEpoch' at the *head* regardless — so position is the semantics
+--   and an index must follow it, not the epoch.
+-- * The fields divide into latest-wins ('Map' to the winning 'Predicate',
+--   overwritten) and ever-happened ('Set', monotone). They are not
+--   interchangeable: @dvRegard@ tracks the current stance over
+--   {'Venerates', 'Shuns', 'Disavows'} and so can return to \"no stance\",
+--   while @dvVeneratedEver@ records that a veneration was once on record
+--   and never retracts — which is what 'Historian.World.venerates' has
+--   always meant.
+data Derived = Derived
+  { dvDeath :: Map EntityId Predicate
+  -- ^ The latest of {'Slain', 'Restored'} per person. 'Historian.World.isDead'
+  -- is @== Just Slain@; a 'Restored' person has an entry that is not 'Slain',
+  -- which is a different state from having no entry at all.
+  , dvSanctifiedBy :: Map EntityId EntityId
+  -- ^ Site to the society currently holding it sanctified — a second,
+  -- later 'Sanctified' fact transfers sanctity, hence latest-wins.
+  , dvLeaderOf :: Map EntityId EntityId
+  -- ^ Society to its current leader, from 'Leads' (whose subject is the
+  -- leader and object the society, so this is keyed the other way round).
+  , dvGrievance :: Map (EntityId, EntityId) Predicate
+  -- ^ The latest of {'Grievance', 'Reconciled'} per *directed* pair.
+  -- 'Historian.World.holdsGrievance' is @== Just Grievance@.
+  , dvRegard :: Map (EntityId, EntityId) Predicate
+  -- ^ The latest of {'Venerates', 'Shuns', 'Disavows'} per (subject, thing).
+  , dvVeneratedEver :: Set (EntityId, EntityId)
+  -- ^ Every (subject, thing) that has *ever* been on record as venerated.
+  -- Never retracted — see this type's own note.
+  , dvTerminated :: Set EntityId
+  , dvMergedAway :: Set EntityId
+  }
+
+-- | The index over an empty fact log.
+emptyDerived :: Derived
+emptyDerived =
+  Derived
+    { dvDeath = M.empty
+    , dvSanctifiedBy = M.empty
+    , dvLeaderOf = M.empty
+    , dvGrievance = M.empty
+    , dvRegard = M.empty
+    , dvVeneratedEver = S.empty
+    , dvTerminated = S.empty
+    , dvMergedAway = S.empty
+    }
+
 data World = World
   { wEntities :: Map EntityId Entity
   , wFacts :: [Fact]
   -- ^ Newest first. Queries that want "current state" take the head match.
+  , wDerived :: Derived
+  -- ^ The order-free half of those queries, maintained at assertion time
+  -- instead — see 'Derived'. Strictly an index over 'wFacts'; never a
+  -- source of truth, and never written anywhere but alongside a 'wFacts'
+  -- prepend.
   , wEvents :: Map EventId Event
   , wChains :: Map Culture Chain
   , wSeed :: Int

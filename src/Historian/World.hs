@@ -50,6 +50,7 @@ emptyWorldWith seed tuning =
   World
     { wEntities = M.empty
     , wFacts = []
+    , wDerived = emptyDerived
     , wEvents = M.empty
     , wChains = M.fromList [(c, buildChain 3 (corpusFor c)) | c <- allCultures]
     , wGrammars = M.fromList [(c, nameGrammarFor c) | c <- allCultures]
@@ -1371,6 +1372,55 @@ backdatedEpoch = do
 -- structured 'Outcome' behind this text (see 'Historian.Types.Event's own
 -- Haddock) — for a fired rule's own 'Outcome', 'Historian.Render.
 -- commitOutcomes' calls 'recordOutcome' instead.
+-- | Assert facts: prepend them to the log and fold them into 'wDerived' in
+-- one step, so the index cannot drift from the record it indexes.
+--
+-- Every writer of 'wFacts' goes through here. That is the whole safety
+-- argument for 'Derived' — @record@\/@recordA@\/@recordOutcome@\/
+-- @recordBackdated@ were already the only paths facts take into the world
+-- (CLAUDE.md "Things not to do" turns on it), so there is exactly one place
+-- to keep current and no second path to forget.
+--
+-- 'foldr', not 'foldl'', and that is not a style choice. Readers of the log
+-- take the *head* match of a newest-first list, so within one batch the
+-- earliest element of @fs@ wins. 'foldr' applies @fs@ from the right, which
+-- means the head is applied last and therefore overwrites — reproducing
+-- exactly what a scan of @fs ++ wFacts w@ would have answered. 'foldl'' would
+-- silently invert every latest-wins field for multi-fact events.
+assertFacts :: [Fact] -> World -> World
+assertFacts fs w =
+  w
+    { wFacts = fs ++ wFacts w
+    , wDerived = foldr deriveFact (wDerived w) fs
+    }
+
+-- | One fact's contribution to the index. Total: a fact about nothing this
+-- tracks leaves it unchanged.
+deriveFact :: Fact -> Derived -> Derived
+deriveFact f d = case (factPred f, factObject f) of
+  (Slain, _) -> d {dvDeath = M.insert subj Slain (dvDeath d)}
+  (Restored, _) -> d {dvDeath = M.insert subj Restored (dvDeath d)}
+  (Terminated, _) -> d {dvTerminated = Set.insert subj (dvTerminated d)}
+  (MergedInto, _) -> d {dvMergedAway = Set.insert subj (dvMergedAway d)}
+  (Sanctified, Just (ROf o)) -> d {dvSanctifiedBy = M.insert subj o (dvSanctifiedBy d)}
+  -- 'Leads' names the leader as subject and the society as object, so the
+  -- index is keyed by society: the question callers ask is "who leads this".
+  (Leads, Just (ROf o)) -> d {dvLeaderOf = M.insert o subj (dvLeaderOf d)}
+  (Grievance, Just (ROf o)) -> d {dvGrievance = M.insert (subj, o) Grievance (dvGrievance d)}
+  (Reconciled, Just (ROf o)) -> d {dvGrievance = M.insert (subj, o) Reconciled (dvGrievance d)}
+  -- Venerates feeds both a latest-wins stance and a never-retracted "was it
+  -- ever so" — see 'Derived'. Shuns and Disavows move the stance only.
+  (Venerates, Just (ROf o)) ->
+    d
+      { dvRegard = M.insert (subj, o) Venerates (dvRegard d)
+      , dvVeneratedEver = Set.insert (subj, o) (dvVeneratedEver d)
+      }
+  (Shuns, Just (ROf o)) -> d {dvRegard = M.insert (subj, o) Shuns (dvRegard d)}
+  (Disavows, Just (ROf o)) -> d {dvRegard = M.insert (subj, o) Disavows (dvRegard d)}
+  _ -> d
+  where
+    subj = factSubject f
+
 record :: Text -> Text -> [Claim] -> Chronicle ()
 record kind txt = recordA kind (lit txt)
 
@@ -1393,11 +1443,7 @@ recordA kind atxt claims = do
       ev = Event eid ep kind Nothing Nothing atxt atxt
       fs = [Fact (clSubject c) (clPred c) (clObject c) (fromMaybe ep (clEpoch c)) eid (clAttestedBy c) | c <- claims]
   put
-    w
-      { wNextEvent = wNextEvent w + 1
-      , wEvents = M.insert eid ev (wEvents w)
-      , wFacts = fs ++ wFacts w
-      }
+    (assertFacts fs w {wNextEvent = wNextEvent w + 1, wEvents = M.insert eid ev (wEvents w)})
 
 -- | Like 'record', but for a fired rule's own 'Outcome' — stores it (so a
 -- caller can later ask for a different, explicit voice's reading of this
@@ -1413,11 +1459,7 @@ recordOutcome kind outcome narrator narrated neutral claims = do
       ev = Event eid ep kind (Just outcome) narrator narrated neutral
       fs = [Fact (clSubject c) (clPred c) (clObject c) (fromMaybe ep (clEpoch c)) eid (clAttestedBy c) | c <- claims]
   put
-    w
-      { wNextEvent = wNextEvent w + 1
-      , wEvents = M.insert eid ev (wEvents w)
-      , wFacts = fs ++ wFacts w
-      }
+    (assertFacts fs w {wNextEvent = wNextEvent w + 1, wEvents = M.insert eid ev (wEvents w)})
 
 -- | Like 'record', but for backdated claims: the event itself is dated
 -- *now* (this is genuinely when the historian recorded/discovered it —
@@ -1435,11 +1477,7 @@ recordBackdated kind factEp claims = do
       ev = Event eid now kind Nothing Nothing (lit txt) (lit txt)
       fs = [Fact (clSubject c) (clPred c) (clObject c) factEp eid (clAttestedBy c) | c <- claims]
   put
-    w
-      { wNextEvent = wNextEvent w + 1
-      , wEvents = M.insert eid ev (wEvents w)
-      , wFacts = fs ++ wFacts w
-      }
+    (assertFacts fs w {wNextEvent = wNextEvent w + 1, wEvents = M.insert eid ev (wEvents w)})
 
 nameOf :: EntityId -> Chronicle Text
 nameOf i = gets (`nameIn` i)
@@ -1505,7 +1543,15 @@ allegiances w =
 -- from dissolving out from under them. 'wFacts' is newest-first (see
 -- 'record'), so the first match is the latest.
 isDead :: World -> EntityId -> Bool
-isDead w i =
+isDead w i = M.lookup i (dvDeath (wDerived w)) == Just Slain
+
+-- | 'isDead' by scanning the log — the definition this project ran on until
+-- 'Derived' existed, kept as the oracle the test suite checks the index
+-- against rather than as dead code. Every @ByScan@ function below is the
+-- same story: it is the specification, and the indexed version is the
+-- implementation that has to agree with it.
+isDeadByScan :: World -> EntityId -> Bool
+isDeadByScan w i =
   case [factPred f | f <- wFacts w, factSubject f == i, factPred f `elem` [Slain, Restored]] of
     (Slain : _) -> True
     _ -> False
@@ -1526,7 +1572,11 @@ deadMembers w s = [p | (p, s') <- allegiances w, s' == s, isDead w p]
 -- society (or nobody at all, if the venerator has since fallen) can venerate
 -- the same site or person at once.
 venerates :: World -> EntityId -> EntityId -> Bool
-venerates w subject obj =
+venerates w subject obj = Set.member (subject, obj) (dvVeneratedEver (wDerived w))
+
+-- | 'venerates' by scanning the log. See 'isDeadByScan'.
+veneratesByScan :: World -> EntityId -> EntityId -> Bool
+veneratesByScan w subject obj =
   any (\f -> factPred f == Venerates && factSubject f == subject && factObject f == Just (ROf obj)) (wFacts w)
 
 -- | A cult's current stance toward a Ward — a Person, Item, or Site (see
@@ -1569,7 +1619,18 @@ itemEmbodiesClaim :: EntityId -> EntityId -> Claim
 itemEmbodiesClaim item concept = Claim item Embodies (Just (ROf concept)) Nothing Nothing
 
 regardOf :: World -> EntityId -> EntityId -> Maybe Regard
-regardOf w subject thing =
+regardOf w subject thing = case M.lookup (subject, thing) (dvRegard (wDerived w)) of
+  Just Venerates -> Just Venerated
+  Just Shuns -> Just Shunned
+  -- 'Disavows' (or nothing on record) is no current stance. Deliberately not
+  -- folded into the index as an absent key: a disavowal is the *latest* word
+  -- and has to beat an earlier veneration, which it could not do if it left
+  -- no trace.
+  _ -> Nothing
+
+-- | 'regardOf' by scanning the log. See 'isDeadByScan'.
+regardOfByScan :: World -> EntityId -> EntityId -> Maybe Regard
+regardOfByScan w subject thing =
   case [f | f <- wFacts w, factSubject f == subject, factObject f == Just (ROf thing), factPred f `elem` [Venerates, Shuns, Disavows]] of
     (f : _) -> case factPred f of
       Venerates -> Just Venerated
@@ -1596,7 +1657,11 @@ currentRegardants w thing =
 -- 'Nothing' means never sanctified, not "reconciled" — there is no way back
 -- to that state once it's claimed.
 sanctifiedBy :: World -> EntityId -> Maybe EntityId
-sanctifiedBy w site =
+sanctifiedBy w site = M.lookup site (dvSanctifiedBy (wDerived w))
+
+-- | 'sanctifiedBy' by scanning the log. See 'isDeadByScan'.
+sanctifiedByByScan :: World -> EntityId -> Maybe EntityId
+sanctifiedByByScan w site =
   case [o | f <- wFacts w, factPred f == Sanctified, factSubject f == site, Just (ROf o) <- [factObject f]] of
     (o : _) -> Just o
     [] -> Nothing
@@ -1606,7 +1671,11 @@ sanctifiedBy w site =
 -- ('Leads'' subject is the leader, object the society, so this scans for
 -- a matching object rather than subject).
 currentLeader :: World -> EntityId -> Maybe EntityId
-currentLeader w society =
+currentLeader w society = M.lookup society (dvLeaderOf (wDerived w))
+
+-- | 'currentLeader' by scanning the log. See 'isDeadByScan'.
+currentLeaderByScan :: World -> EntityId -> Maybe EntityId
+currentLeaderByScan w society =
   case [factSubject f | f <- wFacts w, factPred f == Leads, factObject f == Just (ROf society)] of
     (leader : _) -> Just leader
     [] -> Nothing
@@ -1637,14 +1706,22 @@ sharesVeneration w a b =
 -- 'isSanctified' guards 'ruleSanctify': once true, this society shouldn't be
 -- offered as a merger candidate again.
 alreadyMerged :: World -> EntityId -> Bool
-alreadyMerged w s = any (\f -> factPred f == MergedInto && factSubject f == s) (wFacts w)
+alreadyMerged w s = Set.member s (dvMergedAway (wDerived w))
+
+-- | 'alreadyMerged' by scanning the log. See 'isDeadByScan'.
+alreadyMergedByScan :: World -> EntityId -> Bool
+alreadyMergedByScan w s = any (\f -> factPred f == MergedInto && factSubject f == s) (wFacts w)
 
 -- | Whether an entity has reached its permanent terminal state — a
 -- society dissolved for lack of living members ('ruleDissolve') or a relic
 -- destroyed ('ruleDestroyRelic'). One query for both, since they share one
 -- predicate ('Terminated') — see the type's own Haddock for why.
 isTerminated :: World -> EntityId -> Bool
-isTerminated w i = any (\f -> factPred f == Terminated && factSubject f == i) (wFacts w)
+isTerminated w i = Set.member i (dvTerminated (wDerived w))
+
+-- | 'isTerminated' by scanning the log. See 'isDeadByScan'.
+isTerminatedByScan :: World -> EntityId -> Bool
+isTerminatedByScan w i = any (\f -> factPred f == Terminated && factSubject f == i) (wFacts w)
 
 -- | Whether an entity already existed, and hadn't yet been terminated, as
 -- of a given epoch — the hard temporal-consistency check backdated
@@ -1810,7 +1887,11 @@ fulfillProphecies w claims =
 -- means no grievance, not a live one — a pair that never fought is not
 -- "reconciled", it just never had cause.
 holdsGrievance :: World -> EntityId -> EntityId -> Bool
-holdsGrievance w a b =
+holdsGrievance w a b = M.lookup (a, b) (dvGrievance (wDerived w)) == Just Grievance
+
+-- | 'holdsGrievance' by scanning the log. See 'isDeadByScan'.
+holdsGrievanceByScan :: World -> EntityId -> EntityId -> Bool
+holdsGrievanceByScan w a b =
   case [factPred f | f <- wFacts w, factSubject f == a, factObject f == Just (ROf b), factPred f `elem` [Grievance, Reconciled]] of
     (Grievance : _) -> True
     _ -> False

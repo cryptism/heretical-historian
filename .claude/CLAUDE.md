@@ -19,7 +19,7 @@ history rather than sampling it.
 
 ## Status
 
-Builds and passes `cabal test` (349 checks — seeds 4/2/6/42/5 for
+Builds and passes `cabal test` (361 checks — seeds 4/2/6/42/5 for
 per-seed structural checks, `aggregateSeeds` (1-40) and `wideSeeds`
 (1-250) for scanned "does this ever happen" checks, `veryWideSeeds`
 (1-1000 — shrunk from 11000, see Decision 41 — precomputed once as
@@ -915,7 +915,20 @@ unbuilt rule.
     one) used to pass from history almost as soon as they appeared.
     `.claude/docs/EVENTS.md` has the existing sketch under Dissolution.
 29. Incremental working memory — a production rule system over a
-    derived-relation index. Plan:
+    derived-relation index. **Stage 1 done; its premise was wrong, and the
+    plan's own "Measured outcome" section records why.** The index exists
+    (`Historian.Types.Derived`, maintained by `Historian.World.assertFacts`,
+    with the old scans kept as `...ByScan` oracles and 12 equivalence checks
+    against them — 349 → 361, no seed re-pinning). It makes the Event-list
+    query about twice as fast and dossier construction four times, and
+    leaves the browser-visible narrowing cost *unchanged*: 158/440/814ms at
+    50/150/250 steps against 161/432/804ms before. The cost is not log
+    scanning. `slotOptions` is essentially all `rsFire` probe time
+    (`firesUnder` speculatively fires every assignment and discards it;
+    growth ×47 against an assignment count growing ×1.6), so **stage 3 — a
+    complete declarative LHS, which retires the probe — is the fix and
+    should be next**, stage 2 is now poorly motivated, and a cheap interim
+    (stub minting during a probe) is worth measuring first. Plan:
     `.claude/docs/plans/29-incremental-working-memory.md`. Raised by the
     user off the back of Decision 50, whose `firesUnder` has to *run a
     rule speculatively* to find out whether the rule applies, because
