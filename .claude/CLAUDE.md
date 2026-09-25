@@ -914,6 +914,28 @@ unbuilt rule.
     backfill-generated cults (no founder until `generateCultFor` gained
     one) used to pass from history almost as soon as they appeared.
     `.claude/docs/EVENTS.md` has the existing sketch under Dissolution.
+29. Incremental working memory — a production rule system over a
+    derived-relation index. Plan:
+    `.claude/docs/plans/29-incremental-working-memory.md`. Raised by the
+    user off the back of Decision 50, whose `firesUnder` has to *run a
+    rule speculatively* to find out whether the rule applies, because
+    `defileSpec`'s real precondition lives in its `rsFire` rather than its
+    conditions. The same root cause shows up as cost: `slotOptions` reaches
+    1.6s because twenty-two `World` predicates each linear-scan `wFacts`,
+    they nest (`activeSocieties` is O(societies × |facts|) and is called 39
+    times in `Rules.hs`; `livingMembers` is O(members × |facts|), 21
+    times), and `slotOptions` evaluates them per candidate per search node
+    over an exhaustive enumeration. Measured, cost tracks the *length of
+    the history*, not the size of the world — entities 32 → 36 while facts
+    140 → 247 and time +227%. Three stages, stoppable after any: an index
+    maintained at `record` (mechanical, and must re-pin *no* seeds — that
+    is its safety argument), incremental join memories between slots, then
+    complete declarative left-hand sides, which retires the `rsFire` probe
+    and will move the witness seeds. Note this does not contradict
+    Decision 25, which rejected tables *rebuilt per call* and never
+    evaluated a memory *maintained per assertion*; `record` being the only
+    path facts take into the world (see Things not to do, below) is
+    precisely what makes one maintainable in a single place.
 
 ## Things not to do
 
