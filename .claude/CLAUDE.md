@@ -950,6 +950,52 @@ unbuilt rule.
     path facts take into the world (see Things not to do, below) is
     precisely what makes one maintainable in a single place.
 
+30. A multi-part in-depth guide to this repo, for the user, at their
+    request: "I really want to come out understanding this once I've read
+    it as it's drifted from my understanding." Not API docs and not a
+    tour of every function — an explanation aimed at someone who owns this
+    codebase but has lost the thread of how it works. Wanted: diagrams,
+    concepts, the Haskell terminology needed to read the source, and real
+    code examples taken from the actual code rather than invented.
+
+    What has actually drifted is worth naming, so the guide targets it
+    rather than starting from scratch:
+    - **The engine is a CSP, and is becoming a production rule system.**
+      `RuleSpec`/`Slot`/`SlotFill`/`slotConstraint` as variables, domains
+      and constraints; `allAssignments` as the solution set; why constraints
+      are intensional closures over live `World` (Decision 25) and what
+      that costs. Work item 29 and Decision 50 are the live edge of this.
+    - **The fact log is the record; everything else is derived.** `wFacts`
+      newest-first, latest-wins *by list position* (not `factEpoch` — see
+      `recordBackdated`), `record` as the single write path and why
+      invariant 4 turns on it, and `Derived` as an index over it rather
+      than a second source of truth.
+    - **The render pipeline**, which is the most-changed area and the least
+      obvious: `Outcome` -> `render`/`renderWithVoice` -> `AText` with
+      `MENTION_MARKER` and mentions (Decision 47) -> `applyIdiosyncrasies`
+      -> `commitOutcomes`, plus the narrated/neutral split (Decision 29)
+      and why omission is the one quirk that breaks marker correspondence.
+    - **The wasm boundary**: `Historian.Json` as the only wire format, the
+      `StablePtr` handle discipline, why `hs_init` cannot be a Haskell
+      `foreign export` (Decision 7), and the `-optl-Wl,--export=` +
+      relink trap recorded in Decision 50.
+    - **Haskell terminology, as used here and not in general**:
+      `Chronicle = State World` and what the state monad buys; `evalState`
+      as a way to run something and discard it; `foldr` vs `foldl'` where
+      order is the semantics; laziness and why a benchmark must force its
+      result; `StrictData`; `newtype` deriving strategies; `NonEmpty` in
+      the corpus; record-update syntax; where partiality is deliberate.
+    - **How to read `.claude/docs/DESIGN.md`**: 50 decisions with their
+      rejected alternatives, which is the actual architecture document —
+      the guide should teach the habit of checking it, not replace it.
+
+    Diagrams wanted for: one autonomous step end to end; the slot
+    assignment search with backtracking; the fact-log/index/query
+    relationship; the host <-> wasm call sequence including init order.
+    Worth offering as a published artifact (several linked pages) as well
+    as in-repo Markdown, since the point is for the user to read and keep
+    it — ask which they want before writing.
+
 ## Things not to do
 
 - Don't add a context-free grammar layer for sentence structure "because the
